@@ -51,6 +51,11 @@ def _usd(x: float) -> str:
     return f"${x:,.0f}"
 
 
+def _a(acc: str) -> str:
+    """Short, readable account name for sentences."""
+    return f"account …{acc.split(':')[-1][-5:]}"
+
+
 def _window_rows(ctx: CaseContext, account: str, direction: str) -> list[dict]:
     cy = Q.TRANSFERS_OUT if direction == "out" else Q.TRANSFERS_IN
     rows = ctx.q(f"{direction}going transfers of {account}", cy, {"id": account, "t0": ctx.t0, "t1": ctx.t1}).rows
@@ -98,36 +103,36 @@ def account_profile(ctx: CaseContext, a: AccountArgs) -> dict:
     tx_out = [r["tx_id"] for r in out_rows]
     tx_in = [r["tx_id"] for r in in_rows]
     ctx.book.add(kind="context", code="PROFILE", tool="account_profile", step=ctx.step, accounts=[acc],
-                 claim=(f"{acc} ({info.get('entity_type') or 'unknown owner type'}) sent {len(out_rows)} transfers "
-                        f"({_usd(out_sum)}) to {len({r['dst'] for r in out_rows})} accounts and received {len(in_rows)} "
-                        f"({_usd(in_sum)}) from {len({r['src'] for r in in_rows})} accounts in the alert window."),
+                 claim=(f"{_a(acc).capitalize()} ({info.get('entity_type') or 'owner type unknown'}) sent {_usd(out_sum)} in "
+                        f"{len(out_rows)} payments to {len({r['dst'] for r in out_rows})} accounts, and received {_usd(in_sum)} "
+                        f"from {len({r['src'] for r in in_rows})} accounts, in the period checked."),
                  weight=0.0, tx_ids=(tx_out + tx_in)[:40],
                  metrics={"out_cnt": len(out_rows), "out_sum": out_sum, "in_cnt": len(in_rows), "in_sum": in_sum})
 
     rules = ctx.rules
     if not daily and len(out_rows) >= 3:
         ctx.book.add(kind="support", code="DORMANT_THEN_ACTIVE", tool="account_profile", step=ctx.step,
-                     claim=f"{acc} had no outgoing transfers in the {int(hist_days)} days before the alert, then sent {len(out_rows)}.",
+                     claim=f"{_a(acc).capitalize()} sent nothing for {int(hist_days)} days, then suddenly made {len(out_rows)} payments.",
                      weight=0.35, tx_ids=tx_out[:20], accounts=[acc], escalator=True,
                      metrics={"prior_days": int(hist_days), "window_out": len(out_rows)})
     elif daily and z > rules["legitimacy"]["baseline_z_max"]:
         ctx.book.add(kind="support", code="ACTIVITY_SPIKE", tool="account_profile", step=ctx.step,
-                     claim=f"{acc} sent {rate:.1f} transfers/day vs a usual {med:.1f}/day (robust z = {z:.1f}).",
+                     claim=f"{_a(acc).capitalize()} made {rate:.1f} payments a day, far more than its usual {med:.1f} a day.",
                      weight=0.35, tx_ids=tx_out[:20], accounts=[acc], metrics={"z": round(z, 2), "median": med})
     elif len(daily) >= 3:
         ctx.book.add(kind="counter", code="CONSISTENT_WITH_BASELINE", tool="account_profile", step=ctx.step,
-                     claim=f"{acc} sent {rate:.1f} transfers/day, in line with its usual {med:.1f}/day (robust z = {z:.1f}).",
+                     claim=f"{_a(acc).capitalize()} made {rate:.1f} payments a day, which is normal for it (usually {med:.1f} a day).",
                      weight=0.3, tx_ids=tx_out[:10], accounts=[acc], metrics={"z": round(z, 2), "median": med})
 
     ratio = out_sum / in_sum if in_sum else 0.0
     if in_sum > 0 and ratio >= rules["detectors"]["passthrough_ratio"]:
         ctx.book.add(kind="support", code="PASS_THROUGH", tool="account_profile", step=ctx.step,
-                     claim=f"{acc} paid out {ratio:.0%} of the {_usd(in_sum)} it received inside the window.",
+                     claim=f"Money did not stay: {_a(acc)} paid out {ratio:.0%} of the {_usd(in_sum)} it received almost straight away.",
                      weight=0.45, tx_ids=(tx_in + tx_out)[:30], accounts=[acc], metrics={"ratio": round(ratio, 3)})
     risky = [r for r in out_rows if r["fmt"] in rules["escalators"]["high_risk_formats"]]
     if risky:
         ctx.book.add(kind="support", code="HIGH_RISK_RAIL", tool="account_profile", step=ctx.step,
-                     claim=f"{len(risky)} outgoing transfers ({_usd(sum(r['amount'] for r in risky))}) used "
+                     claim=f"{len(risky)} payments ({_usd(sum(r['amount'] for r in risky))}) were made in hard-to-trace form: "
                            f"{', '.join(sorted({r['fmt'] for r in risky}))}.",
                      weight=0.2, tx_ids=[r["tx_id"] for r in risky][:20], accounts=[acc])
     return {"entity_type": info.get("entity_type"), "out_cnt": len(out_rows), "out_cp": len({r['dst'] for r in out_rows}),
@@ -171,14 +176,14 @@ def counterparty_history(ctx: CaseContext, a: DirectionArgs) -> dict:
     tx_all = [r["tx_id"] for r in rows]
     if established and len(established) / n >= 0.5:
         ctx.book.add(kind="counter", code="ESTABLISHED_COUNTERPARTIES", tool="counterparty_history", step=ctx.step,
-                     claim=f"{len(established)} of {n} counterparties had already transacted with {acc} repeatedly before the alert.",
+                     claim=f"{len(established)} of the {n} people paid are long-standing contacts: {_a(acc)} had paid them several times before.",
                      weight=round(0.5 * len(established) / n, 2), accounts=[acc] + established[:10],
                      tx_ids=[r["tx_id"] for r in rows if r[key] in established][:30],
                      metrics={"established": len(established), "counterparties": n})
     esc = ctx.rules["escalators"]
     if new and len(new) / n >= 0.5:
         ctx.book.add(kind="support", code="NEW_COUNTERPARTIES", tool="counterparty_history", step=ctx.step,
-                     claim=f"{len(new)} of {n} counterparties had never transacted with {acc} before the alert window.",
+                     claim=f"{len(new)} of the {n} accounts involved had never dealt with {_a(acc)} before.",
                      weight=round(0.5 * len(new) / n, 2), accounts=[acc] + new[:10], escalator=len(new) / n >= esc["new_counterparty_share"] and n >= 3,
                      tx_ids=[r["tx_id"] for r in rows if r[key] in new][:30], metrics={"new": len(new), "counterparties": n})
     if n >= 3:
@@ -186,19 +191,19 @@ def counterparty_history(ctx: CaseContext, a: DirectionArgs) -> dict:
         cv = _cv(totals)
         if cv < esc["equal_split_amount_cv"]:
             ctx.book.add(kind="support", code="EQUAL_SPLITS", tool="counterparty_history", step=ctx.step,
-                         claim=f"Funds were split almost evenly across {n} counterparties (amount CV {cv:.3f}).",
+                         claim=f"The money was split into near-identical amounts across {n} accounts, a common way to avoid attention.",
                          weight=0.4, escalator=True, accounts=[acc] + cps[:10], tx_ids=tx_all[:30], metrics={"cv": round(cv, 4)})
     if d == "out":
         hubs = [cp for cp in cps if info.get(cp, {}).get("in_deg", 0) >= leg["hub_receiver_in_degree"]]
         if hubs and len(hubs) / n >= 0.5:
             ctx.book.add(kind="counter", code="PAYS_HIGH_VOLUME_RECEIVERS", tool="counterparty_history", step=ctx.step,
-                         claim=f"{len(hubs)} of {n} receivers collect from {leg['hub_receiver_in_degree']}+ accounts each "
+                         claim=f"{len(hubs)} of the {n} receivers are paid by {leg['hub_receiver_in_degree']}+ customers each "
                                f"(merchant, lender or utility-like).",
                          weight=0.3, accounts=hubs[:10], tx_ids=[r["tx_id"] for r in rows if r[key] in hubs][:20])
     if recurring:
         kinds = sorted({r["purpose"] for r in recurring})
         ctx.book.add(kind="counter", code="RECURRING_FLOWS", tool="counterparty_history", step=ctx.step,
-                     claim=f"{len(recurring)} of {n} counterparties are paid on a regular schedule ({', '.join(kinds)}).",
+                     claim=f"{len(recurring)} of the {n} payments repeat on a regular schedule, like salary, rent or bills.",
                      weight=min(0.6, 0.2 + 0.1 * len(recurring)), accounts=[r["cp"] for r in recurring][:10],
                      tx_ids=[r["tx_id"] for r in rows if r[key] in {x['cp'] for x in recurring}][:30],
                      metrics={"recurring": recurring[:10]})
@@ -228,7 +233,7 @@ def recurring_flows(ctx: CaseContext, a: AccountArgs) -> dict:
     outflow = [f for f in found if f["dir"] == "out"]
     if found:
         ctx.book.add(kind="counter", code="BEHAVIOUR_MEMORY", tool="recurring_flows", step=ctx.step, accounts=[acc],
-                     claim=f"{acc} has {len(inflow)} regular incoming and {len(outflow)} regular outgoing payment series "
+                     claim=f"{_a(acc).capitalize()} has {len(inflow)} regular incoming and {len(outflow)} regular outgoing payments "
                            f"({', '.join(sorted({f['purpose'] for f in found}))}).",
                      weight=min(0.5, 0.15 + 0.07 * len(found)), metrics={"series": found[:12]})
     payroll = [f for f in inflow if f["purpose"] in ("PAYROLL", "RECURRING_INCOME")]
@@ -274,35 +279,35 @@ def trace_funds(ctx: CaseContext, a: TraceArgs) -> dict:
         summary["forwarded_share_fast"] = round(share, 2)
         if fast and share >= esc["fast_forward_share"]:
             ctx.book.add(kind="support", code="FAST_ONWARD_TRANSFER", tool="trace_funds", step=ctx.step,
-                         claim=f"Receivers moved {share:.0%} of the funds on within {esc['fast_forward_hours']}h "
+                         claim=f"The receivers passed {share:.0%} of the money on to others within {esc['fast_forward_hours']} hours "
                                f"({len(fast)} onward transfers).",
                          weight=0.5, escalator=True, accounts=sorted({e['src'] for e in fast})[:10],
                          tx_ids=[e["tx_id"] for e in hop1[:10] + fast[:20]], metrics={"share": round(share, 3)})
         elif hop1 and share < 0.2:
             ctx.book.add(kind="counter", code="FUNDS_STOP", tool="trace_funds", step=ctx.step,
-                         claim=f"Only {share:.0%} of the money sent was moved on quickly; it largely stops with the receivers.",
+                         claim=f"The money stopped with the receivers: only {share:.0%} was passed on quickly.",
                          weight=0.3, accounts=sorted(recv)[:10], tx_ids=[e["tx_id"] for e in hop1[:20]],
                          metrics={"share": round(share, 3)})
         exits = [e for e in edges if e["hop"] >= 2 and e["fmt"] in esc["high_risk_formats"]]
         if exits:
             ctx.book.add(kind="support", code="CASH_OR_CRYPTO_EXIT", tool="trace_funds", step=ctx.step,
-                         claim=f"Downstream, {len(exits)} transfers ({_usd(sum(e['amount'] for e in exits))}) leave via "
+                         claim=f"Further down the chain, {_usd(sum(e['amount'] for e in exits))} left in {len(exits)} hard-to-trace payments: "
                                f"{', '.join(sorted({e['fmt'] for e in exits}))}.",
                          weight=0.35, tx_ids=[e["tx_id"] for e in exits[:20]], accounts=sorted({e['dst'] for e in exits})[:10])
         if a.account in {e["dst"] for e in edges}:
             back = [e for e in edges if e["dst"] == a.account]
             ctx.book.add(kind="support", code="ROUND_TRIP", tool="trace_funds", step=ctx.step,
-                         claim=f"Money sent by {a.account} came back to it within {summary['hops']} hops.",
+                         claim=f"Money sent by {_a(a.account)} came back to it after passing through other accounts.",
                          weight=0.55, escalator=True, tx_ids=[e["tx_id"] for e in back[:10]], accounts=[a.account])
     else:
         origins = {e["src"] for e in edges if e["hop"] == 1}
         if len(origins) >= ctx.rules["detectors"]["fan_in_min"]:
             ctx.book.add(kind="support", code="MANY_SOURCES", tool="trace_funds", step=ctx.step,
-                         claim=f"Funds reached {a.account} from {len(origins)} different accounts in the window.",
+                         claim=f"{_a(a.account).capitalize()} received money from {len(origins)} different accounts.",
                          weight=0.3, tx_ids=[e["tx_id"] for e in edges if e["hop"] == 1][:20], accounts=sorted(origins)[:10])
     if trace.hubs:
         ctx.book.add(kind="context", code="HUBS_REACHED", tool="trace_funds", step=ctx.step,
-                     claim=f"The trace stopped at {len(trace.hubs)} high-volume accounts (likely merchants, processors or exchanges).",
+                     claim=f"The money reached {len(trace.hubs)} very busy accounts (likely shops, payment processors or exchanges).",
                      weight=0.0, accounts=sorted(trace.hubs)[:10])
     return summary
 
@@ -334,8 +339,8 @@ def find_cycles(ctx: CaseContext, a: AccountArgs) -> dict:
         best = rows[0]
         kept = best["amounts"][-1] / best["amounts"][0] if best["amounts"][0] else 0
         ctx.book.add(kind="support", code="CYCLE", tool="find_cycles", step=ctx.step,
-                     claim=f"Found {len(rows)} loop(s) returning money to {a.account}; the first passes through "
-                           f"{len(best['accounts']) - 1} accounts and returns {kept:.0%} of the amount.",
+                     claim=f"Money went round in a loop: it left {_a(a.account)}, passed through "
+                           f"{len(best['accounts']) - 2} other accounts and {kept:.0%} of it came back.",
                      weight=0.55, escalator=True, tx_ids=list(best["tx_ids"]), accounts=list(best["accounts"]),
                      metrics={"cycles": len(rows), "amount_kept": round(kept, 3)})
     return {"cycles": len(rows)}
@@ -347,10 +352,10 @@ def owner_network(ctx: CaseContext, a: AccountArgs) -> dict:
     out_rows = [e for e in ctx.edges.values() if e["src"] == a.account and e["dst"] in sib]
     if sib:
         ctx.book.add(kind="context", code="OWNER_ACCOUNTS", tool="owner_network", step=ctx.step,
-                     claim=f"The owner of {a.account} holds {len(sib)} other account(s).", weight=0.0, accounts=sib[:10])
+                     claim=f"The owner of {_a(a.account)} holds {len(sib)} other account(s).", weight=0.0, accounts=sib[:10])
     if out_rows:
         ctx.book.add(kind="counter", code="INTERNAL_TRANSFER", tool="owner_network", step=ctx.step,
-                     claim=f"{len(out_rows)} case transfers go to accounts of the same owner (internal treasury movement).",
+                     claim=f"{len(out_rows)} payments go to other accounts of the same owner (moving money between their own accounts).",
                      weight=0.35, tx_ids=[e["tx_id"] for e in out_rows][:20], accounts=sib[:10])
     return {"sibling_accounts": len(sib), "internal_transfers": len(out_rows)}
 
@@ -361,16 +366,16 @@ def case_memory(ctx: CaseContext, a: AccountArgs) -> dict:
     near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, {"id": a.account}).rows
     if any(p["disposition"] == "ESCALATE" for p in prior):
         ctx.book.add(kind="support", code="PRIOR_ESCALATION", tool="case_memory", step=ctx.step, accounts=[a.account],
-                     claim=f"{a.account} was escalated in an earlier case.", weight=0.5, escalator=True)
+                     claim=f"{_a(a.account).capitalize()} was already escalated in an earlier case.", weight=0.5, escalator=True)
     live_close = [p for p in prior if p["disposition"] == "CLOSE" and (p.get("created_ts") or 0) > ctx.t0 - 90 * DAY_MS]
     if live_close:
         ctx.book.add(kind="counter", code="PRIOR_CLOSURE", tool="case_memory", step=ctx.step, accounts=[a.account],
-                     claim=f"An earlier alert on {a.account} was closed as explained activity ({live_close[0]['summary'] or 'no note'}).",
+                     claim=f"An earlier alert on {_a(a.account)} was checked and closed as normal ({live_close[0]['summary'] or 'no note'}).",
                      weight=0.25)
     if near and near[0]["hops"] <= 2:
         ctx.book.add(kind="support", code="NEAR_ESCALATED", tool="case_memory", step=ctx.step,
                      accounts=[a.account, near[0]["account"]], escalator=True,
-                     claim=f"{a.account} is {near[0]['hops']} hop(s) from {near[0]['account']}, escalated in case {near[0]['case_id']}.",
+                     claim=f"{_a(a.account).capitalize()} is {near[0]['hops']} step(s) away from {_a(near[0]['account'])}, which was escalated before.",
                      weight=0.45)
     return {"prior_cases": len(prior), "nearest_escalated_hops": near[0]["hops"] if near else None}
 

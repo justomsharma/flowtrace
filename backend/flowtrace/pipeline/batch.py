@@ -184,6 +184,12 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     timings["cases_ms"] = (time.perf_counter() - t) * 1000
     stage("cases", "done", cases=len(cases))
 
+    # Every payment of the batch for the 3D view: amount, model score and which case it belongs to.
+    in_case = {t: c["case_id"] for c in cases for t in c["tx_ids"]}
+    graph = [{"tx_id": t, "source": s_, "target": d_, "amount": round(a_, 2), "p": round(float(p_), 3), "case": in_case.get(t)}
+             for t, s_, d_, a_, p_ in zip(batch["tx_id"].to_list(), batch["src"].to_list(), batch["dst"].to_list(),
+                                          batch["amount_usd"].to_list(), p.tolist())]
+
     labelled = batch["is_laundering"].null_count() < batch.height
     summary = {
         "batch_id": batch_id, "filename": filename, "rows": batch.height,
@@ -197,4 +203,4 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
         "cases": [{k: c[k] for k in ("case_id", "primary", "accounts", "ml_score", "priority", "shape", "amount",
                                      "detector_hits", "ground_truth")} | {"n_tx": len(c["tx_ids"])} for c in cases],
     }
-    return {"summary": summary, "cases": {c["case_id"]: c for c in cases}}
+    return {"summary": summary, "cases": {c["case_id"]: c for c in cases}, "graph": graph}

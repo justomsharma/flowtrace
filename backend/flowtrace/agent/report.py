@@ -22,6 +22,8 @@ prose. Rules:
 - The disposition, risk score and typology are already decided; explain them, never change them.
 - Separate observed facts from inference. A suspicious pattern is not proof of a crime.
 - Weigh the legitimate explanation fairly; say what evidence is missing.
+- Write so a junior analyst or a non-specialist manager can follow it: short sentences, plain words,
+  and explain any AML term the first time you use it (e.g. "pass-through (money leaving almost as soon as it arrives)").
 - str_narrative: only when the disposition is ESCALATE, a draft STR narrative (who, what, when,
   where, why suspicious, how), otherwise an empty string."""
 

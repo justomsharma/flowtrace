@@ -91,6 +91,7 @@ Rules:
   transfers) and a laundering typology. Prefer the step that best separates them given what is known.
 - Never repeat a call with the same arguments. Only use accounts listed as known.
 - Facts come only from tool results; you do not compute amounts yourself.
+- "reason": one short plain-English sentence a junior analyst would understand. No tool names, no jargon.
 - Return JSON matching the schema. Set unused argument fields to null."""
 
 

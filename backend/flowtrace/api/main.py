@@ -116,6 +116,7 @@ async def create_batch(file: UploadFile | None = File(None), sample: str | None 
         BATCHES[s["batch_id"]] = s
         CASES.update(result["cases"])
         _persist("batches", s["batch_id"], s)
+        _persist("graphs", s["batch_id"], {"links": result["graph"]})
         for cid, c in result["cases"].items():
             _persist("cases", cid, c)
 
@@ -136,6 +137,14 @@ def get_batch(batch_id: str) -> dict:
     b = dict(BATCHES[batch_id])
     b["cases"] = [c | {"result": _result_brief(c["case_id"])} for c in b["cases"]]
     return b
+
+
+@app.get("/api/batches/{batch_id}/graph")
+def batch_graph(batch_id: str) -> dict:
+    f = RUNS / "graphs" / f"{batch_id}.json"
+    if not f.exists():
+        raise HTTPException(404, "no graph for that batch")
+    return json.loads(f.read_text())
 
 
 def _result_brief(case_id: str) -> dict | None:
