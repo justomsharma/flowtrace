@@ -29,16 +29,17 @@ WHERE k >= $min
 RETURN a.id AS account, k, total, txs[0..60] AS tx_ids
 """
 
+# Time-paired pass-through: each incoming payment is matched with outgoing ones that leave within
+# $gap in a similar amount, to someone other than the sender. Outflows must fall in the batch day.
 PASS_THROUGH = """
 MATCH (a:Account) WHERE a.id IN $ids
 MATCH (a)<-[i:TRANSFER]-(s)
-WHERE i.ts + 0 >= $t0 AND i.ts + 0 < $t1 AND s.id <> a.id
-WITH a, sum(i.amount) AS inflow, collect(i.tx_id) AS in_tx, min(i.ts) AS first_in
+WHERE i.ts + 0 >= $t0 AND i.ts + 0 < $t1 AND s.id <> a.id AND i.amount >= $min_amount
 MATCH (a)-[o:TRANSFER]->(d:Account)
-WHERE o.ts + 0 >= first_in AND o.ts + 0 < $t1 AND d.id <> a.id
-WITH a, inflow, in_tx, sum(o.amount) AS outflow, collect(o.tx_id) AS out_tx
-WHERE inflow > 0 AND outflow / inflow >= $ratio
-RETURN a.id AS account, inflow, outflow, outflow / inflow AS ratio, (in_tx + out_tx)[0..60] AS tx_ids
+WHERE o.ts + 0 >= i.ts AND o.ts + 0 <= i.ts + $gap AND o.ts + 0 >= $day0 AND o.ts + 0 < $t1
+  AND d.id <> a.id AND d.id <> s.id AND o.amount >= i.amount * $lo AND o.amount <= i.amount * $hi
+WITH a, collect(DISTINCT i.tx_id) AS in_tx, collect(DISTINCT o.tx_id) AS out_tx, count(o) AS pairs
+RETURN a.id AS account, pairs, size(in_tx) AS n_in, size(out_tx) AS n_out, (in_tx + out_tx)[0..60] AS tx_ids
 """
 
 SCATTER_GATHER = """
@@ -63,6 +64,15 @@ LIMIT 100
 """
 
 
+def passthrough_pairs(inflows: list[dict], outflows: list[dict], p: dict) -> list[tuple[dict, dict]]:
+    """Money in, then a similar amount out to someone else within max_gap_hours (FATF 2023: 'rapid or
+    immediate ... transfers ... following the receipt of a funds transfer'). Mirrors the PASS_THROUGH query."""
+    gap = p["max_gap_hours"] * HOUR_MS
+    return [(i, o) for i in inflows if i["amount"] >= p["min_amount_usd"] for o in outflows
+            if i["ts"] <= o["ts"] <= i["ts"] + gap and o["cp"] != i["cp"]
+            and p["ratio_low"] * i["amount"] <= o["amount"] <= p["ratio_high"] * i["amount"]]
+
+
 def run_detectors(accounts: list[str], t0: int, t1: int, rules: dict, cycle_accounts: list[str],
                   log: list[dict] | None = None) -> list[dict]:
     """Return hits: {detector, account, strength, detail, tx_ids}."""
@@ -83,9 +93,13 @@ def run_detectors(accounts: list[str], t0: int, t1: int, rules: dict, cycle_acco
     for r in q("FAN-IN", FAN_IN, {"ids": ids, "t0": window_t0, "t1": t1, "min": d["fan_in_min"]}):
         hits.append({"detector": "FAN-IN", "account": r["account"], "strength": min(1.0, r["k"] / (3 * d["fan_in_min"])),
                      "detail": f"received from {r['k']} distinct accounts (${r['total']:,.0f})", "tx_ids": list(r["tx_ids"])})
-    for r in q("PASS-THROUGH", PASS_THROUGH, {"ids": ids, "t0": window_t0, "t1": t1, "ratio": d["passthrough_ratio"]}):
-        hits.append({"detector": "PASS-THROUGH", "account": r["account"], "strength": min(1.0, r["ratio"]) * 0.8,
-                     "detail": f"paid out {r['ratio']:.0%} of ${r['inflow']:,.0f} received", "tx_ids": list(r["tx_ids"])})
+    pt = d["passthrough"]
+    for r in q("PASS-THROUGH", PASS_THROUGH, {"ids": ids, "t0": window_t0, "t1": t1, "day0": t0,
+                                              "gap": pt["max_gap_hours"] * HOUR_MS, "lo": pt["ratio_low"],
+                                              "hi": pt["ratio_high"], "min_amount": pt["min_amount_usd"]}):
+        hits.append({"detector": "PASS-THROUGH", "account": r["account"], "strength": 1.0,
+                     "detail": f"sent on {r['n_in']} incoming payments within {pt['max_gap_hours']}h "
+                               f"in similar amounts ({r['n_out']} outgoing)", "tx_ids": list(r["tx_ids"])})
     for r in q("SCATTER-GATHER", SCATTER_GATHER, {"ids": ids, "t0": window_t0, "t1": t1, "min": d["scatter_gather_min_mid"],
                                                   "gap": d["window_hours"] * HOUR_MS}):
         hits.append({"detector": "SCATTER-GATHER", "account": r["account"], "strength": min(1.0, r["mids"] / 6),

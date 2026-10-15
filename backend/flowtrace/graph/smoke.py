@@ -55,7 +55,8 @@ def main() -> int:
     detectors = {
         "FAN_OUT": {"ids": [acc], "t0": t0, "t1": t1, "min": 2},
         "FAN_IN": {"ids": [cp], "t0": t0, "t1": t1, "min": 1},
-        "PASS_THROUGH": {"ids": [acc, cp], "t0": t0, "t1": t1, "ratio": 0.1},
+        "PASS_THROUGH": {"ids": [acc, cp], "t0": t0, "t1": t1, "day0": t0, "gap": DAY, "lo": 0.0, "hi": 10.0,
+                         "min_amount": 0},
         "SCATTER_GATHER": {"ids": [acc], "t0": t0, "t1": t1, "min": 1, "gap": DAY},
         "CYCLE": {"ids": [acc], "t0": t0, "t1": t1},
     }

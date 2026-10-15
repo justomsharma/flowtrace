@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from flowtrace.agent.context import DAY_MS, HOUR_MS, CaseContext
 from flowtrace.behaviour.recurring import detect_recurrence, infer_purpose
+from flowtrace.detectors.alerts import passthrough_pairs
 from flowtrace.graph import queries as Q
 from flowtrace.graph.trace import Trace, expand
 
@@ -124,11 +125,16 @@ def account_profile(ctx: CaseContext, a: AccountArgs) -> dict:
                      claim=f"{_a(acc).capitalize()} made {rate:.1f} payments a day, which is normal for it (usually {med:.1f} a day).",
                      weight=0.3, tx_ids=tx_out[:10], accounts=[acc], metrics={"z": round(z, 2), "median": med})
 
+    pt = rules["detectors"]["passthrough"]
+    pairs = passthrough_pairs([{**r, "cp": r["src"]} for r in in_rows], [{**r, "cp": r["dst"]} for r in out_rows], pt)
     ratio = out_sum / in_sum if in_sum else 0.0
-    if in_sum > 0 and ratio >= rules["detectors"]["passthrough_ratio"]:
+    if pairs:
+        fwd = {o["tx_id"]: o for _, o in pairs}
         ctx.book.add(kind="support", code="PASS_THROUGH", tool="account_profile", step=ctx.step,
-                     claim=f"Money did not stay: {_a(acc)} paid out {ratio:.0%} of the {_usd(in_sum)} it received almost straight away.",
-                     weight=0.45, tx_ids=(tx_in + tx_out)[:30], accounts=[acc], metrics={"ratio": round(ratio, 3)})
+                     claim=(f"Money did not stay: {_a(acc)} sent on {_usd(sum(o['amount'] for o in fwd.values()))} "
+                            f"within {pt['max_gap_hours']} hours of receiving it, in similar amounts."),
+                     weight=0.45, tx_ids=list(dict.fromkeys(t["tx_id"] for pr in pairs for t in pr))[:30],
+                     accounts=[acc], metrics={"pairs": len(pairs), "ratio": round(ratio, 3)})
     risky = [r for r in out_rows if r["fmt"] in rules["escalators"]["high_risk_formats"]]
     if risky:
         ctx.book.add(kind="support", code="HIGH_RISK_RAIL", tool="account_profile", step=ctx.step,

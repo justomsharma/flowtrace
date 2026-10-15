@@ -23,7 +23,11 @@ detectors:
   window_hours: 24
   fan_out_min: 5             # distinct receivers in window
   fan_in_min: 5              # distinct senders in window
-  passthrough_ratio: 0.8     # share of inflow that leaves again within window
+  passthrough:               # money in, similar amount out within the gap (FATF 2023, FinCEN FIN-2014-A005)
+    max_gap_hours: 24
+    ratio_low: 0.80          # outgoing amount / incoming amount
+    ratio_high: 1.05
+    min_amount_usd: 1000
   scatter_gather_min_mid: 3  # intermediaries between one source and one sink
   cycle_max_hops: 4
   structuring:
