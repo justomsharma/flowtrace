@@ -62,6 +62,9 @@ class World:
                     rows.append({"cp": cp, "prior_cnt": len(es), "first_ts": min(e["ts"] for e in es),
                                  "ts_list": [e["ts"] for e in es], "amounts": [e["amount"] for e in es]})
             return rows
+        if c == Q.HUB_DEGREES:
+            return [{"id": i, "out_deg": len(self.out(i, p["h0"], p["t0"])), "in_deg": len(self.inc(i, p["h0"], p["t0"]))}
+                    for i in p["ids"]]
         if c in (Q.CP_INFO, Q.DEGREES):
             rows = []
             for i in p["ids"]:

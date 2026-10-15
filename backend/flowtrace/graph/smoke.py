@@ -43,6 +43,7 @@ def main() -> int:
         "TRACE_BACKWARD_HOP": {"ids": [acc], "frontier": [{"id": acc, "ts": t1}], "max_gap_ms": 72 * 3_600_000,
                                "visited": [acc]},
         "DEGREES": {"ids": [acc, cp]},
+        "HUB_DEGREES": {"ids": [acc, cp], "h0": t0, "t0": t1},
         "PAIR_HISTORY_OUT": {"id": acc, "cps": [cp], "before": t1},
         "PAIR_HISTORY_IN": {"id": cp, "cps": [acc], "before": t1},
         "FLOW_SERIES": {"id": acc, "before": t1},

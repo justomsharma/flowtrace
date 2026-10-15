@@ -27,3 +27,21 @@ def test_summary_has_ranked_tiered_cases(monkeypatch):
     c = s["cases"][0]
     assert c["tier"] == "today" and c["case_score"] >= 0.98 and c["signals"][0]["signal"] == "model"
     assert "priority" not in c
+
+
+def test_hub_degree_counts_only_the_history_window_before_the_batch(monkeypatch):
+    seen = []
+
+    def ro(c, p, **k):
+        seen.append((c, p))
+        return QueryResult(rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p["ids"]], cypher=c, params=p, ms=0.1)
+
+    monkeypatch.setattr(B, "score", lambda batch: np.array([0.99, 0.98, 0.0]))
+    monkeypatch.setattr(B, "rw", lambda *a, **k: None)
+    monkeypatch.setattr(B, "run_detectors", lambda *a, **k: [])
+    monkeypatch.setattr(B, "ro", ro)
+    B.process_batch(CSV, "t.csv", lambda e: None)
+    (c, p), = [(c, p) for c, p in seen if c == B.Q.HUB_DEGREES]
+    first = 1662717600000  # 2022/09/09 10:00 UTC, the batch's first payment
+    assert p["t0"] == first
+    assert p["h0"] == first - B.cfg()["cases"]["hub_lookback_days"] * 86_400_000

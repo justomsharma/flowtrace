@@ -162,8 +162,11 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
 
     t = time.perf_counter()
     tx = batch.with_columns(pl.Series("p", p), pl.Series("p_cal", p_cal)).to_dicts()
-    # Total degree in the graph (history + this batch): accounts at or above cases.hub_degree are hubs.
-    degrees = {r["id"]: r["out_deg"] + r["in_deg"] for r in ro(Q.DEGREES, {"ids": accounts}, timeout=60_000).rows}
+    # Degree over the history window before the batch: accounts at or above cases.hub_degree are hubs.
+    first = int(batch["ts"].min())
+    h0 = first - rules["cases"]["hub_lookback_days"] * 86_400_000
+    degrees = {r["id"]: r["out_deg"] + r["in_deg"]
+               for r in ro(Q.HUB_DEGREES, {"ids": accounts, "h0": h0, "t0": first}, timeout=60_000).rows}
     cases = build_cases(tx, hits, batch_id, rules, degrees)
     timings["cases_ms"] = (time.perf_counter() - t) * 1000
     stage("cases", "done", cases=len(cases))

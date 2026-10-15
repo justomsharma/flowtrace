@@ -42,7 +42,8 @@ detectors:
 # at least one of their signals is right, and the top daily_capacity become "Today's work".
 cases:
   flag_probability: 0.50    # tuned on Sep 7-8: 10-20 cases a day, most attempts in the top 15 (data/runs/tune.json)
-  hub_degree: 70            # history degree at which an account is a hub (p99 of train days, eval.tune)
+  hub_degree: 70            # degree over the lookback window at which an account is a hub (p99, eval.tune)
+  hub_lookback_days: 6      # history window for that degree; eval.tune fits hub_degree on a window of this length
   max_accounts: 30          # largest case one analyst reviews; bigger groups split around their riskiest accounts
   daily_capacity: 15        # cases the team works per day -> "Today's work"
 

@@ -115,6 +115,16 @@ OPTIONAL MATCH (a)<-[i:TRANSFER]-()
 RETURN a.id AS id, out_deg, count(i) AS in_deg
 """
 
+# Hub check for case grouping: degree over a fixed history window before the batch, so the
+# threshold (cases.hub_degree, fitted on a window of the same length) means the same thing every day.
+HUB_DEGREES = """
+MATCH (a:Account) WHERE a.id IN $ids
+OPTIONAL MATCH (a)-[o:TRANSFER]->() WHERE o.ts + 0 >= $h0 AND o.ts + 0 < $t0
+WITH a, count(o) AS out_deg
+OPTIONAL MATCH (a)<-[i:TRANSFER]-() WHERE i.ts + 0 >= $h0 AND i.ts + 0 < $t0
+RETURN a.id AS id, out_deg, count(i) AS in_deg
+"""
+
 # --- Relationship history (legitimacy evidence) -------------------------------------------
 
 # For each counterparty: how long and how often these two accounts have transacted before.

@@ -5,7 +5,7 @@
                        (add-one smoothed),
                        running the production Cypher detectors over a random sample of each day's
                        active accounts (a ratio, so a uniform sample estimates it without bias)
-  cases.hub_degree     99th percentile of account degree on the training days
+  cases.hub_degree     99th percentile of account degree over the last hub_lookback_days training days
 
 Detectors only read transfers with ts < end of day, so the graph loaded up to Sep 9 is valid here.
 Prints a block to paste into config.yaml and writes the counts behind it to data/runs/tune.json.
@@ -52,12 +52,15 @@ def calibration() -> tuple[dict, dict]:
 
 
 def hub_degree() -> tuple[int, dict]:
-    a, b = SPLITS["train"]
+    """p99 of account degree over the last hub_lookback_days training days: the same window length the
+    pipeline's HUB_DEGREES query counts before each batch, so the threshold means the same at runtime."""
+    _, b = SPLITS["train"]
+    a = b - cfg()["cases"]["hub_lookback_days"] + 1
     tx = (pl.scan_parquet(settings().processed_dir / "transactions.parquet")
           .filter((pl.col("ts") >= a * DAY_MS) & (pl.col("ts") < (b + 1) * DAY_MS) & (pl.col("src") != pl.col("dst"))))
     deg = pl.concat([tx.select(pl.col("src").alias("a")), tx.select(pl.col("dst").alias("a"))]).group_by("a").len().collect()
     q = int(deg["len"].quantile(0.99))
-    return q, {"accounts": deg.height, "p99": q, "max": int(deg["len"].max())}
+    return q, {"accounts": deg.height, "p99": q, "max": int(deg["len"].max()), "days": [a, b]}
 
 
 def detector_precision(n_accounts: int, chunk: int = 2000) -> tuple[dict, dict]:
