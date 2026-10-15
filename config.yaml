@@ -28,12 +28,26 @@ detectors:
     ratio_low: 0.80          # outgoing amount / incoming amount
     ratio_high: 1.05
     min_amount_usd: 1000
+  # Share of each detector's hits that were real laundering on the validation days (eval.tune).
+  precision: {FAN-OUT: 0.0, FAN-IN: 0.0, GATHER-SCATTER: 0.0, PASS-THROUGH: 0.0, SCATTER-GATHER: 0.0, CYCLE: 0.0}
   scatter_gather_min_mid: 3  # intermediaries between one source and one sink
   cycle_max_hops: 4
   structuring:
     threshold_inr: 1000000   # PMLA cash reporting threshold (Rs 10 lakh)
     band_low: 0.80           # amounts between 80% and 100% of the threshold
     min_count: 3
+
+# --- Cases (Stage B) -------------------------------------------------------------------------
+# A signal opens a case when its probability reaches flag_probability; cases are ranked by the chance
+# at least one of their signals is right, and the top daily_capacity become "Today's work".
+cases:
+  flag_probability: 0.30    # tuned on Sep 7-8
+  hub_degree: 500           # history degree at which an account is a hub (p99 of train days, eval.tune)
+  max_accounts: 30          # largest case one analyst reviews; bigger groups split around their riskiest accounts
+  daily_capacity: 15        # cases the team works per day -> "Today's work"
+
+# Raw model score -> probability of laundering (isotonic on Sep 7-8, written by eval.tune).
+calibration: {x: [0.0, 1.0], y: [0.0, 1.0]}
 
 # --- Legitimacy checks (counter-evidence) --------------------------------------------------
 legitimacy:
@@ -70,7 +84,6 @@ disposition:
   close_below: 0.25         # risk below, with legitimacy >= close_min_legit and no escalator -> CLOSE
   close_min_legit: 0.5
   close_expiry_days: 90
-  candidate_score: 0.30     # model score that makes a transfer an alert candidate
 
 # --- Crime hypotheses (interpretation, not a measured label) --------------------------------
 # The dataset labels laundering yes/no only. These map observed shapes to the predicate crimes

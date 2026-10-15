@@ -4,7 +4,7 @@
   2 score                   triage model with features computed from history + batch (point-in-time)
   3 load into FalkorDB      batch transfers join the history graph, tagged with the batch id
   4 detect                  Cypher typology detectors over the batch window
-  5 build cases             alerted transfers grouped into connected subgraphs, shape-classified
+  5 build cases             suspect-centred, hub-aware, capped, ranked for the team's daily capacity
 """
 from __future__ import annotations
 
@@ -14,18 +14,18 @@ import json
 import time
 from typing import Callable
 
-import networkx as nx
 import redis
 import numpy as np
 import polars as pl
 
 from flowtrace.data.prepare import TRANS_COLS, build_transactions
 from flowtrace.detectors.alerts import run_detectors
-from flowtrace.detectors.typology import classify
 from flowtrace.graph import queries as Q
-from flowtrace.graph.client import rw
+from flowtrace.graph.client import ro, rw
+from flowtrace.ml.calibration import calibrate
 from flowtrace.ml.features import CATEGORICAL, build_features
 from flowtrace.ml.model_io import load_model
+from flowtrace.pipeline.cases import build_cases
 from flowtrace.settings import cfg, settings
 
 Emit = Callable[[dict], None]
@@ -104,56 +104,6 @@ def load_into_graph(batch: pl.DataFrame, batch_id: str, emit: Emit) -> float:
     return (time.perf_counter() - t0) * 1000
 
 
-def build_cases(batch: pl.DataFrame, p: np.ndarray, hits: list[dict], batch_id: str, rules: dict) -> list[dict]:
-    cand_score = rules["disposition"]["candidate_score"]
-    tx = batch.with_columns(pl.Series("p", p)).to_dicts()
-    by_id = {t["tx_id"]: t for t in tx}
-    hit_tx = {tid for h in hits for tid in h["tx_ids"] if tid in by_id}
-    flagged = [t for t in tx if t["p"] >= cand_score or t["tx_id"] in hit_tx]
-
-    g = nx.Graph()
-    for t in flagged:
-        g.add_edge(t["src"], t["dst"])
-    hits_by_acc: dict[str, list[dict]] = {}
-    for h in hits:
-        hits_by_acc.setdefault(h["account"], []).append(h)
-
-    cases = []
-    for comp in nx.connected_components(g):
-        ctx_tx = [t for t in flagged if t["src"] in comp]
-        if not ctx_tx:
-            continue
-        weight: dict[str, float] = {}
-        for t in ctx_tx:
-            for a in (t["src"], t["dst"]):
-                weight[a] = weight.get(a, 0) + t["p"] + 0.2
-        for a in comp:
-            for h in hits_by_acc.get(a, []):
-                weight[a] = weight.get(a, 0) + h["strength"]
-        primary = max(weight, key=weight.get)
-        edges = [{"tx_id": t["tx_id"], "src": t["src"], "dst": t["dst"], "ts": t["ts"], "amount": t["amount_usd"],
-                  "fmt": t["payment_format"], "p": round(float(t["p"]), 4)} for t in ctx_tx]
-        shape = classify(edges)
-        dhits = [{k: h[k] for k in ("detector", "account", "strength", "detail")} for a in comp for h in hits_by_acc.get(a, [])]
-        ml = max(t["p"] for t in ctx_tx)
-        priority = 0.6 * ml + 0.4 * max([h["strength"] for h in dhits], default=0.0)
-        labels = [t["is_laundering"] for t in ctx_tx if t["is_laundering"] is not None]
-        cases.append({
-            "case_id": "", "batch_id": batch_id, "primary": primary, "accounts": sorted(comp, key=lambda a: -weight.get(a, 0)),
-            "tx_ids": [t["tx_id"] for t in ctx_tx], "edges": edges,
-            "t0": min(t["ts"] for t in ctx_tx), "t1": max(t["ts"] for t in ctx_tx) + 1,
-            "ml_score": round(float(ml), 4), "detector_hits": dhits, "priority": round(priority, 4),
-            "shape": {"typology": shape.typology, "confidence": shape.confidence, "why": shape.why, "stats": shape.stats},
-            "amount": round(sum(t["amount_usd"] for t in ctx_tx), 2),
-            # Ground truth is kept for evaluation only and never passed to the agent.
-            "ground_truth": (int(max(labels)) if labels else None),
-        })
-    cases.sort(key=lambda c: -c["priority"])
-    for i, c in enumerate(cases, 1):
-        c["case_id"] = f"{batch_id}-C{i:03d}"
-    return cases
-
-
 def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     rules = cfg()
     s = settings()
@@ -181,11 +131,13 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     t = time.perf_counter()
     stage("score", "running")
     p = score(batch)
+    p_cal = calibrate(p, rules)
+    bar = rules["cases"]["flag_probability"]
     timings["score_ms"] = (time.perf_counter() - t) * 1000
-    stage("score", "done", ms=round(timings["score_ms"]), above_candidate=int((p >= rules["disposition"]["candidate_score"]).sum()),
-          histogram=np.histogram(p, bins=10, range=(0, 1))[0].tolist())
-    emit({"type": "scores", "unusual": [{"tx_id": t, "p": round(float(v), 3)} for t, v in zip(batch["tx_id"].to_list(), p.tolist())
-                                         if v >= rules["disposition"]["candidate_score"]]})
+    stage("score", "done", ms=round(timings["score_ms"]), above_bar=int((p_cal >= bar).sum()),
+          histogram=np.histogram(p_cal, bins=10, range=(0, 1))[0].tolist())
+    emit({"type": "scores", "unusual": [{"tx_id": t, "p": round(float(v), 3)} for t, v in zip(batch["tx_id"].to_list(), p_cal.tolist())
+                                         if v >= bar]})
 
     stage("graph", "running", done=0, total=batch.height)
     try:
@@ -209,7 +161,10 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     emit({"type": "hits", "hits": [{"detector": h["detector"], "account": h["account"], "tx_ids": h["tx_ids"]} for h in hits]})
 
     t = time.perf_counter()
-    cases = build_cases(batch, p, hits, batch_id, rules)
+    tx = batch.with_columns(pl.Series("p", p), pl.Series("p_cal", p_cal)).to_dicts()
+    # Total degree in the graph (history + this batch): accounts at or above cases.hub_degree are hubs.
+    degrees = {r["id"]: r["out_deg"] + r["in_deg"] for r in ro(Q.DEGREES, {"ids": accounts}, timeout=60_000).rows}
+    cases = build_cases(tx, hits, batch_id, rules, degrees)
     timings["cases_ms"] = (time.perf_counter() - t) * 1000
     stage("cases", "done", cases=len(cases))
 
@@ -225,11 +180,14 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
         "accounts": len(accounts), "window": [int(batch["ts"].min()), int(batch["ts"].max())],
         "volume_usd": round(float(batch["amount_usd"].sum()), 2),
         "score_histogram": np.histogram(p, bins=20, range=(0, 1))[0].tolist(),
-        "flagged_tx": int(sum(len(c["tx_ids"]) for c in cases)),
+        "flagged_tx": len({t for c in cases for t in c["tx_ids"]}),
+        "capacity": rules["cases"]["daily_capacity"],
         "detector_hits": len(hits), "timings_ms": {k: round(v) for k, v in timings.items()},
         "has_labels": bool(labelled),
         "labelled_laundering": int(batch["is_laundering"].fill_null(0).sum()) if labelled else None,
-        "cases": [{k: c[k] for k in ("case_id", "primary", "accounts", "ml_score", "priority", "shape", "amount",
-                                     "detector_hits", "ground_truth")} | {"n_tx": len(c["tx_ids"])} for c in cases],
+        "cases": [{k: c[k] for k in ("case_id", "primary", "accounts", "ml_score", "case_score", "tier", "signals", "shape",
+                                     "amount", "detector_hits", "ground_truth")} | {"n_tx": len(c["tx_ids"])} for c in cases],
     }
-    return {"summary": summary, "cases": {c["case_id"]: c for c in cases}, "graph": graph}
+    # internals: what eval.funnel needs to re-run case building at other bars; the API does not store it.
+    return {"summary": summary, "cases": {c["case_id"]: c for c in cases}, "graph": graph,
+            "internals": {"tx": tx, "hits": hits, "degrees": degrees}}

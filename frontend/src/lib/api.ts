@@ -98,7 +98,11 @@ export interface CaseBrief {
   primary: string
   accounts: string[]
   ml_score: number
-  priority: number
+  /** Chance at least one of the case's signals is right (calibrated model + detector precision). */
+  case_score: number
+  /** "today" = within the team's daily capacity; "lower" = listed below, never hidden. */
+  tier: 'today' | 'lower'
+  signals: { signal: string; p: number }[]
   shape: ShapeInfo
   amount: number
   detector_hits: DetectorHit[]
@@ -116,6 +120,7 @@ export interface BatchSummary {
   volume_usd: number
   score_histogram: number[]
   flagged_tx: number
+  capacity: number
   detector_hits: number
   timings_ms: Record<string, number>
   has_labels: boolean
