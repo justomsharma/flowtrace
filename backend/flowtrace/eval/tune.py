@@ -1,8 +1,8 @@
 """Fit the numbers case building depends on, from the validation days only (Sep 7-8).
 
   calibration          isotonic map raw model score -> probability, on every validation payment
-  detectors.precision  share of each detector's hits whose transfers include labelled laundering
-                       (add-one smoothed),
+  detectors.precision  share of each detector's hits whose transfers include labelled laundering,
+                       shrunk toward the pooled rate of all detectors (detectors.precision_prior_hits),
                        running the production Cypher detectors over a random sample of each day's
                        active accounts (a ratio, so a uniform sample estimates it without bias)
   cases.hub_degree     99th percentile of account degree over the last hub_lookback_days training days
@@ -63,6 +63,12 @@ def hub_degree() -> tuple[int, dict]:
     return q, {"accounts": deg.height, "p99": q, "max": int(deg["len"].max()), "days": [a, b]}
 
 
+def shrunk_precision(true: int, hits: int, pooled: float, prior_hits: float) -> float:
+    """Empirical-Bayes estimate: a detector with few hits is pulled toward the pooled precision of all
+    detectors (worth prior_hits hits), so 2 lucky hits cannot make a detector open cases on its own."""
+    return (true + prior_hits * pooled) / (hits + prior_hits)
+
+
 def detector_precision(n_accounts: int, chunk: int = 2000) -> tuple[dict, dict]:
     s, rules = settings(), cfg()
     tx = pl.scan_parquet(s.processed_dir / "transactions.parquet")
@@ -88,9 +94,11 @@ def detector_precision(n_accounts: int, chunk: int = 2000) -> tuple[dict, dict]:
                 hits_n[h["detector"]] = hits_n.get(h["detector"], 0) + 1
                 true_n[h["detector"]] = true_n.get(h["detector"], 0) + int(any(x in bad for x in h["tx_ids"]))
         print(f"  {d}: {len(ids):,} of {len(active):,} active accounts in {time.perf_counter() - t:.0f}s")
-    # Laplace (add-one) estimate: rare detectors with few hits are pulled toward 1/2 by little, never to 0 or 1.
-    prec = {k: round((true_n[k] + 1) / (hits_n[k] + 2), 4) for k in hits_n}
-    return prec, {"hits": hits_n, "true": true_n, "errors": errors, "estimate": "(true + 1) / (hits + 2)"}
+    pooled = sum(true_n.values()) / max(sum(hits_n.values()), 1)
+    m = rules["detectors"]["precision_prior_hits"]
+    prec = {k: round(shrunk_precision(true_n[k], hits_n[k], pooled, m), 4) for k in hits_n}
+    return prec, {"hits": hits_n, "true": true_n, "errors": errors, "pooled": round(pooled, 4),
+                  "estimate": f"(true + {m} * pooled) / (hits + {m})"}
 
 
 def main() -> None:

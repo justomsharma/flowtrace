@@ -28,8 +28,10 @@ detectors:
     ratio_low: 0.80          # outgoing amount / incoming amount
     ratio_high: 1.05
     min_amount_usd: 1000
-  # Share of each detector's hits that were real laundering on the validation days (eval.tune).
-  precision: {FAN-OUT: 0.0109, FAN-IN: 0.0547, GATHER-SCATTER: 0.0333, PASS-THROUGH: 0.0113, SCATTER-GATHER: 0.75, CYCLE: 0.3048}
+  # Share of each detector's hits that were real laundering on the validation days (eval.tune),
+  # shrunk toward the pooled rate of all detectors as if it had precision_prior_hits more hits.
+  precision_prior_hits: 20
+  precision: {FAN-OUT: 0.0108, FAN-IN: 0.054, GATHER-SCATTER: 0.0087, PASS-THROUGH: 0.0112, SCATTER-GATHER: 0.1098, CYCLE: 0.2959}
   scatter_gather_min_mid: 3  # intermediaries between one source and one sink
   cycle_max_hops: 4
   structuring:
