@@ -17,6 +17,7 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 15
 | Triage model, F1 (laundering class) | **0.515** (P 0.65, R 0.43, PR-AUC 0.51) | Same held-out days. Accuracy is 99.91%, but flagging nothing already scores 99.89%, so accuracy is not used to judge the model |
 | Laundering-shape recognition | **96.5%** on 282 schemes with 3+ accounts; 80.8% on all 370 | Against IBM's ground-truth pattern file. Schemes with 1–2 transfers are inherently ambiguous |
 | Strongest legitimacy signal | First-time account pairs launder at **1.69%**; pairs with >10 prior transfers at **0.018%** (92× lower) | Whole HI-Small dataset |
+| Daily case funnel (test day, sample of 2,271 payments) | **40 flagged → 19 cases**, largest 6 accounts; 14 of the top 15 cases are laundering; 18 of 26 schemes in the top 15 | `python -m flowtrace.eval.funnel ../data/samples/demo_mixed_2022-09-09.csv`. Thresholds tuned on Sep 7–8 only (`python -m flowtrace.eval.tune`) |
 | Adaptive agent vs fixed workflow | `python -m flowtrace.eval.compare` writes `data/models/agent_eval.json` | Same alerts, same query budget; see *Evaluation* |
 
 For comparison, published results on HI-Small are 62.9 F1 for GFP+LightGBM and 68.2 for Multi-PNA, on a different split that includes the Sep 11–18 tail. We exclude that tail (see *Data*).
@@ -53,7 +54,7 @@ CSV batch ─► parse ─► triage model (LightGBM) ─► load into FalkorDB 
 - `ts` is stored as an integer in epoch milliseconds, with a range index on it. `amount` is in USD, converted at fixed rates derived from the data.
 - Indexes: `Account.id`, `Entity.id`, and `TRANSFER(ts, tx_id)`.
 - Labels (`Is Laundering`) are **never written to the graph**, so nothing the agent reads can leak ground truth.
-- The graph holds history before the test days. Uploaded batches are inserted as new `TRANSFER` edges tagged with a batch id.
+- The graph holds history before the test days. Uploaded batches are merged in as `TRANSFER` edges tagged with a batch id. Payment ids are a hash of the payment's own fields and the batch id is a hash of the file, so uploading the same (or an overlapping) file again adds nothing.
 
 ## Cypher and graph algorithms the product depends on
 
@@ -81,8 +82,14 @@ FalkorDB specifics we rely on:
 ## How flagging works
 
 1. **Triage model.** LightGBM on 37 point-in-time features: amount, format, relationship history, same-day fan-in/out and pass-through, 2-hop scatter-gather, reciprocal flows, entity type. Features only use data up to the end of the transfer's day, which matches end-of-day batch monitoring.
-2. **Cypher detectors** fire on typology shapes in the batch window.
-3. **Cases.** Transfers scoring ≥ `candidate_score`, or caught by a detector, are grouped into connected subgraphs. Each case's shape is classified (FAN-OUT, FAN-IN, SCATTER-GATHER, GATHER-SCATTER, CYCLE, BIPARTITE, STACK, RANDOM).
+   The raw score is **calibrated** to a probability of laundering (isotonic regression on the validation days, stored in `config.yaml` as `calibration`).
+2. **Cypher detectors** fire on typology shapes in the batch window. **PASS-THROUGH** is time-paired: money comes in and a similar amount (0.8–1.05×) leaves to someone else within 24 hours, for incoming payments of at least $1,000 (FATF 2023 cyber-fraud indicators; FinCEN FIN-2014-A005 funnel accounts). Each detector carries its **measured precision** on the validation days (`detectors.precision`). On full days these are low (FAN-OUT 1%, FAN-IN 5%, PASS-THROUGH 1%, CYCLE 30%), so detectors mainly explain cases rather than create them.
+3. **Cases** ([`cases.py`](backend/flowtrace/pipeline/cases.py)):
+   - **One bar for every signal.** A payment opens a case when its calibrated probability, or the precision of a detector that fired on it, reaches `cases.flag_probability` (0.5). Weaker detector hits are attached to open cases as evidence.
+   - **Suspect-centred grouping.** Cases grow outward from the riskiest accounts over flagged payments. **Hubs** (history degree ≥ `cases.hub_degree`, the 99th percentile = 70) never join two cases; their payments stay in the case of the other account. A case stops growing at `cases.max_accounts` (30).
+   - **Score.** `case_score = 1 − (1 − model probability) · Π(1 − detector precision)` over the distinct detectors in the case: the chance that at least one signal is right (assumes independence). No hand-picked weights.
+   - **Capacity.** Cases are ranked by `case_score`. The top `cases.daily_capacity` (15) are *Today's work*; the rest are listed as *Lower priority*. Nothing is hidden. This is recall at fixed investigator capacity, the way Google Cloud AML AI backtests.
+   - Each case's shape is classified (FAN-OUT, FAN-IN, SCATTER-GATHER, GATHER-SCATTER, CYCLE, BIPARTITE, STACK, RANDOM).
 4. **Investigation.** The agent gathers two kinds of evidence:
    - **Red flags:** new counterparties, equal splits, fast onward transfer, cash/crypto exit, round trips, activity spike, a dormant account becoming active, nearness to escalated cases.
    - **Legitimate explanations:** established counterparties, recurring flows with an inferred purpose (payroll, fixed obligation/EMI, bill, standing order), payments to high-volume receivers, activity consistent with the account's baseline, internal transfers between the same owner's accounts, money that stops moving.
@@ -133,7 +140,8 @@ python -m flowtrace.data.prepare             # raw CSV -> parquet, FX rates, pat
 python -m flowtrace.ml.train                 # trains + saves data/models/triage_lgbm.pkl (+ .txt, features.json)
 python -m flowtrace.ml.evaluate              # test-day curves for the dashboard
 python -m flowtrace.detectors.evaluate_typology
-python -m flowtrace.data.samples             # demo upload files in data/samples/
+python -m flowtrace.data.samples             # demo upload files in data/samples/ (one day, Sep 9)
+python -m flowtrace.data.samples --day 2022-09-08 --out ../data/samples/val   # validation-day samples
 python -m pytest -q tests
 
 # 3. Graph
@@ -142,6 +150,7 @@ docker compose up -d                         # FalkorDB on :6379, Browser on htt
 cd backend
 python -m flowtrace.graph.load --replace     # loads history (before Sep 9) with the bulk loader
 python -m flowtrace.graph.smoke              # runs every Cypher query and checks counts against the source
+python -m flowtrace.eval.tune                # calibration, detector precision, hub degree from Sep 7-8 (paste into config.yaml)
 
 # 4. Agent evaluation (optional, uses Claude)
 python -m flowtrace.eval.compare --cases 25
@@ -173,7 +182,7 @@ It reports:
 
 ## Tests
 
-`backend/tests` holds unit tests for recurring-payment detection and for the agent loop. The agent tests use a small in-memory stand-in for FalkorDB, so the tool, policy and disposition logic can be tested without a database. The real Cypher is checked against FalkorDB by `flowtrace.graph.smoke`.
+`backend/tests` holds unit tests for recurring-payment detection, the agent loop, pass-through pairing, case building (hubs, size cap, score, tiers), calibration, idempotent uploads, sample date range and the loader's index wait. The agent tests use a small in-memory stand-in for FalkorDB, so the tool, policy and disposition logic can be tested without a database. The real Cypher is checked against FalkorDB by `flowtrace.graph.smoke`.
 
 ## AI assistance
 
