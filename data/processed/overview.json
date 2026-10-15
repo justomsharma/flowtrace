@@ -1,0 +1,240 @@
+{
+  "totals": {
+    "transactions": 5078345,
+    "laundering": 5177,
+    "accounts": 515088,
+    "volume_usd": 1782213491053.51,
+    "pattern_attempts": 370,
+    "pattern_transactions": 3209
+  },
+  "daily": [
+    {
+      "date": "2022-09-01",
+      "transactions": 1114921,
+      "laundering": 322
+    },
+    {
+      "date": "2022-09-02",
+      "transactions": 754449,
+      "laundering": 408
+    },
+    {
+      "date": "2022-09-03",
+      "transactions": 207382,
+      "laundering": 391
+    },
+    {
+      "date": "2022-09-04",
+      "transactions": 207430,
+      "laundering": 407
+    },
+    {
+      "date": "2022-09-05",
+      "transactions": 482650,
+      "laundering": 471
+    },
+    {
+      "date": "2022-09-06",
+      "transactions": 482089,
+      "laundering": 531
+    },
+    {
+      "date": "2022-09-07",
+      "transactions": 482751,
+      "laundering": 497
+    },
+    {
+      "date": "2022-09-08",
+      "transactions": 482773,
+      "laundering": 539
+    },
+    {
+      "date": "2022-09-09",
+      "transactions": 654467,
+      "laundering": 514
+    },
+    {
+      "date": "2022-09-10",
+      "transactions": 208325,
+      "laundering": 442
+    },
+    {
+      "date": "2022-09-11",
+      "transactions": 396,
+      "laundering": 232
+    },
+    {
+      "date": "2022-09-12",
+      "transactions": 281,
+      "laundering": 170
+    },
+    {
+      "date": "2022-09-13",
+      "transactions": 184,
+      "laundering": 106
+    },
+    {
+      "date": "2022-09-14",
+      "transactions": 121,
+      "laundering": 70
+    },
+    {
+      "date": "2022-09-15",
+      "transactions": 46,
+      "laundering": 28
+    },
+    {
+      "date": "2022-09-16",
+      "transactions": 46,
+      "laundering": 26
+    },
+    {
+      "date": "2022-09-17",
+      "transactions": 23,
+      "laundering": 15
+    },
+    {
+      "date": "2022-09-18",
+      "transactions": 11,
+      "laundering": 8
+    }
+  ],
+  "by_format": [
+    {
+      "payment_format": "Cheque",
+      "transactions": 1864331,
+      "laundering": 324,
+      "rate_pct": 0.017378888190991836
+    },
+    {
+      "payment_format": "Credit Card",
+      "transactions": 1323324,
+      "laundering": 206,
+      "rate_pct": 0.015566860421181812
+    },
+    {
+      "payment_format": "ACH",
+      "transactions": 600797,
+      "laundering": 4483,
+      "rate_pct": 0.7461754968816422
+    },
+    {
+      "payment_format": "Cash",
+      "transactions": 490891,
+      "laundering": 108,
+      "rate_pct": 0.02200081077061914
+    },
+    {
+      "payment_format": "Reinvestment",
+      "transactions": 481056,
+      "laundering": 0,
+      "rate_pct": 0.0
+    },
+    {
+      "payment_format": "Wire",
+      "transactions": 171855,
+      "laundering": 0,
+      "rate_pct": 0.0
+    },
+    {
+      "payment_format": "Bitcoin",
+      "transactions": 146091,
+      "laundering": 56,
+      "rate_pct": 0.03833227235079505
+    }
+  ],
+  "typologies": [
+    {
+      "typology": "GATHER-SCATTER",
+      "attempts": 51,
+      "transactions": 716
+    },
+    {
+      "typology": "SCATTER-GATHER",
+      "attempts": 44,
+      "transactions": 626
+    },
+    {
+      "typology": "STACK",
+      "attempts": 43,
+      "transactions": 466
+    },
+    {
+      "typology": "FAN-OUT",
+      "attempts": 48,
+      "transactions": 342
+    },
+    {
+      "typology": "FAN-IN",
+      "attempts": 40,
+      "transactions": 318
+    },
+    {
+      "typology": "CYCLE",
+      "attempts": 54,
+      "transactions": 287
+    },
+    {
+      "typology": "BIPARTITE",
+      "attempts": 49,
+      "transactions": 263
+    },
+    {
+      "typology": "RANDOM",
+      "attempts": 41,
+      "transactions": 191
+    }
+  ],
+  "entity_types": [
+    {
+      "entity_type": "Partnership",
+      "accounts": 188276
+    },
+    {
+      "entity_type": "Corporation",
+      "accounts": 171475
+    },
+    {
+      "entity_type": "Sole Proprietorship",
+      "accounts": 147848
+    },
+    {
+      "entity_type": "Country",
+      "accounts": 6692
+    },
+    {
+      "entity_type": "Individual",
+      "accounts": 730
+    },
+    {
+      "entity_type": "Direct",
+      "accounts": 67
+    }
+  ],
+  "relationship_history": [
+    {
+      "bucket": "1",
+      "transactions": 222777,
+      "laundering": 3775,
+      "rate_pct": 1.6945196317393627
+    },
+    {
+      "bucket": "2-3",
+      "transactions": 362933,
+      "laundering": 524,
+      "rate_pct": 0.1443792655944761
+    },
+    {
+      "bucket": "4-10",
+      "transactions": 534907,
+      "laundering": 249,
+      "rate_pct": 0.04655014796964706
+    },
+    {
+      "bucket": ">10",
+      "transactions": 3366516,
+      "laundering": 618,
+      "rate_pct": 0.01835725717626175
+    }
+  ]
+}

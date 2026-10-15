@@ -125,5 +125,5 @@
     "dst_entity_n_accounts"
   ],
   "train_negative_sample_rate": 0.2,
-  "train_seconds": 129.3
+  "train_seconds": 94.3
 }
