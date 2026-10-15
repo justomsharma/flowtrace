@@ -2,7 +2,7 @@
 
 Recall at capacity (as Google Cloud AML AI backtests it): a laundering attempt from
 HI-Small_Patterns.txt counts as found in the top N when any of its payments sits in a top-N case.
-The batch is deleted from the graph afterwards.
+The batch is deleted from the graph afterwards, unless it was already there (uploaded from the UI).
 
 Run (graph loaded up to the sample's day):
   python -m flowtrace.eval.funnel ../data/samples/demo_mixed_2022-09-09.csv [--bars 0.1,0.2,0.3]
@@ -16,8 +16,8 @@ import json
 import polars as pl
 
 from flowtrace.graph import queries as Q
-from flowtrace.graph.client import rw
-from flowtrace.pipeline.batch import process_batch
+from flowtrace.graph.client import ro, rw
+from flowtrace.pipeline.batch import batch_id_for, process_batch
 from flowtrace.pipeline.cases import build_cases
 from flowtrace.settings import cfg, settings
 
@@ -51,6 +51,13 @@ def funnel(cases: list[dict], tx: list[dict], keys: dict[tuple, int], capacity: 
     }
 
 
+def cleanup(batch_id: str, existed_before: bool) -> None:
+    if existed_before:
+        print(f"batch {batch_id} was already in the graph (uploaded from the UI); left in place")
+        return
+    rw(Q.DELETE_BATCH, {"batch": batch_id})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
@@ -58,6 +65,8 @@ def main() -> None:
     ap.add_argument("--list", type=int, default=0, help="print the top N cases")
     args = ap.parse_args()
     data = open(args.csv, "rb").read()
+    batch_id = batch_id_for(data)
+    existed = ro("MATCH ()-[t:TRANSFER {batch: $b}]->() RETURN count(t) AS n", {"b": batch_id}).rows[0]["n"] > 0
     res = process_batch(data, args.csv, lambda e: None)
     try:
         rules = cfg()
@@ -77,7 +86,7 @@ def main() -> None:
             swept = build_cases(it["tx"], it["hits"], "SWEEP", r, it["degrees"])
             print(json.dumps({"bar": b, **funnel(swept, it["tx"], keys, cap)}))
     finally:
-        rw(Q.DELETE_BATCH, {"batch": res["summary"]["batch_id"]})
+        cleanup(batch_id, existed)
 
 
 if __name__ == "__main__":
