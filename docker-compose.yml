@@ -1,0 +1,15 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:6.0.2
+    ports:
+      - "6379:6379"   # Redis protocol (Python client)
+      - "3000:3000"   # FalkorDB Browser
+    environment:
+      # Per-query timeouts in ms; agent tools also pass their own, capped by TIMEOUT_MAX.
+      FALKORDB_ARGS: "THREAD_COUNT 4 TIMEOUT_MAX 60000 TIMEOUT_DEFAULT 15000"
+    volumes:
+      - falkordb_data:/data
+    restart: unless-stopped
+
+volumes:
+  falkordb_data:

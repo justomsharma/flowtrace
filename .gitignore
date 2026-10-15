@@ -33,3 +33,5 @@ data/raw/
 Thumbs.db
 .vscode/
 .idea/
+venv/
+tools/

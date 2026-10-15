@@ -1,0 +1,75 @@
+# Every threshold and weight FlowTrace uses for flagging. Each one is documented in the README.
+# Amounts are in USD (the dataset is converted at fixed rates); INR equivalents use inr_per_usd.
+
+inr_per_usd: 83.0
+
+# --- Investigation budget --------------------------------------------------------------------
+agent:
+  max_steps: 6
+  max_queries: 12
+  query_timeout_ms: 10000
+  case_timeout_s: 90
+
+# --- Money trace ---------------------------------------------------------------------------
+trace:
+  max_hops: 4
+  max_gap_hours: 72          # money must move on within this long to count as the same flow
+  hub_degree: 500            # stop tracing at accounts busier than this (merchants, processors)
+  frontier_cap: 40           # largest frontier expanded per hop
+
+# --- Typology detectors (Stage A) ----------------------------------------------------------
+detectors:
+  window_hours: 24
+  fan_out_min: 5             # distinct receivers in window
+  fan_in_min: 5              # distinct senders in window
+  passthrough_ratio: 0.8     # share of inflow that leaves again within window
+  scatter_gather_min_mid: 3  # intermediaries between one source and one sink
+  cycle_max_hops: 4
+  structuring:
+    threshold_inr: 1000000   # PMLA cash reporting threshold (Rs 10 lakh)
+    band_low: 0.80           # amounts between 80% and 100% of the threshold
+    min_count: 3
+
+# --- Legitimacy checks (counter-evidence) --------------------------------------------------
+legitimacy:
+  recurring:
+    min_occurrences: 3
+    max_gap_cv: 0.20         # std/mean of gaps between payments
+    max_amount_cv: 0.05      # fixed amounts (EMI, rent, subscription)
+    max_amount_cv_bill: 0.25 # variable amounts on a fixed schedule (card bills, utilities)
+    cadences_days: {daily: [0.75, 1.25], weekly: [6, 8], biweekly: [12, 16], monthly: [26, 35]}
+  established_relationship:
+    min_prior_tx: 3
+    min_age_days: 3          # HI-Small spans 10 days; raise to 30-90 on longer data
+  hub_receiver_in_degree: 200  # receivers this busy look like merchants, lenders, utilities
+  baseline_z_max: 3.0        # robust z-score vs the account's own history (median/MAD)
+
+# --- Risk escalators (override legitimacy) ---------------------------------------------------
+escalators:
+  new_counterparty_share: 0.5
+  equal_split_amount_cv: 0.05
+  fast_forward_hours: 24
+  fast_forward_share: 0.5
+  high_risk_formats: [Cash, Bitcoin]
+
+# --- Disposition (Stage C) -----------------------------------------------------------------
+# Thresholds on the triage model probability. tau_high/tau_low are re-derived on the validation
+# set by `python -m flowtrace.ml.calibrate` so that recall stays >= target_recall.
+disposition:
+  target_recall: 0.90
+  tau_high: 0.5
+  tau_low: 0.05
+  close_expiry_days: 90
+
+# --- Crime hypotheses (interpretation, not a measured label) --------------------------------
+# The dataset labels laundering yes/no only. These map observed shapes to the predicate crimes
+# the generator models (Altman et al. 2023) as analyst hypotheses.
+crime_hypotheses:
+  FAN-OUT: [kidnapping/ransom, extortion]
+  FAN-IN: [loan sharking, gambling, prostitution]
+  GATHER-SCATTER: [drugs, smuggling]
+  SCATTER-GATHER: [drugs, smuggling]
+  CYCLE: [embezzlement]
+  STACK: [smuggling, drugs]
+  BIPARTITE: [embezzlement, extortion]
+  PASS-THROUGH: [money mule (cyber fraud, kidnapping/ransom)]
