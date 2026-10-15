@@ -66,11 +66,14 @@ def group(flagged: list[dict], risk: dict[str, float], hubs: set[str], max_accou
                     owner[n] = len(groups)
                     queue.append(n)
         groups.append(g)
+    hub_owner: dict[str, int] = {}  # kept apart so a hub-to-hub case never captures a suspect's payment
     for t in flagged:
         i = owner.get(t["src"], owner.get(t["dst"]))
         if i is None:  # hub to hub: its own case, keyed by the sender
-            owner[t["src"]] = i = len(groups)
-            groups.append({"members": {t["src"]}, "tx": []})
+            if t["src"] not in hub_owner:
+                hub_owner[t["src"]] = len(groups)
+                groups.append({"members": {t["src"]}, "tx": []})
+            i = hub_owner[t["src"]]
         groups[i]["tx"].append(t)
     return [g for g in groups if g["tx"]]
 
@@ -93,10 +96,13 @@ def build_cases(tx: list[dict], hits: list[dict], batch_id: str, rules: dict, de
     cases = []
     for g in group(flagged, risk, hubs, c["max_accounts"]):
         ctx = g["tx"]
-        accounts = sorted({a for t in ctx for a in (t["src"], t["dst"])} | g["members"],
-                          key=lambda a: (-risk.get(a, 0.0), a))
+        # The case is about its own members (the suspects); hubs and accounts across a size cut are only
+        # counterparties, so they neither lead the case nor add their detectors to its score.
+        members = sorted(g["members"], key=lambda a: (a in hubs, -risk.get(a, 0.0), a))
+        others = sorted({a for t in ctx for a in (t["src"], t["dst"])} - g["members"], key=lambda a: (-risk.get(a, 0.0), a))
+        accounts = members + others
         dhits = [{k: h[k] for k in ("detector", "account", "strength", "detail")}
-                 for a in accounts if a not in hubs for h in hits_by_acc.get(a, [])]
+                 for a in members if a not in hubs for h in hits_by_acc.get(a, [])]
         p_model = max(t["p_cal"] for t in ctx)
         det = {h["detector"]: prec.get(h["detector"], 0.0) for h in dhits}
         signals = sorted([{"signal": "model", "p": round(float(p_model), 4)}] +

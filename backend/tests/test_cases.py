@@ -72,3 +72,25 @@ def test_tiers_follow_capacity_and_order():
 
 def test_no_flags_no_cases():
     assert build_cases([t(1, "A", "B", 0.01)], [], "B1", RULES, degrees={}) == []
+
+
+def test_hub_to_hub_payment_listed_first_does_not_glue_cases():
+    tx = [t(1, "H1", "H2", 0.9), t(2, "H1", "X", 0.9), t(3, "H1", "Y", 0.8)]
+    cases = build_cases(tx, [], "B1", RULES, degrees={"H1": 500, "H2": 500})
+    assert sorted(sorted(c["tx_ids"]) for c in cases) == [["P1"], ["P2"], ["P3"]]
+
+
+def test_primary_is_the_suspect_not_the_hub():
+    tx = [t(1, "A", "HUB", 0.95), t(2, "B", "HUB", 0.6)]
+    cases = build_cases(tx, [], "B1", RULES, degrees={"HUB": 500})
+    assert sorted(c["primary"] for c in cases) == ["A", "B"]
+
+
+def test_counterparty_detector_scores_only_its_own_case():
+    # A..D fill case 1 (cap 4); D -> E crosses the cut, so E is a counterparty in case 1 and owns case 2.
+    tx = [t(1, "A", "B", 0.9), t(2, "B", "C", 0.9), t(3, "C", "D", 0.9), t(4, "D", "E", 0.6), t(5, "E", "F", 0.55)]
+    cases = build_cases(tx, [hit("FAN-OUT", "E", [])], "B1", RULES, degrees={})
+    first = next(c for c in cases if "A" in c["accounts"])
+    assert "E" in first["accounts"]
+    scored = [c for c in cases if any(s["signal"] == "FAN-OUT" for s in c["signals"])]
+    assert len(scored) == 1 and scored[0]["primary"] == "E"
