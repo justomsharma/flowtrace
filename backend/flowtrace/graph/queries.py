@@ -5,6 +5,15 @@ FalkorDB notes that shape these queries:
     FalkorDB only checks that one edge exists and undercounts parallel transfers.
   * LIMIT cannot take a parameter, so limits are literals.
   * Timestamps are integer epoch milliseconds (range-indexed).
+  * Time filters on TRANSFER are written `t.ts + 0`. On a bare `t.ts` the planner picks an
+    Edge By Index Scan over every transfer in the window (hundreds of thousands) instead of
+    walking the anchor account's own edges: 205 ms -> 1 ms per account on HI-Small.
+  * Look up lists of accounts with `WHERE a.id IN $ids`. `UNWIND $ids AS x MATCH (a {id: x})`
+    skips the Account.id index and scans the whole graph per row (timeouts at 200 accounts).
+  * Leave the label off the far end when it is filtered with `NOT x.id IN $ids`, or the planner
+    starts from a label scan of every account there (2.2 s -> 1.5 ms for SHARED_DESTINATIONS).
+  * A variable-length relationship variable is bound to a path, not a list: read the edges
+    with relationships(p). shortestPath() is only allowed in WITH or RETURN.
 """
 
 # --- Account context ----------------------------------------------------------------------
@@ -18,10 +27,10 @@ RETURN a.id AS id, a.bank AS bank, a.entity_type AS entity_type, a.self_cnt AS s
 
 ACCOUNT_ACTIVITY = """
 MATCH (a:Account {id: $id})
-OPTIONAL MATCH (a)-[o:TRANSFER]->(d:Account) WHERE o.ts >= $t0 AND o.ts < $t1
+OPTIONAL MATCH (a)-[o:TRANSFER]->(d:Account) WHERE o.ts + 0 >= $t0 AND o.ts + 0 < $t1
 WITH a, count(o) AS out_cnt, count(DISTINCT d) AS out_cp, sum(o.amount) AS out_sum,
      collect(DISTINCT o.fmt) AS out_fmts
-OPTIONAL MATCH (s:Account)-[i:TRANSFER]->(a) WHERE i.ts >= $t0 AND i.ts < $t1
+OPTIONAL MATCH (a)<-[i:TRANSFER]-(s) WHERE i.ts + 0 >= $t0 AND i.ts + 0 < $t1
 RETURN out_cnt, out_cp, coalesce(out_sum, 0.0) AS out_sum, out_fmts,
        count(i) AS in_cnt, count(DISTINCT s) AS in_cp, coalesce(sum(i.amount), 0.0) AS in_sum,
        collect(DISTINCT i.fmt) AS in_fmts
@@ -30,18 +39,17 @@ RETURN out_cnt, out_cp, coalesce(out_sum, 0.0) AS out_sum, out_fmts,
 # Daily outgoing activity before the alert window: the account's own baseline.
 ACCOUNT_DAILY_HISTORY = """
 MATCH (a:Account {id: $id})-[t:TRANSFER]->(:Account)
-WHERE t.ts >= $h0 AND t.ts < $t0
+WHERE t.ts + 0 >= $h0 AND t.ts + 0 < $t0
 RETURN t.ts / 86400000 AS day, count(t) AS n, sum(t.amount) AS total
 ORDER BY day
 """
 
 # Who the counterparties are: owner type and how busy they are (hub = merchant/lender/payroll).
 CP_INFO = """
-UNWIND $ids AS id
-MATCH (a:Account {id: id})
+MATCH (a:Account) WHERE a.id IN $ids
 OPTIONAL MATCH (a)-[o:TRANSFER]->()
 WITH a, count(o) AS out_deg
-OPTIONAL MATCH ()-[i:TRANSFER]->(a)
+OPTIONAL MATCH (a)<-[i:TRANSFER]-()
 RETURN a.id AS id, a.entity_type AS entity_type, a.entity_id AS entity_id, out_deg, count(i) AS in_deg
 """
 
@@ -57,7 +65,7 @@ LIMIT 50
 
 TRANSFERS_OUT = """
 MATCH (a:Account {id: $id})-[t:TRANSFER]->(b:Account)
-WHERE t.ts >= $t0 AND t.ts < $t1
+WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1
 RETURN t.tx_id AS tx_id, a.id AS src, b.id AS dst, t.ts AS ts, t.amount AS amount, t.fmt AS fmt,
        t.cur AS cur, t.xcur AS xcur
 ORDER BY t.ts
@@ -65,8 +73,8 @@ LIMIT 300
 """
 
 TRANSFERS_IN = """
-MATCH (s:Account)-[t:TRANSFER]->(a:Account {id: $id})
-WHERE t.ts >= $t0 AND t.ts < $t1
+MATCH (a:Account {id: $id})<-[t:TRANSFER]-(s)
+WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1
 RETURN t.tx_id AS tx_id, s.id AS src, a.id AS dst, t.ts AS ts, t.amount AS amount, t.fmt AS fmt,
        t.cur AS cur, t.xcur AS xcur
 ORDER BY t.ts
@@ -75,19 +83,24 @@ LIMIT 300
 
 # One hop of a time-respecting money trace. Called repeatedly by the tracer so the UI can
 # animate each wave. Money can only move on after it arrived: t.ts >= f.ts.
+# $ids holds the frontier account ids so the index finds them; $frontier carries each one's time.
 TRACE_FORWARD_HOP = """
+MATCH (a:Account) WHERE a.id IN $ids
 UNWIND $frontier AS f
-MATCH (a:Account {id: f.id})-[t:TRANSFER]->(b:Account)
-WHERE t.ts >= f.ts AND t.ts <= f.ts + $max_gap_ms AND NOT b.id IN $visited
+WITH a, f WHERE f.id = a.id
+MATCH (a)-[t:TRANSFER]->(b:Account)
+WHERE t.ts + 0 >= f.ts AND t.ts + 0 <= f.ts + $max_gap_ms AND NOT b.id IN $visited
 RETURN a.id AS src, b.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt
 ORDER BY t.amount DESC
 LIMIT 200
 """
 
 TRACE_BACKWARD_HOP = """
+MATCH (a:Account) WHERE a.id IN $ids
 UNWIND $frontier AS f
-MATCH (b:Account)-[t:TRANSFER]->(a:Account {id: f.id})
-WHERE t.ts <= f.ts AND t.ts >= f.ts - $max_gap_ms AND NOT b.id IN $visited
+WITH a, f WHERE f.id = a.id
+MATCH (a)<-[t:TRANSFER]-(b)
+WHERE t.ts + 0 <= f.ts AND t.ts + 0 >= f.ts - $max_gap_ms AND NOT b.id IN $visited
 RETURN b.id AS src, a.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt
 ORDER BY t.amount DESC
 LIMIT 200
@@ -95,11 +108,10 @@ LIMIT 200
 
 # Degree check so the tracer can stop at hubs (merchants, payroll processors, exchanges).
 DEGREES = """
-UNWIND $ids AS id
-MATCH (a:Account {id: id})
+MATCH (a:Account) WHERE a.id IN $ids
 OPTIONAL MATCH (a)-[o:TRANSFER]->()
 WITH a, count(o) AS out_deg
-OPTIONAL MATCH ()-[i:TRANSFER]->(a)
+OPTIONAL MATCH (a)<-[i:TRANSFER]-()
 RETURN a.id AS id, out_deg, count(i) AS in_deg
 """
 
@@ -107,17 +119,15 @@ RETURN a.id AS id, out_deg, count(i) AS in_deg
 
 # For each counterparty: how long and how often these two accounts have transacted before.
 PAIR_HISTORY_OUT = """
-UNWIND $cps AS cp
-MATCH (a:Account {id: $id})-[t:TRANSFER]->(b:Account {id: cp})
-WHERE t.ts < $before
+MATCH (a:Account {id: $id})-[t:TRANSFER]->(b:Account)
+WHERE b.id IN $cps AND t.ts + 0 < $before
 RETURN b.id AS cp, count(t) AS prior_cnt, min(t.ts) AS first_ts, collect(t.ts) AS ts_list,
        collect(t.amount) AS amounts
 """
 
 PAIR_HISTORY_IN = """
-UNWIND $cps AS cp
-MATCH (b:Account {id: cp})-[t:TRANSFER]->(a:Account {id: $id})
-WHERE t.ts < $before
+MATCH (a:Account {id: $id})<-[t:TRANSFER]-(b)
+WHERE b.id IN $cps AND t.ts + 0 < $before
 RETURN b.id AS cp, count(t) AS prior_cnt, min(t.ts) AS first_ts, collect(t.ts) AS ts_list,
        collect(t.amount) AS amounts
 """
@@ -125,7 +135,7 @@ RETURN b.id AS cp, count(t) AS prior_cnt, min(t.ts) AS first_ts, collect(t.ts) A
 # Series per counterparty, used to detect recurring flows (salary, EMI, rent, subscriptions).
 FLOW_SERIES = """
 MATCH (a:Account {id: $id})-[t:TRANSFER]-(b:Account)
-WHERE t.ts < $before
+WHERE t.ts + 0 < $before
 WITH b, t, CASE WHEN startNode(t) = a THEN 'out' ELSE 'in' END AS dir
 RETURN b.id AS cp, dir, t.fmt AS fmt, collect(t.ts) AS ts_list, collect(t.amount) AS amounts,
        count(t) AS n
@@ -137,9 +147,9 @@ LIMIT 100
 
 # Does money from several accounts end up in the same place? (scatter-gather / funnel)
 SHARED_DESTINATIONS = """
-UNWIND $ids AS sid
-MATCH (s:Account {id: sid})-[t:TRANSFER]->(d:Account)
-WHERE t.ts >= $t0 AND t.ts < $t1 AND NOT d.id IN $ids
+MATCH (s:Account) WHERE s.id IN $ids
+MATCH (s)-[t:TRANSFER]->(d)
+WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1 AND NOT d.id IN $ids
 WITH d, count(DISTINCT s) AS senders, count(t) AS n, sum(t.amount) AS total, collect(t.tx_id) AS tx_ids
 WHERE senders >= 2
 RETURN d.id AS dst, senders, n, total, tx_ids[0..20] AS tx_ids
@@ -148,9 +158,9 @@ LIMIT 20
 """
 
 SHARED_SOURCES = """
-UNWIND $ids AS did
-MATCH (s:Account)-[t:TRANSFER]->(d:Account {id: did})
-WHERE t.ts >= $t0 AND t.ts < $t1 AND NOT s.id IN $ids
+MATCH (d:Account) WHERE d.id IN $ids
+MATCH (d)<-[t:TRANSFER]-(s)
+WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1 AND NOT s.id IN $ids
 WITH s, count(DISTINCT d) AS receivers, count(t) AS n, sum(t.amount) AS total, collect(t.tx_id) AS tx_ids
 WHERE receivers >= 2
 RETURN s.id AS src, receivers, n, total, tx_ids[0..20] AS tx_ids
@@ -160,7 +170,8 @@ LIMIT 20
 
 # Short time-ordered cycles back to the origin (round-tripping).
 CYCLES = """
-MATCH p = (a:Account {id: $id})-[r:TRANSFER*2..4]->(a)
+MATCH p = (a:Account {id: $id})-[:TRANSFER*2..4]->(a)
+WITH p, relationships(p) AS r
 WHERE ALL(x IN r WHERE x.ts >= $t0 AND x.ts < $t1)
   AND ALL(i IN range(0, size(r) - 2) WHERE r[i].ts <= r[i + 1].ts)
 RETURN [x IN r | x.tx_id] AS tx_ids, [n IN nodes(p) | n.id] AS accounts,
@@ -172,7 +183,8 @@ LIMIT 10
 NEAREST_ESCALATED = """
 MATCH (a:Account {id: $id}), (c:Case {disposition: 'ESCALATE'})-[:ABOUT]->(x:Account)
 WHERE x.id <> a.id
-MATCH p = shortestPath((a)-[:TRANSFER*1..3]-(x))
+WITH a, c, x, shortestPath((a)-[:TRANSFER*1..3]-(x)) AS p
+WHERE p IS NOT NULL
 RETURN x.id AS account, c.id AS case_id, length(p) AS hops
 ORDER BY hops
 LIMIT 5
@@ -181,7 +193,7 @@ LIMIT 5
 # --- Case memory --------------------------------------------------------------------------
 
 PRIOR_CASES = """
-MATCH (c:Case)-[:ABOUT]->(a:Account {id: $id})
+MATCH (a:Account {id: $id})<-[:ABOUT]-(c:Case)
 RETURN c.id AS case_id, c.disposition AS disposition, c.typology AS typology,
        c.score AS score, c.created_ts AS created_ts, c.summary AS summary
 ORDER BY c.created_ts DESC
@@ -194,8 +206,7 @@ SET c.disposition = $disposition, c.typology = $typology, c.crime_hypothesis = $
     c.score = $score, c.confidence = $confidence, c.created_ts = $created_ts,
     c.summary = $summary, c.tx_ids = $tx_ids, c.expires_ts = $expires_ts
 WITH c
-UNWIND $accounts AS aid
-MATCH (a:Account {id: aid})
+MATCH (a:Account) WHERE a.id IN $accounts
 MERGE (c)-[:ABOUT]->(a)
 """
 

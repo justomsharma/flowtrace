@@ -2,6 +2,8 @@
 
 Every detector is a read-only query over the TRANSFER graph, bounded by the batch time window,
 and returns the accounts it fired on plus the transfer IDs that triggered it.
+Query shapes follow the FalkorDB planner notes in flowtrace/graph/queries.py
+(`WHERE a.id IN $ids` for account lists, `t.ts + 0` for time filters).
 """
 from __future__ import annotations
 
@@ -10,39 +12,39 @@ from flowtrace.graph.client import ro
 HOUR_MS = 3_600_000
 
 FAN_OUT = """
-UNWIND $ids AS id
-MATCH (a:Account {id: id})-[t:TRANSFER]->(b:Account)
-WHERE t.ts >= $t0 AND t.ts < $t1 AND b.id <> a.id
+MATCH (a:Account) WHERE a.id IN $ids
+MATCH (a)-[t:TRANSFER]->(b:Account)
+WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1 AND b.id <> a.id
 WITH a, count(DISTINCT b) AS k, sum(t.amount) AS total, collect(t.tx_id) AS txs
 WHERE k >= $min
 RETURN a.id AS account, k, total, txs[0..60] AS tx_ids
 """
 
 FAN_IN = """
-UNWIND $ids AS id
-MATCH (b:Account)-[t:TRANSFER]->(a:Account {id: id})
-WHERE t.ts >= $t0 AND t.ts < $t1 AND b.id <> a.id
+MATCH (a:Account) WHERE a.id IN $ids
+MATCH (a)<-[t:TRANSFER]-(b)
+WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1 AND b.id <> a.id
 WITH a, count(DISTINCT b) AS k, sum(t.amount) AS total, collect(t.tx_id) AS txs
 WHERE k >= $min
 RETURN a.id AS account, k, total, txs[0..60] AS tx_ids
 """
 
 PASS_THROUGH = """
-UNWIND $ids AS id
-MATCH (s:Account)-[i:TRANSFER]->(a:Account {id: id})
-WHERE i.ts >= $t0 AND i.ts < $t1 AND s.id <> a.id
+MATCH (a:Account) WHERE a.id IN $ids
+MATCH (a)<-[i:TRANSFER]-(s)
+WHERE i.ts + 0 >= $t0 AND i.ts + 0 < $t1 AND s.id <> a.id
 WITH a, sum(i.amount) AS inflow, collect(i.tx_id) AS in_tx, min(i.ts) AS first_in
 MATCH (a)-[o:TRANSFER]->(d:Account)
-WHERE o.ts >= first_in AND o.ts < $t1 AND d.id <> a.id
+WHERE o.ts + 0 >= first_in AND o.ts + 0 < $t1 AND d.id <> a.id
 WITH a, inflow, in_tx, sum(o.amount) AS outflow, collect(o.tx_id) AS out_tx
 WHERE inflow > 0 AND outflow / inflow >= $ratio
 RETURN a.id AS account, inflow, outflow, outflow / inflow AS ratio, (in_tx + out_tx)[0..60] AS tx_ids
 """
 
 SCATTER_GATHER = """
-UNWIND $ids AS id
-MATCH (s:Account {id: id})-[t1:TRANSFER]->(m:Account)-[t2:TRANSFER]->(d:Account)
-WHERE t1.ts >= $t0 AND t1.ts < $t1 AND t2.ts >= t1.ts AND t2.ts <= t1.ts + $gap
+MATCH (s:Account) WHERE s.id IN $ids
+MATCH (s)-[t1:TRANSFER]->(m:Account)-[t2:TRANSFER]->(d:Account)
+WHERE t1.ts + 0 >= $t0 AND t1.ts + 0 < $t1 AND t2.ts + 0 >= t1.ts AND t2.ts + 0 <= t1.ts + $gap
   AND d.id <> s.id AND m.id <> s.id AND m.id <> d.id
 WITH s, d, count(DISTINCT m) AS mids, collect(t1.tx_id) + collect(t2.tx_id) AS txs
 WHERE mids >= $min
@@ -51,8 +53,9 @@ LIMIT 200
 """
 
 CYCLE = """
-UNWIND $ids AS id
-MATCH p = (a:Account {id: id})-[r:TRANSFER*2..4]->(a)
+MATCH (a:Account) WHERE a.id IN $ids
+MATCH p = (a)-[:TRANSFER*2..4]->(a)
+WITH a, relationships(p) AS r
 WHERE ALL(x IN r WHERE x.ts >= $t0 AND x.ts < $t1)
   AND ALL(i IN range(0, size(r) - 2) WHERE r[i].ts <= r[i + 1].ts)
 RETURN a.id AS account, size(r) AS hops, [x IN r | x.tx_id] AS tx_ids

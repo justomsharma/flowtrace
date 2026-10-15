@@ -57,7 +57,8 @@ def expand(
     for hop in range(1, rules["max_hops"] + 1):
         if not frontier:
             break
-        res = ro(hop_q, {"frontier": frontier, "max_gap_ms": gap, "visited": list(trace.visited)})
+        res = ro(hop_q, {"ids": [f["id"] for f in frontier], "frontier": frontier, "max_gap_ms": gap,
+                         "visited": list(trace.visited)})
         _log(trace, res, f"{direction} hop {hop}")
         new_nodes: dict[str, int] = {}
         wave = []
