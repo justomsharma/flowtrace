@@ -1,24 +1,50 @@
 """FlowTrace API.
 
-Run:  uvicorn flowtrace.api.main:app --reload --port 8000   (from backend/)
+Run:  uvicorn flowtrace.api.main:app --port 8000   (from backend/)
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from sse_starlette.sse import EventSourceResponse
 
+from flowtrace.api import jobs
 from flowtrace.api.overview import build_overview
-from flowtrace.settings import settings
+from flowtrace.settings import cfg, settings
 
-app = FastAPI(title="FlowTrace", version="0.1.0")
+app = FastAPI(title="FlowTrace", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+SAMPLES = settings().raw_dir.parent / "samples"
+RUNS = settings().raw_dir.parent / "runs"
+BATCHES: dict[str, dict] = {}   # batch_id -> summary
+CASES: dict[str, dict] = {}     # case_id -> case input (from the batch pipeline)
+RESULTS: dict[str, dict] = {}   # case_id -> investigation result
+
+
+def _persist(kind: str, key: str, obj: dict) -> None:
+    d = RUNS / kind
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{key}.json").write_text(json.dumps(obj, default=str))
+
+
+def _restore() -> None:
+    for kind, store in (("batches", BATCHES), ("cases", CASES), ("results", RESULTS)):
+        for f in (RUNS / kind).glob("*.json") if (RUNS / kind).exists() else []:
+            store[f.stem] = json.loads(f.read_text())
+
+
+_restore()
 
 
 @app.get("/api/health")
@@ -30,7 +56,8 @@ def health() -> dict:
         graph_ok = True
     except Exception:
         pass
-    return {"api": True, "graph": graph_ok, "llm": bool(settings().anthropic_api_key)}
+    from flowtrace.agent.llm import available
+    return {"api": True, "graph": graph_ok, "llm": available(), "model": settings().agent_model}
 
 
 @app.get("/api/overview")
@@ -41,10 +68,142 @@ def overview() -> dict:
 @app.get("/api/model")
 def model() -> dict:
     d = settings().models_dir
-    metrics, curves = d / "triage_metrics.json", d / "triage_curves.json"
-    if not metrics.exists():
+    if not (d / "triage_metrics.json").exists():
         raise HTTPException(404, "Model not trained yet: run python -m flowtrace.ml.train")
-    out = {"metrics": json.loads(metrics.read_text())}
-    if curves.exists():
-        out["curves"] = json.loads(curves.read_text())
+    out = {"metrics": json.loads((d / "triage_metrics.json").read_text())}
+    for key, name in (("curves", "triage_curves.json"), ("typology", "typology_metrics.json"),
+                      ("agent_eval", "agent_eval.json")):
+        if (d / name).exists():
+            out[key] = json.loads((d / name).read_text())
     return out
+
+
+# --- samples ---------------------------------------------------------------------------------
+
+@app.get("/api/samples")
+def samples() -> list[dict]:
+    return [{"name": p.name, "bytes": p.stat().st_size} for p in sorted(SAMPLES.glob("*.csv"))]
+
+
+@app.get("/api/samples/{name}")
+def sample_file(name: str):
+    p = (SAMPLES / name).resolve()
+    if p.parent != SAMPLES.resolve() or not p.exists():
+        raise HTTPException(404, "no such sample")
+    return FileResponse(p, media_type="text/csv", filename=name)
+
+
+# --- batches ---------------------------------------------------------------------------------
+
+@app.post("/api/batches")
+async def create_batch(file: UploadFile | None = File(None), sample: str | None = Form(None)) -> dict:
+    if file is not None:
+        data, name = await file.read(), file.filename or "upload.csv"
+    elif sample:
+        p = (SAMPLES / sample).resolve()
+        if p.parent != SAMPLES.resolve() or not p.exists():
+            raise HTTPException(404, "no such sample")
+        data, name = p.read_bytes(), sample
+    else:
+        raise HTTPException(400, "upload a CSV file or choose a sample")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(413, "file too large (50 MB max)")
+
+    from flowtrace.pipeline.batch import process_batch
+
+    def done(result: dict) -> None:
+        s = result["summary"]
+        BATCHES[s["batch_id"]] = s
+        CASES.update(result["cases"])
+        _persist("batches", s["batch_id"], s)
+        for cid, c in result["cases"].items():
+            _persist("cases", cid, c)
+
+    job = jobs.start("batch", lambda emit: process_batch(data, name, emit), done)
+    return {"job_id": job.id}
+
+
+@app.get("/api/batches")
+def list_batches() -> list[dict]:
+    return sorted(({k: v for k, v in b.items() if k != "cases"} | {"n_cases": len(b["cases"])} for b in BATCHES.values()),
+                  key=lambda b: -b["window"][0])
+
+
+@app.get("/api/batches/{batch_id}")
+def get_batch(batch_id: str) -> dict:
+    if batch_id not in BATCHES:
+        raise HTTPException(404, "no such batch")
+    b = dict(BATCHES[batch_id])
+    b["cases"] = [c | {"result": _result_brief(c["case_id"])} for c in b["cases"]]
+    return b
+
+
+def _result_brief(case_id: str) -> dict | None:
+    r = RESULTS.get(case_id)
+    if not r:
+        return None
+    return {"action": r["disposition"]["action"], "risk": r["disposition"]["risk"],
+            "confidence": r["disposition"]["confidence_label"]}
+
+
+# --- cases -----------------------------------------------------------------------------------
+
+@app.post("/api/cases/{case_id}/investigate")
+def investigate_case(case_id: str, policy: Literal["claude", "heuristic", "fixed"] = "claude") -> dict:
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    from flowtrace.agent.investigate import investigate, new_context
+
+    case = CASES[case_id]
+
+    def run(emit):
+        return investigate(new_context(case, cfg(), emit), policy_name=policy)
+
+    def done(result: dict) -> None:
+        RESULTS[case_id] = result
+        _persist("results", case_id, result)
+
+    job = jobs.start("case", run, done)
+    return {"job_id": job.id}
+
+
+@app.get("/api/cases/{case_id}")
+def get_case(case_id: str) -> dict:
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    c = CASES[case_id]
+    return {"case": c, "result": RESULTS.get(case_id)}
+
+
+# --- job events (SSE) ------------------------------------------------------------------------
+
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    j = jobs.JOBS.get(job_id)
+    if not j:
+        raise HTTPException(404, "no such job")
+    return {"id": j.id, "kind": j.kind, "status": j.status, "error": j.error, "events": len(j.events)}
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def job_events(job_id: str, since: int = 0):
+    j = jobs.JOBS.get(job_id)
+    if not j:
+        raise HTTPException(404, "no such job")
+
+    async def gen():
+        i = since
+        while True:
+            while i < len(j.events):
+                yield {"event": "message", "data": json.dumps(j.events[i], default=str)}
+                i += 1
+            if j.status != "running" and i >= len(j.events):
+                break
+            await asyncio.sleep(0.08)
+
+    return EventSourceResponse(gen())
+
+
+@app.get("/api/config")
+def config() -> dict:
+    return cfg()

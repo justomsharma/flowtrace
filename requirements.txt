@@ -18,6 +18,7 @@ pandas>=2.2
 scikit-learn>=1.5
 lightgbm>=4.3
 shap>=0.45
+networkx>=3.2
 
 # Agent
 anthropic>=0.40

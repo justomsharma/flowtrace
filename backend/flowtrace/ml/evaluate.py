@@ -13,18 +13,18 @@ from __future__ import annotations
 
 import json
 
-import joblib
 import numpy as np
 import polars as pl
 from sklearn.metrics import precision_recall_curve
 
+from flowtrace.ml.model_io import load_model
 from flowtrace.ml.train import SPLITS, load_features, to_xy
 from flowtrace.settings import settings
 
 
 def main() -> None:
     s = settings()
-    bundle = joblib.load(s.models_dir / "triage_lgbm.joblib")
+    bundle = load_model()
     model, cols, thr = bundle["model"], bundle["features"], bundle["threshold"]
 
     a, b = SPLITS["test"]

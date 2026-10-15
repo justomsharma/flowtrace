@@ -27,6 +27,24 @@ RETURN out_cnt, out_cp, coalesce(out_sum, 0.0) AS out_sum, out_fmts,
        collect(DISTINCT i.fmt) AS in_fmts
 """
 
+# Daily outgoing activity before the alert window: the account's own baseline.
+ACCOUNT_DAILY_HISTORY = """
+MATCH (a:Account {id: $id})-[t:TRANSFER]->(:Account)
+WHERE t.ts >= $h0 AND t.ts < $t0
+RETURN t.ts / 86400000 AS day, count(t) AS n, sum(t.amount) AS total
+ORDER BY day
+"""
+
+# Who the counterparties are: owner type and how busy they are (hub = merchant/lender/payroll).
+CP_INFO = """
+UNWIND $ids AS id
+MATCH (a:Account {id: id})
+OPTIONAL MATCH (a)-[o:TRANSFER]->()
+WITH a, count(o) AS out_deg
+OPTIONAL MATCH ()-[i:TRANSFER]->(a)
+RETURN a.id AS id, a.entity_type AS entity_type, a.entity_id AS entity_id, out_deg, count(i) AS in_deg
+"""
+
 # Same-owner accounts (the analyst's "who else does this person/company control").
 SIBLING_ACCOUNTS = """
 MATCH (a:Account {id: $id})-[:OWNED_BY]->(e:Entity)<-[:OWNED_BY]-(o:Account)

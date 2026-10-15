@@ -15,7 +15,6 @@ import json
 import time
 from datetime import date, timedelta
 
-import joblib
 import lightgbm as lgb
 import numpy as np
 import polars as pl
@@ -25,6 +24,7 @@ from sklearn.metrics import (
 )
 
 from flowtrace.ml.features import CATEGORICAL, build_features, feature_columns
+from flowtrace.ml.model_io import save_model
 from flowtrace.settings import settings
 
 EPOCH = date(1970, 1, 1)
@@ -134,7 +134,7 @@ def main() -> None:
         "train_seconds": round(time.time() - t0, 1),
     }
     s.models_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "features": cols, "threshold": best_thr}, s.models_dir / "triage_lgbm.joblib")
+    save_model(model, cols, best_thr)
     (s.models_dir / "triage_metrics.json").write_text(json.dumps(report, indent=2))
 
     for k in ("val", "test"):

@@ -176,6 +176,64 @@ export default function Dashboard() {
         </ChartCard>
       )}
 
+      {/* Shape recognition + agent evaluation */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {model.typology && (
+          <ChartCard title="Laundering-shape recognition vs ground truth"
+            subtitle={`${fmtPct(model.typology.accuracy_3plus_accounts)} correct on the ${model.typology.attempts_3plus_accounts} schemes with 3+ accounts; ${fmtPct(model.typology.accuracy)} on all ${model.typology.attempts} (1–2 transfer schemes are inherently ambiguous).`}>
+            <div className="h-56">
+              <ResponsiveContainer>
+                <BarChart data={Object.entries(model.typology.per_class).map(([k, v]) => ({ typology: k, recall: v.recall, attempts: v.attempts }))
+                  .sort((a, b) => b.recall - a.recall)} layout="vertical" margin={{ top: 0, right: 40, left: 8, bottom: 0 }}>
+                  <CartesianGrid horizontal={false} stroke="var(--grid)" />
+                  <XAxis type="number" domain={[0, 1]} {...axisProps} tickFormatter={(v) => `${Math.round(v * 100)}%`} />
+                  <YAxis type="category" dataKey="typology" {...axisProps} axisLine={false} width={104} />
+                  <Tooltip cursor={{ fill: 'var(--grid)' }} content={tip((p) => p.typology, (p) => [
+                    { label: 'Recognised', value: fmtPct(p.recall), color: 'var(--s1)' },
+                    { label: 'Schemes', value: fmtInt(p.attempts) },
+                  ])} />
+                  <Bar isAnimationActive={false} dataKey="recall" fill="var(--s1)" radius={[0, 4, 4, 0]} maxBarSize={14}
+                    label={{ position: 'right', fill: 'var(--ink-2)', fontSize: 11, formatter: (v: any) => `${Math.round(Number(v) * 100)}%` }} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </ChartCard>
+        )}
+        <ChartCard title="Adaptive agent vs fixed workflow"
+          subtitle={model.agent_eval ? `Same alerts, same budget: ${model.agent_eval.cases} cases from ${model.agent_eval.sample}.`
+            : 'Not run yet. With FalkorDB loaded: python -m flowtrace.eval.compare'}>
+          {model.agent_eval ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs tabular">
+                <thead style={{ color: 'var(--muted)' }}>
+                  <tr className="text-left">
+                    <th className="py-1.5 pr-2 font-medium">Policy</th>
+                    <th className="py-1.5 pr-2 font-medium text-right">Legit auto-closed</th>
+                    <th className="py-1.5 pr-2 font-medium text-right">Laundering kept open</th>
+                    <th className="py-1.5 pr-2 font-medium text-right">Escalate precision</th>
+                    <th className="py-1.5 pr-2 font-medium text-right">Evidence coverage</th>
+                    <th className="py-1.5 pr-2 font-medium text-right">Queries</th>
+                    <th className="py-1.5 pr-2 font-medium text-right">Seconds</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(model.agent_eval.policies).map(([k, v]) => (
+                    <tr key={k} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td className="py-1.5 pr-2 font-medium">{k}</td>
+                      {['legit_auto_closed', 'laundering_kept_open', 'escalate_precision', 'evidence_coverage'].map((m) => (
+                        <td key={m} className="py-1.5 pr-2 text-right">{v[m] == null ? '—' : fmtPct(Number(v[m]), 0)}</td>
+                      ))}
+                      <td className="py-1.5 pr-2 text-right">{Number(v.avg_queries).toFixed(1)}</td>
+                      <td className="py-1.5 pr-2 text-right">{Number(v.avg_seconds).toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="text-xs" style={{ color: 'var(--muted)' }}>Results appear here once the comparison has been run on the real graph.</p>}
+        </ChartCard>
+      </div>
+
       {/* Volume, typologies, features */}
       <div className="grid gap-4 lg:grid-cols-3">
         <ChartCard title="Transfers per day" subtitle="Weekends dip; Sep 1 is a month-start payment spike.">

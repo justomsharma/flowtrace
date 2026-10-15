@@ -3,16 +3,9 @@ import { BrowserRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { Waypoints } from 'lucide-react'
 import { Pill } from './components/ui'
 import { getJSON, type Health } from './lib/api'
+import CaseView from './pages/CaseView'
 import Dashboard from './pages/Dashboard'
-
-function Investigate() {
-  return (
-    <div className="card p-6 text-sm" style={{ color: 'var(--ink-2)' }}>
-      Investigation workspace: upload a transaction CSV to get a graph-traced analyst report.
-      Coming next (needs FalkorDB running).
-    </div>
-  )
-}
+import Investigate from './pages/Investigate'
 
 function Header() {
   const [health, setHealth] = useState<Health | null>(null)
@@ -51,6 +44,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/investigate" element={<Investigate />} />
+          <Route path="/case/:caseId" element={<CaseView />} />
         </Routes>
       </main>
     </BrowserRouter>
