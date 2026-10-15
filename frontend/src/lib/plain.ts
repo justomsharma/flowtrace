@@ -50,6 +50,12 @@ export const TRICKS: Record<string, TrickInfo> = {
     why: 'Each extra layer is another hop an investigator has to trace.',
     spot: 'Money moves sender → middle layer → receivers, with each layer passing it on quickly.',
   },
+  'PASS-THROUGH': {
+    name: 'Pass-through',
+    short: 'Money arrives and leaves almost straight away.',
+    why: 'Accounts used only to pass money along ("mules") add distance between the criminal and the cash.',
+    spot: 'Most of what comes in goes out again within hours.',
+  },
   RANDOM: {
     name: 'Random hops',
     short: 'Money wanders through a chain of accounts with no clear shape.',

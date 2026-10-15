@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Loader2, Upload } from 'lucide-react'
 import LiveGraph3D, { type MapLink } from '../components/LiveGraph3D'
@@ -6,10 +6,12 @@ import { ActionBadge } from '../components/badges'
 import {
   fmtInt, fmtUsd, getJSON, postJSON, streamJob, type BatchSummary, type CaseBrief, type CaseResult, type JobEvent,
 } from '../lib/api'
-import { STAGE_PLAIN, STEP_PLAIN, trickName } from '../lib/plain'
+import { STAGE_PLAIN, STEP_PLAIN, shortAcct, trickName } from '../lib/plain'
 
 interface GraphLink { tx_id: string; source: string; target: string; amount: number; p: number; case: string | null }
 interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[] }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const panel = { background: 'color-mix(in srgb, var(--surface) 88%, transparent)', border: '1px solid var(--border)', backdropFilter: 'blur(6px)' }
 
@@ -44,6 +46,12 @@ export default function Workspace() {
   const [steps, setSteps] = useState<LiveStep[]>([])
   const [result, setResult] = useState<CaseResult | null>(null)
   const [investigating, setInvestigating] = useState(false)
+  // Live build animation while a file is being processed.
+  const [live, setLive] = useState<MapLink[]>([])
+  const [liveKind, setLiveKind] = useState<Record<string, MapLink['kind']>>({})
+  const [caption, setCaption] = useState('')
+  const queue = useRef<Promise<void>>(Promise.resolve())
+  const enqueue = (fn: () => Promise<void>) => { queue.current = queue.current.then(fn).catch(() => undefined) }
 
   useEffect(() => {
     getJSON<{ name: string }[]>('/api/samples').then((s) => setSamples(s.map((x) => x.name))).catch(() => undefined)
@@ -68,6 +76,8 @@ export default function Workspace() {
 
   async function upload(opts: { sample?: string; file?: File }) {
     setError(null); setStages({}); setBusy(true)
+    setLive([]); setLiveKind({}); setBase([]); setBatch(null); setCaption('Reading the file…')
+    queue.current = Promise.resolve()
     setParams({}, { replace: true })
     const fd = new FormData()
     if (opts.sample) fd.append('sample', opts.sample)
@@ -76,9 +86,53 @@ export default function Workspace() {
       const { job_id } = await postJSON<{ job_id: string }>('/api/batches', fd)
       streamJob(job_id, (e: JobEvent) => {
         if (e.type === 'stage') setStages((s) => ({ ...s, [e.stage]: e.status }))
-        if (e.type === 'error') setError(e.error)
-        if (e.type === 'done') getJSON<{ batch_id: string }[]>('/api/batches').then((bs) => bs.length && setParams({ batch: bs[0].batch_id }))
-      }, () => setBusy(false))
+        if (e.type === 'graph_rows') {
+          const rows: MapLink[] = e.links.map((l: MapLink) => ({ ...l, kind: 'normal' as const }))
+          enqueue(async () => {
+            setCaption(`Drawing ${fmtInt(rows.length)} payments…`)
+            const step = Math.max(30, Math.ceil(rows.length / 28))
+            for (let i = 0; i < rows.length; i += step) {
+              setLive((prev) => [...prev, ...rows.slice(i, i + step)])
+              await sleep(170)
+            }
+          })
+        }
+        if (e.type === 'scores') {
+          const ids: string[] = e.unusual.map((u: { tx_id: string }) => u.tx_id)
+          enqueue(async () => {
+            setCaption(`${fmtInt(ids.length)} payments look unusual`)
+            const step = Math.max(6, Math.ceil(ids.length / 14))
+            for (let i = 0; i < ids.length; i += step) {
+              const chunk = ids.slice(i, i + step)
+              setLiveKind((k) => ({ ...k, ...Object.fromEntries(chunk.map((t) => [t, 'flagged' as const])) }))
+              setPulse(new Set(chunk))
+              await sleep(220)
+            }
+          })
+        }
+        if (e.type === 'hits') {
+          const hits: { detector: string; account: string; tx_ids: string[] }[] = e.hits
+          enqueue(async () => {
+            for (const h of hits.slice(0, 24)) {
+              setCaption(`${trickName(h.detector)} found at account ${shortAcct(h.account)}`)
+              setLiveKind((k) => ({ ...k, ...Object.fromEntries(h.tx_ids.map((t) => [t, 'concern' as const])) }))
+              setPulse(new Set(h.tx_ids))
+              await sleep(650)
+            }
+          })
+        }
+        if (e.type === 'error') {
+          const msg = e.error
+          enqueue(async () => { setCaption(''); setError(msg) })
+        }
+        if (e.type === 'done') {
+          enqueue(async () => {
+            setCaption('')
+            const bs = await getJSON<{ batch_id: string }[]>('/api/batches')
+            if (bs.length) setParams({ batch: bs[0].batch_id })
+          })
+        }
+      }, () => enqueue(async () => setBusy(false)))
     } catch (err) { setError(String(err)); setBusy(false) }
   }
 
@@ -108,6 +162,7 @@ export default function Workspace() {
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.
   const concern = useMemo(() => new Set(result?.evidence.filter((e) => e.kind === 'support').flatMap((e) => e.tx_ids) ?? []), [result])
   const links: MapLink[] = useMemo(() => {
+    if (!base.length) return live.map((l) => ({ ...l, kind: liveKind[l.tx_id] ?? l.kind }))
     const out: MapLink[] = base.map((l) => ({
       tx_id: l.tx_id, source: l.source, target: l.target, amount: l.amount,
       kind: concern.has(l.tx_id) ? 'concern' : l.case && l.case === caseId ? 'focus' : l.case ? 'flagged' : 'normal',
@@ -115,7 +170,7 @@ export default function Workspace() {
     const have = new Set(out.map((l) => l.tx_id))
     for (const t of traced) if (!have.has(t.tx_id)) out.push(concern.has(t.tx_id) ? { ...t, kind: 'concern' } : t)
     return out
-  }, [base, traced, caseId, concern])
+  }, [base, traced, caseId, concern, live, liveKind])
   const focus = useMemo(() => current?.accounts ?? [], [current])
 
   const d = result?.disposition
@@ -144,6 +199,12 @@ export default function Workspace() {
             )}
             {error && <p className="text-sm" style={{ color: 'var(--critical)' }}>{error}</p>}
           </div>
+        </div>
+      )}
+
+      {caption && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-medium flex items-center gap-2" style={panel} aria-live="polite">
+          <Loader2 size={14} className="animate-spin" style={{ color: 'var(--s2)' }} />{caption}
         </div>
       )}
 

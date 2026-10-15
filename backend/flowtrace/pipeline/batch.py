@@ -151,6 +151,11 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     timings["parse_ms"] = (time.perf_counter() - t) * 1000
     stage("parse", "done", rows=batch.height, accounts=pl.concat([batch["src"], batch["dst"]]).n_unique(),
           ms=round(timings["parse_ms"]))
+    # Stream the payments so the UI can draw the graph while the rest of the pipeline runs.
+    emit({"type": "graph_rows", "links": [
+        {"tx_id": t, "source": s_, "target": d_, "amount": round(a_, 2)}
+        for t, s_, d_, a_ in zip(batch["tx_id"].to_list(), batch["src"].to_list(), batch["dst"].to_list(),
+                                 batch["amount_usd"].to_list())]})
 
     t = time.perf_counter()
     stage("score", "running")
@@ -158,6 +163,8 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     timings["score_ms"] = (time.perf_counter() - t) * 1000
     stage("score", "done", ms=round(timings["score_ms"]), above_candidate=int((p >= rules["disposition"]["candidate_score"]).sum()),
           histogram=np.histogram(p, bins=10, range=(0, 1))[0].tolist())
+    emit({"type": "scores", "unusual": [{"tx_id": t, "p": round(float(v), 3)} for t, v in zip(batch["tx_id"].to_list(), p.tolist())
+                                         if v >= rules["disposition"]["candidate_score"]]})
 
     stage("graph", "running", done=0, total=batch.height)
     try:
@@ -178,6 +185,7 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     stage("detect", "done", ms=round(timings["detect_ms"]), hits=len(hits),
           by_detector={k: sum(1 for h in hits if h["detector"] == k) for k in sorted({h["detector"] for h in hits})},
           queries=log)
+    emit({"type": "hits", "hits": [{"detector": h["detector"], "account": h["account"], "tx_ids": h["tx_ids"]} for h in hits]})
 
     t = time.perf_counter()
     cases = build_cases(batch, p, hits, batch_id, rules)

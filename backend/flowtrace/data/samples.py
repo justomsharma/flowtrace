@@ -84,6 +84,16 @@ def main() -> None:
     mixed = pl.concat([att_tx, focus_day, background]).unique("tx_id")
     write(mixed, f"demo_mixed_{DAY}.csv")
 
+    # Small quick-test file: three schemes (split, loop, collect-then-scatter) + two honest look-alikes.
+    small_att = (att.filter(pl.col("attempt_id").is_in(chosen.to_list()))
+                 .filter(pl.col("typology").is_in(["FAN-OUT", "CYCLE", "GATHER-SCATTER"]))
+                 .group_by("typology", maintain_order=True).head(1)["attempt_id"])
+    small_tx = pat.filter(pl.col("attempt_id").is_in(small_att.to_list())).join(tx, on="tx_id").select(tx.columns)
+    small_focus = pl.concat([small_tx["src"], small_tx["dst"], lookalike.head(2)]).unique().to_list()
+    small_day = day.filter(pl.col("src").is_in(small_focus) | pl.col("dst").is_in(small_focus))
+    small_bg = day.filter(~pl.col("src").is_in(small_focus) & ~pl.col("dst").is_in(small_focus)).sample(60, seed=11)
+    write(pl.concat([small_tx, small_day, small_bg]).unique("tx_id"), f"small_test_{DAY}.csv")
+
     look_day = day.filter(pl.col("src").is_in(lookalike.to_list()) | pl.col("dst").is_in(lookalike.to_list()))
     write(look_day, f"legit_lookalikes_{DAY}.csv")
     print(f"attempts included: {dict(att.filter(pl.col('attempt_id').is_in(chosen.to_list())).group_by('typology').len().iter_rows())}")
