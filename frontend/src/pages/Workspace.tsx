@@ -15,6 +15,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const panel = { background: 'color-mix(in srgb, var(--surface) 88%, transparent)', border: '1px solid var(--border)', backdropFilter: 'blur(6px)' }
 
+/** Today's work = within the team's daily capacity. Batches saved before tiers existed fall back to rank. */
+const inToday = (c: CaseBrief, i: number, capacity?: number) => (c.tier ? c.tier === 'today' : i < (capacity ?? 15))
+
 function caseLine(c: CaseBrief): string {
   const n = c.accounts.length
   const amt = fmtUsd(c.amount)
@@ -69,8 +72,8 @@ export default function Workspace() {
 
   const current = batch?.cases.find((c) => c.case_id === caseId) ?? null
   // Cases arrive ranked; the top `capacity` are today's work, the rest stay listed (folded) below.
-  const today = useMemo(() => batch?.cases.filter((c) => c.tier === 'today') ?? [], [batch])
-  const lower = useMemo(() => batch?.cases.filter((c) => c.tier !== 'today') ?? [], [batch])
+  const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
+  const lower = useMemo(() => batch?.cases.filter((c, i) => !inToday(c, i, batch.capacity)) ?? [], [batch])
   const [showLower, setShowLower] = useState(false)
 
   useEffect(() => {
@@ -371,11 +374,12 @@ function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: numbe
           style={{ color: 'var(--muted)', borderLeft: quiet ? '2px solid transparent' : '2px solid var(--s2)' }}>{rank}</span>
         <span className="flex-1 min-w-0">
           <span className="block text-sm truncate">{caseLine(c)}</span>
-          <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals)}</span>
+          <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals ?? [])}</span>
         </span>
         {c.result ? <ActionBadge action={c.result.action} />
-          : <span className="text-sm font-semibold tabular" title="Chance at least one signal is right"
-              style={{ color: quiet ? 'var(--ink-2)' : 'var(--ink)' }}>{pct(c.case_score)}</span>}
+          : <span className="text-sm font-semibold tabular"
+              title="Chance that at least one signal is right (model and detectors treated as independent)"
+              style={{ color: quiet ? 'var(--ink-2)' : 'var(--ink)' }}>{pct(c.case_score ?? c.ml_score)}</span>}
       </button>
     </li>
   )
