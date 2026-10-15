@@ -212,12 +212,14 @@ MERGE (c)-[:ABOUT]->(a)
 
 # --- Uploaded batches ---------------------------------------------------------------------
 
+# Payments are merged on their content-derived tx_id, so re-uploading a file (or an overlapping one)
+# adds nothing. The edge keeps the batch id of the upload that first wrote it.
 INSERT_BATCH = """
 UNWIND $rows AS r
 MERGE (s:Account {id: r.src})
 MERGE (d:Account {id: r.dst})
-CREATE (s)-[:TRANSFER {tx_id: r.tx_id, ts: r.ts, amount: r.amount, fmt: r.fmt, cur: r.cur,
-                       xcur: r.xcur, batch: $batch}]->(d)
+MERGE (s)-[t:TRANSFER {tx_id: r.tx_id}]->(d)
+ON CREATE SET t.ts = r.ts, t.amount = r.amount, t.fmt = r.fmt, t.cur = r.cur, t.xcur = r.xcur, t.batch = $batch
 """
 
 DELETE_BATCH = """

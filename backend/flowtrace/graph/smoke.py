@@ -11,7 +11,7 @@ import polars as pl
 
 from flowtrace.detectors import alerts as A
 from flowtrace.graph import queries as Q
-from flowtrace.graph.client import ro
+from flowtrace.graph.client import ro, rw
 from flowtrace.settings import cfg, settings
 
 DAY = 86_400_000
@@ -78,6 +78,19 @@ def main() -> int:
     if got != min(expect_out, 300) or not ph or ph[0]["prior_cnt"] != expect_pair:
         failures += 1
         print("  FAIL counts differ from the parquet source")
+    # Uploads must be idempotent: inserting the same two payments twice leaves two edges.
+    rows = [{"tx_id": f"PSMOKE{i}", "src": acc, "dst": cp, "ts": t1 + i, "amount": 1.0, "fmt": "ACH",
+             "cur": "US Dollar", "xcur": False} for i in range(2)]
+    try:
+        for _ in range(2):
+            rw(Q.INSERT_BATCH, {"rows": rows, "batch": "SMOKE"})
+        n = ro("MATCH ()-[t:TRANSFER {batch: 'SMOKE'}]->() RETURN count(t) AS n", {}).rows[0]["n"]
+    finally:
+        rw(Q.DELETE_BATCH, {"batch": "SMOKE"})
+    print(f"  idempotent insert: {n} edges after inserting 2 payments twice (expected 2)")
+    if n != 2:
+        failures += 1
+        print("  FAIL re-inserting a batch duplicated edges")
     print(f"\n{'all queries passed' if not failures else f'{failures} failure(s)'}")
     return 1 if failures else 0
 

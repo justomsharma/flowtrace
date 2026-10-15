@@ -8,10 +8,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import time
-import uuid
 from typing import Callable
 
 import networkx as nx
@@ -47,6 +47,27 @@ def parse_csv(data: bytes) -> pl.DataFrame:
     if bad.height:
         raise ValueError(f"{bad.height} rows have an unreadable timestamp or amount")
     return df
+
+
+ID_COLS = ["ts", "src", "dst", "amount_paid", "payment_currency", "amount_received", "receiving_currency",
+           "payment_format"]
+
+
+def payment_ids(batch: pl.DataFrame) -> list[str]:
+    """Stable id from the payment's own fields; a counter keeps genuine repeats in one file apart."""
+    seen: dict[str, int] = {}
+    out = []
+    for row in batch.select(ID_COLS).iter_rows():
+        key = "|".join(map(str, row))
+        n = seen.get(key, 0)
+        seen[key] = n + 1
+        out.append("P" + hashlib.sha1(f"{key}|{n}".encode()).hexdigest()[:16])
+    return out
+
+
+def batch_id_for(data: bytes) -> str:
+    """Same file, same batch: re-uploading replaces the earlier result instead of adding a new one."""
+    return "B" + hashlib.sha1(data).hexdigest()[:6].upper()
 
 
 def score(batch: pl.DataFrame) -> np.ndarray:
@@ -136,7 +157,7 @@ def build_cases(batch: pl.DataFrame, p: np.ndarray, hits: list[dict], batch_id: 
 def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     rules = cfg()
     s = settings()
-    batch_id = "B" + uuid.uuid4().hex[:6].upper()
+    batch_id = batch_id_for(data)
     timings: dict[str, float] = {}
 
     def stage(name, status, **kw):
@@ -146,8 +167,8 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     stage("parse", "running")
     raw = parse_csv(data)
     rates = json.loads((s.processed_dir / "fx_rates.json").read_text())
-    batch = build_transactions(raw, rates).with_columns(
-        (pl.lit(f"{batch_id}-") + pl.col("tx_id").str.slice(1)).alias("tx_id"))
+    batch = build_transactions(raw, rates)
+    batch = batch.with_columns(pl.Series("tx_id", payment_ids(batch)))
     timings["parse_ms"] = (time.perf_counter() - t) * 1000
     stage("parse", "done", rows=batch.height, accounts=pl.concat([batch["src"], batch["dst"]]).n_unique(),
           ms=round(timings["parse_ms"]))
