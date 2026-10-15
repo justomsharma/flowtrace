@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore", env_ignore_empty=True)
 
-    falkordb_host: str = "localhost"
+    # 127.0.0.1, not "localhost": on Windows, localhost tries IPv6 first and the first query
+    # waits ~21 s for that to fail before falling back (35 ms with 127.0.0.1).
+    falkordb_host: str = "127.0.0.1"
     falkordb_port: int = 6379
     falkordb_password: str | None = None
     graph_name: str = "flowtrace"
