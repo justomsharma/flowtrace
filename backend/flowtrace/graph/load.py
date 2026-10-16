@@ -20,6 +20,7 @@ from datetime import date, datetime, timezone
 
 import polars as pl
 
+from flowtrace.graph import queries as Q
 from flowtrace.graph.client import graph, rw
 from flowtrace.settings import settings
 
@@ -139,6 +140,8 @@ def main() -> None:
     bulk_insert(paths)
     create_indexes()
     wait_for_indexes()
+    until = date.fromisoformat(a.until)
+    rw(Q.SET_HISTORY_UNTIL, {"until": int(datetime(until.year, until.month, until.day, tzinfo=timezone.utc).timestamp() * 1000)})
     print(rw("MATCH (a:Account) RETURN count(a) AS accounts").rows,
           rw("MATCH ()-[t:TRANSFER]->() RETURN count(t) AS transfers").rows)
 

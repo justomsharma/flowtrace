@@ -70,6 +70,21 @@ def batch_id_for(data: bytes) -> str:
     return "B" + hashlib.sha1(data).hexdigest()[:6].upper()
 
 
+def reject_history_overlap(batch: pl.DataFrame) -> None:
+    """Payments before the graph's history cutoff are already loaded (with their original ids), so
+    uploading them again would double them. Refuse with a way forward instead."""
+    rows = ro(Q.HISTORY_UNTIL, {}).rows
+    if not rows or rows[0]["until"] is None:
+        return  # graph loaded before the cutoff marker existed; reload it to enable this check
+    until = rows[0]["until"]
+    n = batch.filter(pl.col("ts") < until).height
+    if n:
+        day = time.strftime("%Y-%m-%d", time.gmtime(until / 1000))
+        raise ValueError(f"{n:,} payments are dated before {day} and are already in the graph's history. "
+                         f"Upload a later day, or replay this one by reloading the graph up to it: "
+                         f"python -m flowtrace.graph.load --until <day> --replace")
+
+
 def score(batch: pl.DataFrame) -> np.ndarray:
     """Model score per batch transfer, with features computed exactly as in training."""
     s = settings()
@@ -120,6 +135,7 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     rates = json.loads((s.processed_dir / "fx_rates.json").read_text())
     batch = build_transactions(raw, rates)
     batch = batch.with_columns(pl.Series("tx_id", payment_ids(batch)))
+    reject_history_overlap(batch)
     timings["parse_ms"] = (time.perf_counter() - t) * 1000
     stage("parse", "done", rows=batch.height, accounts=pl.concat([batch["src"], batch["dst"]]).n_unique(),
           ms=round(timings["parse_ms"]))

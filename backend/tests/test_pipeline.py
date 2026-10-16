@@ -16,7 +16,7 @@ def test_summary_has_ranked_tiered_cases(monkeypatch):
     monkeypatch.setattr(B, "rw", lambda *a, **k: None)
     monkeypatch.setattr(B, "run_detectors", lambda *a, **k: [])
     monkeypatch.setattr(B, "ro", lambda c, p, **k: QueryResult(
-        rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p["ids"]], cypher=c, params=p, ms=0.1))
+        rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p.get("ids", [])], cypher=c, params=p, ms=0.1))
     monkeypatch.setattr(B, "calibrate", lambda p, rules: np.asarray(p))
 
     out = B.process_batch(CSV, "t.csv", lambda e: None)
@@ -34,7 +34,7 @@ def test_hub_degree_counts_only_the_history_window_before_the_batch(monkeypatch)
 
     def ro(c, p, **k):
         seen.append((c, p))
-        return QueryResult(rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p["ids"]], cypher=c, params=p, ms=0.1)
+        return QueryResult(rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p.get("ids", [])], cypher=c, params=p, ms=0.1)
 
     monkeypatch.setattr(B, "score", lambda batch: np.array([0.99, 0.98, 0.0]))
     monkeypatch.setattr(B, "rw", lambda *a, **k: None)
@@ -56,3 +56,20 @@ def test_pipeline_announces_its_batch_id_first(monkeypatch):
         rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p.get("ids", [])], cypher=c, params=p, ms=0.1))
     B.process_batch(CSV, "t.csv", events.append)
     assert events[0] == {"type": "batch", "batch_id": B.batch_id_for(CSV)}
+
+
+def test_rejects_payments_already_in_history(monkeypatch):
+    import pytest
+    writes = []
+
+    def ro(c, p, **k):
+        if c == B.Q.HISTORY_UNTIL:
+            return QueryResult(rows=[{"until": 1662768000000}], cypher=c, params=p, ms=0.1)  # 2022-09-10 00:00
+        return QueryResult(rows=[], cypher=c, params=p, ms=0.1)
+
+    monkeypatch.setattr(B, "score", lambda batch: np.array([0.99, 0.98, 0.0]))
+    monkeypatch.setattr(B, "rw", lambda *a, **k: writes.append(a))
+    monkeypatch.setattr(B, "ro", ro)
+    with pytest.raises(ValueError, match="already in the graph's history"):
+        B.process_batch(CSV, "t.csv", lambda e: None)
+    assert writes == []

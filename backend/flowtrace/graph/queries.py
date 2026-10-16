@@ -234,6 +234,18 @@ DETACH DELETE c
 
 # --- Uploaded batches ---------------------------------------------------------------------
 
+# The loader records where history ends. Payments before it are already in the graph under their
+# original ids, so an upload that overlaps it would add them a second time.
+HISTORY_UNTIL = """
+MATCH (m:Meta {id: 'history'})
+RETURN m.until AS until
+"""
+
+SET_HISTORY_UNTIL = """
+MERGE (m:Meta {id: 'history'})
+SET m.until = $until
+"""
+
 # Payments are merged on their content-derived tx_id, so re-uploading a file (or an overlapping one)
 # adds nothing. The edge keeps the batch id of the upload that first wrote it.
 INSERT_BATCH = """
