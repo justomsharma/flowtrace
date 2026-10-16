@@ -81,8 +81,8 @@ def health() -> dict:
         graph_ok = True
     except Exception:
         pass
-    from flowtrace.agent.llm import available
-    return {"api": True, "graph": graph_ok, "llm": available(), "model": settings().agent_model}
+    from flowtrace.agent.llm import available, model_name
+    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name()}
 
 
 @app.get("/api/overview")
@@ -185,7 +185,7 @@ def _result_brief(case_id: str) -> dict | None:
 # --- cases -----------------------------------------------------------------------------------
 
 @app.post("/api/cases/{case_id}/investigate")
-def investigate_case(case_id: str, policy: Literal["claude", "heuristic", "fixed"] = "claude") -> dict:
+def investigate_case(case_id: str, policy: Literal["llm", "heuristic", "fixed"] = "llm") -> dict:
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     from flowtrace.agent.investigate import investigate, new_context

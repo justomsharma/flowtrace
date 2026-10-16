@@ -103,7 +103,7 @@ def test_stats_report_the_policy_that_actually_ran(monkeypatch):
     alert = [e for e in w.edges if e["src"] == "X" and e["ts"] >= T0]
     case = {"case_id": "MULE", "primary": "X", "accounts": ["X"], "tx_ids": [e["tx_id"] for e in alert], "edges": alert,
             "t0": T0, "t1": T0 + DAY, "ml_score": 0.81, "shape": {"typology": "FAN-OUT", "confidence": 0.9}}
-    out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="claude", use_llm_report=False,
+    out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="llm", use_llm_report=False,
                       save_memory=False)
     assert out["stats"]["policy"] == "heuristic fallback"
 

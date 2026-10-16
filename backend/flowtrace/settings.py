@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     falkordb_password: str | None = None
     graph_name: str = "flowtrace"
 
+    # LLM for the investigation agent and reports. agent_model empty = the provider's default model.
+    llm_provider: Literal["openai", "anthropic"] = "openai"
+    openai_api_key: str | None = None
     anthropic_api_key: str | None = None
-    agent_model: str = "claude-sonnet-5-5"
+    agent_model: str | None = None
 
     dataset: str = "HI-Small"
     raw_dir: Path = ROOT / "data" / "raw"

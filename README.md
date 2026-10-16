@@ -49,13 +49,13 @@ CSV batch ─► parse ─► triage model (LightGBM) ─► load into FalkorDB 
                                                                                         │
                        ┌────────────────────── investigation loop (≤ 6 steps) ◄─────────┘
                        │  policy picks an approved tool ─► read-only Cypher ─► evidence ledger
-                       │  (Claude, or rules, or the fixed baseline)       risk re-scored each step
+                       │  (the LLM, or rules, or the fixed baseline)      risk re-scored each step
                        └─► deterministic disposition ─► senior-analyst report ─► validator ─► case memory in graph
 ```
 
-- **Backend:** Python, FastAPI, Server-Sent Events, FalkorDB (Python client), polars, LightGBM, networkx, Anthropic SDK
+- **Backend:** Python, FastAPI, Server-Sent Events, FalkorDB (Python client), polars, LightGBM, networkx, OpenAI SDK (Anthropic optional)
 - **Frontend:** React, Vite, TypeScript, Tailwind, Recharts, 3d-force-graph (three.js)
-- **LLM:** Claude chooses the next tool and writes the report. It never computes facts, never runs its own Cypher, and never sets the disposition.
+- **LLM:** OpenAI `gpt-6-luna` by default (Responses API, strict JSON-schema output), chosen for low latency and cost. It chooses the next tool and writes the report. It never computes facts, never runs its own Cypher, and never sets the disposition.
 
 ---
 
@@ -125,7 +125,7 @@ FalkorDB specifics we rely on:
    - **ESCALATE** at risk ≥ 0.55.
    - **CLOSE** at risk < 0.25, but only if legitimate explanations are strong and no escalator fired. A closure expires after 90 days.
    - **REVIEW** for everything else.
-6. **Report.** Claude writes the senior-analyst report from the evidence ledger. A validator drops any statement that cites unknown evidence, or uses numbers that are not in the cited evidence. The unsupported-claim rate is reported for every case.
+6. **Report.** The LLM writes the senior-analyst report from the evidence ledger. A validator drops any statement that cites unknown evidence, or uses numbers that are not in the cited evidence. The unsupported-claim rate is reported for every case.
 
 All thresholds and weights live in [`config.yaml`](config.yaml).
 
@@ -158,7 +158,7 @@ Prerequisites: Python 3.10+, Docker Desktop, Node 20+. Put the IBM HI-Small file
 python -m venv venv
 venv\Scripts\activate            # macOS/Linux: source venv/bin/activate
 python -m pip install -r requirements.txt
-cp .env.example .env             # add ANTHROPIC_API_KEY; AGENT_MODEL is optional
+cp .env.example .env             # add OPENAI_API_KEY; LLM_PROVIDER and AGENT_MODEL are optional
 
 cd backend
 # 2. Data and model (no database needed)
@@ -180,7 +180,8 @@ python -m flowtrace.graph.smoke --write      # also checks upload idempotency an
 python -m flowtrace.eval.tune                # calibration, detector precision, hub degree from Sep 7-8 (paste into config.yaml)
 python -m flowtrace.eval.fullday --day 2022-09-09   # honest full-day funnel, offline (a full day is ~61 MB, over the 50 MB upload limit)
 
-# 4. Agent evaluation (optional, uses Claude)
+# 4. Agent evaluation (optional, uses the LLM). It uploads the sample batch into the graph;
+#    afterwards delete that batch or reload with: python -m flowtrace.graph.load --replace
 python -m flowtrace.eval.compare --cases 25
 
 # 5. Run the app
@@ -198,7 +199,7 @@ cd ../frontend && npm install && npm run dev  # http://localhost:5173
 [`flowtrace.eval.compare`](backend/flowtrace/eval/compare.py) runs three policies on the same alerts with the same budget:
 - **fixed:** the same tools in the same order for every case;
 - **heuristic:** adaptive rules, no LLM;
-- **claude:** the adaptive agent.
+- **llm:** the adaptive agent (the LLM chooses each step and writes the report).
 
 It reports:
 - the share of legitimate alerts auto-closed;
@@ -210,11 +211,11 @@ It reports:
 
 ## Tests
 
-`backend/tests` holds unit tests for recurring-payment detection, the agent loop, pass-through pairing, case building (hubs, size cap, score, tiers), calibration, idempotent uploads, sample date range and the loader's index wait. The agent tests use a small in-memory stand-in for FalkorDB, so the tool, policy and disposition logic can be tested without a database. The real Cypher is checked against FalkorDB by `flowtrace.graph.smoke`.
+`backend/tests` holds unit tests for recurring-payment detection, the agent loop, the LLM client (mocked OpenAI: success, refusal, truncation, invalid JSON, no key, API errors), pass-through pairing, case building (hubs, size cap, score, tiers), calibration, idempotent uploads, sample date range and the loader's index wait. The agent tests use a small in-memory stand-in for FalkorDB, so the tool, policy and disposition logic can be tested without a database. The real Cypher is checked against FalkorDB by `flowtrace.graph.smoke`.
 
 ## AI assistance
 
-This project was built with help from an AI coding assistant (Claude Code). At runtime, FlowTrace calls Claude (Anthropic API) to choose investigation steps and write case reports. Facts, scores and dispositions are computed in code. Every design decision and every line of code was reviewed by the team.
+This project was built with help from an AI coding assistant (Claude Code). At runtime, FlowTrace calls an LLM (OpenAI `gpt-6-luna` by default; Anthropic Claude via `LLM_PROVIDER=anthropic`) to choose investigation steps and write case reports. Facts, scores and dispositions are computed in code. Every design decision and every line of code was reviewed by the team.
 
 ## License
 

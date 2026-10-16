@@ -148,7 +148,7 @@ export default function Workspace() {
     if (!caseId) return
     setInvestigating(true); setSteps([]); setTraced([]); setResult(null)
     try {
-      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${caseId}/investigate?policy=claude`)
+      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${caseId}/investigate?policy=llm`)
       streamJob(job_id, (e: JobEvent) => {
         if (e.type === 'step_start') setSteps((s) => [...s, { step: e.step, tool: e.tool, reason: e.reason, done: false, found: [] }])
         if (e.type === 'step_done') setSteps((s) => s.map((x) => x.step === e.step

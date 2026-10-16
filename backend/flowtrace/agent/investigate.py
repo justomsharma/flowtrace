@@ -18,7 +18,7 @@ from flowtrace.agent.tools import ToolError, run_tool
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
 
-POLICIES = {"claude": LLMPolicy, "heuristic": HeuristicPolicy, "fixed": FixedPolicy}
+POLICIES = {"llm": LLMPolicy, "heuristic": HeuristicPolicy, "fixed": FixedPolicy}
 
 
 def crime_hypotheses(ctx: CaseContext, rules: dict) -> list[dict]:
@@ -39,7 +39,7 @@ def crime_hypotheses(ctx: CaseContext, rules: dict) -> list[dict]:
 
 
 def policy_ran(chosen: str, calls: list[dict]) -> str:
-    """The policy that actually picked the steps: Claude falls back to rules when it has no key or fails."""
+    """The policy that actually picked the steps: the LLM falls back to rules when it has no key or fails."""
     used = {c.get("policy", chosen) for c in calls}
     if not used or used == {chosen}:
         return chosen
@@ -48,7 +48,7 @@ def policy_ran(chosen: str, calls: list[dict]) -> str:
     return " + ".join([chosen] + sorted(used - {chosen})) + " fallback"
 
 
-def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: bool = True,
+def investigate(ctx: CaseContext, policy_name: str = "llm", use_llm_report: bool = True,
                 save_memory: bool = True) -> dict:
     rules = ctx.rules
     policy = POLICIES[policy_name]()
@@ -97,7 +97,7 @@ def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: b
     disp = decide(ctx.book, ctx.ml_score, shape_conf, rules)
     ctx.emit({"type": "decision", **disp.as_dict(), "stop_reason": stop_reason})
     ctx.emit({"type": "report_start"})
-    report = write_report(ctx, disp, use_llm=use_llm_report and policy_name == "claude")
+    report = write_report(ctx, disp, use_llm=use_llm_report and policy_name == "llm")
     hyps = crime_hypotheses(ctx, rules)
 
     case = {

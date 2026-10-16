@@ -2,14 +2,14 @@
 
   fixed      baseline: same tools, same order, every case
   heuristic  adaptive rules (no LLM)
-  claude     adaptive agent (Claude chooses each step)
+  llm        adaptive agent (the LLM chooses each step)
 
 For each case we know (but never show the agent) whether it contains labelled laundering, and
 which ground-truth laundering transfers exist. Reported per policy:
   * escalate precision / recall, and the share of legitimate alerts auto-closed (false positives removed)
   * laundering kept open (ESCALATE or REVIEW) = recall that triage must not lose
   * evidence coverage: share of ground-truth pattern transfers the investigation retrieved
-  * report validity (Claude only): unsupported-claim rate
+  * report validity (llm only): unsupported-claim rate
   * cost: tool steps, Cypher queries, seconds
 
 Run (needs FalkorDB loaded):  python -m flowtrace.eval.compare --sample demo_mixed_2022-09-09.csv --cases 25
@@ -39,7 +39,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", default="demo_mixed_2022-09-09.csv")
     ap.add_argument("--cases", type=int, default=25)
-    ap.add_argument("--policies", default="fixed,heuristic,claude")
+    ap.add_argument("--policies", default="fixed,heuristic,llm")
     a = ap.parse_args()
     s, rules = settings(), cfg()
 
@@ -54,7 +54,7 @@ def main() -> None:
         rows = []
         for c in cases:
             r = investigate(new_context(c, rules, lambda e: None), policy_name=pol, save_memory=False,
-                            use_llm_report=(pol == "claude"))
+                            use_llm_report=(pol == "llm"))
             seen = {(e["src"], e["dst"], e["ts"]) for e in r["graph"]["edges"]}
             alert = {(e["src"], e["dst"], e["ts"]) for e in c["edges"]}
             attempts = {gt[k] for k in alert if k in gt}
