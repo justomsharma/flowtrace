@@ -368,8 +368,8 @@ def owner_network(ctx: CaseContext, a: AccountArgs) -> dict:
 
 def case_memory(ctx: CaseContext, a: AccountArgs) -> dict:
     """Prior cases on this account, and distance to accounts already escalated."""
-    prior = ctx.q("prior cases", Q.PRIOR_CASES, {"id": a.account}).rows
-    near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, {"id": a.account}).rows
+    prior = ctx.q("prior cases", Q.PRIOR_CASES, {"id": a.account, "case_id": ctx.case_id}).rows
+    near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, {"id": a.account, "case_id": ctx.case_id}).rows
     if any(p["disposition"] == "ESCALATE" for p in prior):
         ctx.book.add(kind="support", code="PRIOR_ESCALATION", tool="case_memory", step=ctx.step, accounts=[a.account],
                      claim=f"{_a(a.account).capitalize()} was already escalated in an earlier case.", weight=0.5, escalator=True)

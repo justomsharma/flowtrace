@@ -50,8 +50,8 @@ def main() -> int:
         "SHARED_DESTINATIONS": {"ids": [acc, cp], "t0": t0, "t1": t1},
         "SHARED_SOURCES": {"ids": [acc, cp], "t0": t0, "t1": t1},
         "CYCLES": {"id": acc, "t0": t0, "t1": t1},
-        "NEAREST_ESCALATED": {"id": acc},
-        "PRIOR_CASES": {"id": acc},
+        "NEAREST_ESCALATED": {"id": acc, "case_id": "SMOKE"},
+        "PRIOR_CASES": {"id": acc, "case_id": "SMOKE"},
     }
     detectors = {
         "FAN_OUT": {"ids": [acc], "t0": t0, "t1": t1, "min": 2},
