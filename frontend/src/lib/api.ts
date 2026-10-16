@@ -111,6 +111,8 @@ export interface CaseBrief {
   result?: { action: string; risk: number; confidence: string } | null
   /** The case's background investigation while it is queued or running. */
   job?: JobBrief | null
+  /** Its background investigation ended in an error; it can be run again. */
+  failed?: boolean
 }
 
 export interface JobBrief { id: string; status: 'queued' | 'running' }
@@ -133,7 +135,7 @@ export interface BatchSummary {
   labelled_laundering: number | null
   cases: CaseBrief[]
   /** Top cases investigated in the background after the upload. */
-  prefetch?: { total: number; done: number }
+  prefetch?: { total: number; done: number; failed: number }
 }
 
 export interface Edge {

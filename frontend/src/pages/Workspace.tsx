@@ -52,6 +52,8 @@ export default function Workspace() {
   const [investigating, setInvestigating] = useState(false)
   const [jobStatus, setJobStatus] = useState<JobBrief['status'] | null>(null)
   const stopStream = useRef<(() => void) | null>(null)
+  const caseRef = useRef(caseId)
+  caseRef.current = caseId
   // Live build animation while a file is being processed.
   const [live, setLive] = useState<MapLink[]>([])
   const [liveKind, setLiveKind] = useState<Record<string, MapLink['kind']>>({})
@@ -74,11 +76,13 @@ export default function Workspace() {
   }, [batchId, loadBatch])
 
   // While the top cases are being investigated in the background, keep the list and progress fresh.
-  const working = !!batch && ((!!batch.prefetch && batch.prefetch.done < batch.prefetch.total) || batch.cases.some((c) => c.job))
+  const pf = batch?.prefetch
+  const working = !!batch && ((!!pf && pf.done + pf.failed < pf.total) || batch.cases.some((c) => c.job))
   useEffect(() => {
     if (!working || !batchId) return
-    const t = setTimeout(() => getJSON<BatchSummary>(`/api/batches/${batchId}`).then(setBatch).catch(() => undefined), 3000)
-    return () => clearTimeout(t)
+    let live = true  // a reply that lands after the batch changed (or a new upload started) is dropped
+    const t = setTimeout(() => getJSON<BatchSummary>(`/api/batches/${batchId}`).then((b) => { if (live) setBatch(b) }).catch(() => undefined), 3000)
+    return () => { live = false; clearTimeout(t) }
   }, [working, batchId, batch])
 
   const current = batch?.cases.find((c) => c.case_id === caseId) ?? null
@@ -101,6 +105,12 @@ export default function Workspace() {
     }
     return () => { stale = true; stopStream.current?.(); stopStream.current = null }
   }, [caseId])
+
+  // A case opened before its background job existed (or whose run was replaced): join the job once the list shows it.
+  const currentJob = current?.job?.id
+  useEffect(() => {
+    if (current?.job && !result && !investigating) { setJobStatus(current.job.status); follow(current.job.id) }
+  }, [currentJob])
 
   async function upload(opts: { sample?: string; file?: File }) {
     setError(null); setStages({}); setBusy(true)
@@ -166,11 +176,17 @@ export default function Workspace() {
   }
 
   async function investigate() {
-    if (!caseId) return
+    const id = caseId
+    if (!id) return
     try {
-      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${caseId}/investigate?policy=llm`)
-      follow(job_id)
+      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${id}/investigate?policy=llm`)
+      if (caseRef.current === id) follow(job_id)  // the analyst may have opened another case meanwhile
     } catch (err) { setError(String(err)) }
+  }
+
+  const refreshBatch = () => {
+    const id = batchId
+    if (id) getJSON<BatchSummary>(`/api/batches/${id}`).then((b) => { if (b.batch_id === id) setBatch(b) }).catch(() => undefined)
   }
 
   /** Stream a case job into the panel. Events are replayed from the start, so joining late loses nothing. */
@@ -192,13 +208,13 @@ export default function Workspace() {
             setPulse(new Set(add.map((a) => a.tx_id)))
           }
         }
-        if (e.type === 'report') {
-          setResult(e.case)
-          if (batchId) getJSON<BatchSummary>(`/api/batches/${batchId}`).then(setBatch).catch(() => undefined)
-        }
+        if (e.type === 'report') setResult(e.case)
         if (e.type === 'error') setError(e.error)
-        if (e.type === 'cancelled') setError('This file was uploaded again, so this run was stopped. Open the case again from the list.')
-      }, () => { setInvestigating(false); stopStream.current = null })
+        if (e.type === 'cancelled') {
+          setResult(null)  // a report from a replaced run is not this case's result
+          setError('This file was uploaded again, so this run was stopped.')
+        }
+      }, () => { setInvestigating(false); stopStream.current = null; refreshBatch() })
   }
 
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.
@@ -263,10 +279,11 @@ export default function Workspace() {
               ]} />
               {batch.prefetch && batch.prefetch.total > 0 && (
                 <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">
-                  {batch.prefetch.done < batch.prefetch.total
+                  {batch.prefetch.done + batch.prefetch.failed < batch.prefetch.total
                     ? <Loader2 size={14} className="animate-spin" style={{ color: 'var(--s1)' }} aria-hidden />
                     : <CheckCircle2 size={14} style={{ color: 'var(--good)' }} aria-hidden />}
                   {batch.prefetch.done} of {batch.prefetch.total} investigated
+                  {batch.prefetch.failed > 0 && <span style={{ color: 'var(--critical)' }}>· {batch.prefetch.failed} failed</span>}
                 </span>
               )}
               <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
@@ -342,6 +359,9 @@ export default function Workspace() {
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>Looks like: {trickName(current.shape.typology)}</div>
               </div>
 
+              {!result && !investigating && current.failed && (
+                <p className="text-xs" style={{ color: 'var(--critical)' }}>The background investigation failed. Try again:</p>
+              )}
               {!result && !investigating && (
                 <button onClick={investigate} className="px-4 py-2.5 rounded-lg text-sm font-medium" style={{ background: 'var(--s1)', color: '#fff' }}>
                   Investigate this case
@@ -431,6 +451,7 @@ function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: numbe
           <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals ?? [])}</span>
         </span>
         {c.result ? <ActionBadge action={c.result.action} />
+          : c.failed ? <span className="text-xs" style={{ color: 'var(--critical)' }}>Failed</span>
           : c.job ? (
             <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ink-2)' }}>
               {c.job.status === 'running' && <Loader2 size={12} className="animate-spin" aria-hidden />}

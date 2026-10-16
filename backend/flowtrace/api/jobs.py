@@ -11,8 +11,9 @@ from typing import Any, Callable
 TERMINAL = ("done", "error", "cancelled")
 
 
-class Cancelled(Exception):
-    """Raised inside a job's work at its next event once the job was cancelled."""
+class Cancelled(BaseException):
+    """Raised inside a job's work at its next event once the job was cancelled. A BaseException, so a
+    broad `except Exception` in the work cannot swallow it."""
 
 
 @dataclass
@@ -22,11 +23,12 @@ class Job:
     status: str = "running"            # queued | running | done | error | cancelled
     run: str | None = None             # the upload run this job belongs to (case jobs)
     cancelled: bool = False
+    claimed: bool = False              # set once by whichever thread runs it (or by cancel): it runs at most once
     events: list[dict] = field(default_factory=list)
     result: Any = None
     error: str | None = None
     started: float = field(default_factory=time.time)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.RLock = field(default_factory=threading.RLock)
 
     def emit(self, event: dict) -> None:
         if self.cancelled:
@@ -47,39 +49,46 @@ def create(kind: str, status: str = "running", run: str | None = None) -> Job:
     return job
 
 
+def _finish(job: Job, status: str, event: dict) -> None:
+    # The event goes in before the status changes: a stream that sees a final status has its final event.
+    with job.lock:
+        if job.status in TERMINAL:
+            return
+        job._append(event)
+        job.status = status
+
+
 def cancel(job: Job) -> None:
     """Stop a job: a queued one never starts, a running one stops at its next event and its result is dropped."""
-    if job.status in TERMINAL:
-        return
-    job.cancelled = True
-    if job.status == "queued":
-        _finish_cancelled(job)
-
-
-def _finish_cancelled(job: Job) -> None:
-    if job.status != "cancelled":
-        job.status = "cancelled"
-        job._append({"type": "cancelled"})
+    with job.lock:
+        if job.status in TERMINAL:
+            return
+        job.cancelled = True
+        if not job.claimed:
+            job.claimed = True
+            _finish(job, "cancelled", {"type": "cancelled"})
 
 
 def execute(job: Job, fn: Callable[[Callable[[dict], None]], Any], on_done: Callable[[Any], bool | None] | None = None) -> None:
-    """Run a job in the current thread. on_done may return False to reject a stale result (job ends cancelled)."""
-    if job.cancelled:
-        _finish_cancelled(job)
-        return
-    job.status, job.started = "running", time.time()
-    try:
-        job.result = fn(job.emit)
-        if job.cancelled or (on_done and on_done(job.result) is False):
-            _finish_cancelled(job)
+    """Run a job in the current thread, unless another thread already claimed it. on_done may return False
+    to reject a stale result (the job then ends cancelled)."""
+    with job.lock:
+        if job.claimed:
             return
-        job.status = "done"
-        job._append({"type": "done"})
+        job.claimed = True
+        job.status, job.started = "running", time.time()
+    try:
+        result = fn(job.emit)
+        if job.cancelled or (on_done and on_done(result) is False):
+            _finish(job, "cancelled", {"type": "cancelled"})
+            return
+        job.result = result
+        _finish(job, "done", {"type": "done"})
     except Cancelled:
-        _finish_cancelled(job)
+        _finish(job, "cancelled", {"type": "cancelled"})
     except Exception as e:
-        job.status, job.error = "error", f"{type(e).__name__}: {e}"
-        job._append({"type": "error", "error": job.error, "trace": traceback.format_exc()[-1500:]})
+        job.error = f"{type(e).__name__}: {e}"
+        _finish(job, "error", {"type": "error", "error": job.error, "trace": traceback.format_exc()[-1500:]})
 
 
 def start(kind: str, fn: Callable[[Callable[[dict], None]], Any], on_done: Callable[[Any], bool | None] | None = None,

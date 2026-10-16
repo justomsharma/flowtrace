@@ -1,8 +1,13 @@
 """Case investigations in the background: one job per case, tied to the upload run it belongs to.
 
-Pre-investigations go through a small pool (a few at a time, so the LLM's rate limits are respected);
-an analyst's click starts at once. Re-uploading a file renumbers its cases, so a new run cancels the
-old run's jobs and drops any result that still arrives for them.
+Pre-investigations go through a small pool (a few at a time, so the LLM's rate limits are respected).
+An analyst's click starts at once, and a click on a queued case runs that same job now. Re-uploading
+a file renumbers its cases, so a new run cancels the old run's jobs and drops any result that still
+arrives for them.
+
+Locks: one lock per batch serialises "accept a result" against "start a new run" for that batch (graph
+and disk writes happen under it); a short lock guards the dicts. Reads (active, failed) take no lock.
+Order is always batch lock, then dict lock.
 """
 from __future__ import annotations
 
@@ -12,18 +17,23 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from flowtrace.api import jobs
+from flowtrace.pipeline.cases import batch_of
 
-
-def batch_of(case_id: str) -> str:
-    return case_id.rpartition("-C")[0] or case_id
+Work = Callable[[Callable[[dict], None]], Any]
 
 
 class CaseRunner:
     def __init__(self, parallel: int) -> None:
         self.pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="case")
         self.lock = threading.RLock()
+        self.batch_locks: dict[str, threading.RLock] = {}
         self.case_jobs: dict[str, jobs.Job] = {}
         self.runs: dict[str, str] = {}
+        self.tasks: dict[str, tuple[Work, Callable[[Any], bool]]] = {}
+
+    def batch_lock(self, batch_id: str) -> threading.RLock:
+        with self.lock:
+            return self.batch_locks.setdefault(batch_id, threading.RLock())
 
     def run_of(self, batch_id: str) -> str:
         with self.lock:
@@ -31,7 +41,7 @@ class CaseRunner:
 
     def new_run(self, batch_id: str) -> str:
         """A fresh upload of this batch: cancel every job of the previous run."""
-        with self.lock:
+        with self.batch_lock(batch_id), self.lock:
             self.runs[batch_id] = uuid.uuid4().hex[:8]
             for cid, job in list(self.case_jobs.items()):
                 if batch_of(cid) == batch_id:
@@ -40,29 +50,45 @@ class CaseRunner:
             return self.runs[batch_id]
 
     def active(self, case_id: str) -> jobs.Job | None:
-        with self.lock:
-            j = self.case_jobs.get(case_id)
-            return j if j and j.status not in jobs.TERMINAL else None
+        j = self.case_jobs.get(case_id)
+        return j if j and j.status not in jobs.TERMINAL else None
 
-    def start(self, case_id: str, fn: Callable[[Callable[[dict], None]], Any], on_result: Callable[[Any], None],
-              queued: bool = False) -> jobs.Job:
+    def failed(self, case_id: str) -> bool:
+        j = self.case_jobs.get(case_id)
+        return bool(j and j.status == "error")
+
+    def start(self, case_id: str, fn: Work, on_result: Callable[[Any], None], queued: bool = False) -> jobs.Job:
         """Start (or join) the investigation of a case. on_result runs only if the job's run is still current."""
-        batch = batch_of(case_id)
+        batch = batch_of(case_id) or case_id
         with self.lock:
             if (j := self.active(case_id)) is not None:
+                if not queued and j.status == "queued":
+                    self._run_now(j)          # a click jumps the queue; the pool skips the job later
                 return j
             job = jobs.create("case", status="queued" if queued else "running", run=self.run_of(batch))
             self.case_jobs[case_id] = job
 
-        def on_done(result: Any) -> bool:
-            with self.lock:  # new_run takes the same lock: a result is kept, or the run moved on, never both
-                if job.cancelled or self.runs.get(batch) != job.run:
-                    return False
-                on_result(result)
-                return True
+            def on_done(result: Any) -> bool:
+                with self.batch_lock(batch):  # new_run holds it too: a result is kept, or the run moved on
+                    if job.cancelled or self.runs.get(batch) != job.run:
+                        return False
+                    on_result(result)
+                    return True
 
-        if queued:
-            self.pool.submit(jobs.execute, job, fn, on_done)
-        else:
-            threading.Thread(target=jobs.execute, args=(job, fn, on_done), daemon=True).start()
-        return job
+            self.tasks[job.id] = (fn, on_done)
+            if queued:
+                self.pool.submit(jobs.execute, job, fn, on_done)
+            else:
+                self._run_now(job)
+            return job
+
+    def _run_now(self, job: jobs.Job) -> None:
+        fn, on_done = self.tasks[job.id]
+        threading.Thread(target=jobs.execute, args=(job, fn, on_done), daemon=True).start()
+
+    def shutdown(self) -> None:
+        """Server stopping: cancel everything and do not wait for queued work (it would keep spending tokens)."""
+        with self.lock:
+            for job in self.case_jobs.values():
+                jobs.cancel(job)
+        self.pool.shutdown(wait=False, cancel_futures=True)

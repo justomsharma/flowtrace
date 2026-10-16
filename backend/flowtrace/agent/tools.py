@@ -16,6 +16,7 @@ from flowtrace.behaviour.recurring import detect_recurrence, infer_purpose
 from flowtrace.detectors.alerts import passthrough_pairs
 from flowtrace.graph import queries as Q
 from flowtrace.graph.trace import Trace, expand
+from flowtrace.pipeline.cases import batch_of
 
 
 # --- argument models ------------------------------------------------------------------------
@@ -368,8 +369,8 @@ def owner_network(ctx: CaseContext, a: AccountArgs) -> dict:
 
 def batch_prefix(case_id: str) -> str:
     """"B12AB-C007" -> "B12AB-C": the id prefix shared by every case of one upload."""
-    head, sep, num = case_id.rpartition("-C")
-    return f"{head}-C" if sep and num.isdigit() else case_id
+    b = batch_of(case_id)
+    return f"{b}-C" if b else case_id
 
 
 def case_memory(ctx: CaseContext, a: AccountArgs) -> dict:

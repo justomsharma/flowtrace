@@ -29,6 +29,7 @@ async def lifespan(_app: FastAPI):
     # Off the startup path: checking the LLM key can take a few seconds.
     threading.Thread(target=requeue_unfinished, daemon=True).start()
     yield
+    RUNNER.shutdown()  # cancel queued work instead of finishing it (and paying for it) on the way out
 
 
 app = FastAPI(title="FlowTrace", version="0.2.0", lifespan=lifespan)
@@ -156,7 +157,9 @@ async def create_batch(file: UploadFile | None = File(None), sample: str | None 
 def accept_batch(result: dict, name: str) -> None:
     """Store a processed upload, then investigate its top cases in the background."""
     s = result["summary"]
-    with RUNNER.lock:  # a result from the previous run of this file is either stored before this, or dropped
+    # A result from the previous run of this file is either stored before this, or dropped. The queued
+    # jobs exist before the upload's "done" event, so the UI can join them as soon as it opens a case.
+    with RUNNER.batch_lock(s["batch_id"]):
         RUNNER.new_run(s["batch_id"])
         forget_batch(s["batch_id"])
         s["curated"] = is_curated_sample(name)
@@ -166,8 +169,7 @@ def accept_batch(result: dict, name: str) -> None:
         _persist("graphs", s["batch_id"], {"links": result["graph"]})
         for cid, c in result["cases"].items():
             _persist("cases", cid, c)
-    # Not inline: the upload's "done" event must not wait for the LLM key check.
-    threading.Thread(target=prefetch, args=(s["batch_id"],), daemon=True).start()
+        prefetch(s["batch_id"])
 
 
 # --- background investigations -----------------------------------------------------------------
@@ -177,10 +179,17 @@ def top_cases(batch_id: str) -> list[str]:
 
 
 def _investigation(case_id: str, policy: str):
-    from flowtrace.agent.investigate import investigate, new_context
+    """The work for one case. policy "auto" is decided when the job starts: the LLM if its key works,
+    the rules otherwise (so creating the job never waits for the key check)."""
     case = CASES[case_id]
-    # Case memory is written only once the result is accepted for the current upload (_store_result).
-    return lambda emit: investigate(new_context(case, cfg(), emit), policy_name=policy, save_memory=False)
+
+    def run(emit):
+        from flowtrace.agent.investigate import investigate, new_context
+        from flowtrace.agent.llm import available
+        p = ("llm" if available() else "heuristic") if policy == "auto" else policy
+        # Case memory is written only once the result is accepted for the current upload (_store_result).
+        return investigate(new_context(case, cfg(), emit), policy_name=p, save_memory=False)
+    return run
 
 
 def _store_result(case_id: str, result: dict) -> None:
@@ -190,21 +199,25 @@ def _store_result(case_id: str, result: dict) -> None:
 
 
 def prefetch(batch_id: str) -> list[str]:
-    """Queue the top cases that have no result yet; the LLM policy if the key works, the rules otherwise."""
-    from flowtrace.agent.llm import available
-    policy = "llm" if available() else "heuristic"
+    """Queue the top cases that have no result and no job yet."""
     started = []
-    for cid in top_cases(batch_id):
-        if cid in RESULTS or cid not in CASES:
-            continue
-        RUNNER.start(cid, _investigation(cid, policy), partial(_store_result, cid), queued=True)
-        started.append(cid)
+    with RUNNER.batch_lock(batch_id):  # same lock as accept_batch: never reads a case being renumbered
+        for cid in top_cases(batch_id):
+            if cid in RESULTS or cid not in CASES or RUNNER.active(cid):
+                continue
+            RUNNER.start(cid, _investigation(cid, "auto"), partial(_store_result, cid), queued=True)
+            started.append(cid)
     return started
 
 
 def requeue_unfinished() -> list[str]:
-    """After a restart: the top cases of every stored batch that never got a finished result."""
-    return [cid for bid in list(BATCHES) for cid in prefetch(bid)]
+    """After a restart: the top cases of every stored batch that never got a finished result, newest upload first."""
+    newest = sorted(BATCHES, key=lambda b: -BATCHES[b]["window"][0])
+    return [cid for bid in newest for cid in prefetch(bid)]
+
+
+def _failed(case_id: str) -> bool:
+    return case_id not in RESULTS and RUNNER.failed(case_id)
 
 
 def _job_brief(case_id: str) -> dict | None:
@@ -223,9 +236,10 @@ def get_batch(batch_id: str) -> dict:
     if batch_id not in BATCHES:
         raise HTTPException(404, "no such batch")
     b = dict(BATCHES[batch_id])
-    b["cases"] = [c | {"result": _result_brief(c["case_id"]), "job": _job_brief(c["case_id"])} for c in b["cases"]]
+    b["cases"] = [c | {"result": _result_brief(c["case_id"]), "job": _job_brief(c["case_id"]),
+                       "failed": _failed(c["case_id"])} for c in b["cases"]]
     top = top_cases(batch_id)
-    b["prefetch"] = {"total": len(top), "done": sum(cid in RESULTS for cid in top)}
+    b["prefetch"] = {"total": len(top), "done": sum(cid in RESULTS for cid in top), "failed": sum(map(_failed, top))}
     return b
 
 

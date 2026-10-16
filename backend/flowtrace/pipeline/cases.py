@@ -17,6 +17,12 @@ from collections import deque
 from flowtrace.detectors.typology import classify
 
 
+def batch_of(case_id: str) -> str | None:
+    """"B12AB-C007" -> "B12AB": the upload a case id belongs to (ids are "<batch>-C<rank>"); None otherwise."""
+    head, sep, num = case_id.rpartition("-C")
+    return head if sep and head and num.isdigit() else None
+
+
 def combine(probs) -> float:
     q = 1.0
     for p in probs:

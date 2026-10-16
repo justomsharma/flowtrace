@@ -6,6 +6,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from flowtrace.agent import investigate as inv_mod
 from flowtrace.agent import llm
 from flowtrace.api import jobs
 from flowtrace.api import main as M
@@ -25,10 +26,10 @@ def wait(pred, s=5.0):
     raise AssertionError("timed out")
 
 
-def batch_result(gen):
-    cases = {cid: {"case_id": cid, "gen": gen} for cid in IDS}
-    return {"summary": {"batch_id": "B1", "cases": [{"case_id": cid} for cid in IDS], "window": [0, 1]},
-            "cases": cases, "graph": []}
+def batch_result(gen, batch="B1", window=(0, 1)):
+    ids = [i.replace("B1", batch) for i in IDS]
+    return {"summary": {"batch_id": batch, "cases": [{"case_id": cid} for cid in ids], "window": list(window)},
+            "cases": {cid: {"case_id": cid, "gen": gen} for cid in ids}, "graph": []}
 
 
 @pytest.fixture
@@ -42,27 +43,29 @@ def app(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "RUNNER", CaseRunner(parallel=2))
     monkeypatch.setattr(M, "rw", lambda *a, **k: None)
     monkeypatch.setattr(llm, "available", lambda: False)
-    state = {"gate": threading.Event(), "policies": [], "memory": []}
+    state = {"gate": threading.Event(), "policies": [], "memory": [], "fail": set()}
     state["gate"].set()
-    monkeypatch.setattr(M, "save_case_memory", lambda case, rules: state["memory"].append(case["case_id"]))
+    monkeypatch.setattr(M, "save_case_memory", lambda case, rules: state["memory"].append((case["case_id"], case["gen"])))
 
-    def investigation(case_id, policy):
-        gen = M.CASES[case_id]["gen"]
+    # The real _investigation runs; only the investigation itself is faked.
+    monkeypatch.setattr(inv_mod, "new_context", lambda case, rules, emit: (case, emit))
 
-        def run(emit):
-            state["policies"].append(policy)
-            emit({"type": "step_start", "step": 1})
-            state["gate"].wait(5)
-            return {"case_id": case_id, "gen": gen,
-                    "disposition": {"action": "CLOSE", "risk": 0.1, "confidence_label": "Low"}}
-        return run
-
-    monkeypatch.setattr(M, "_investigation", investigation)
+    def investigate(ctx, policy_name, save_memory=True, **k):
+        case, emit = ctx
+        assert save_memory is False                      # memory is written only for accepted results
+        state["policies"].append(policy_name)
+        emit({"type": "step_start", "step": 1})
+        state["gate"].wait(5)
+        if case["case_id"] in state["fail"]:
+            raise RuntimeError("graph timeout")
+        return {"case_id": case["case_id"], "gen": case["gen"],
+                "disposition": {"action": "CLOSE", "risk": 0.1, "confidence_label": "Low"}}
+    monkeypatch.setattr(inv_mod, "investigate", investigate)
     yield state
     # Drain this test's background jobs so none finishes into the next test's state.
     state["gate"].set()
     wait(lambda: all(j.status in jobs.TERMINAL for j in M.RUNNER.case_jobs.values()))
-    M.RUNNER.pool.shutdown(wait=True)
+    M.RUNNER.shutdown()
 
 
 def test_upload_investigates_only_the_top_cases_with_rules_when_there_is_no_key(app):
@@ -71,7 +74,7 @@ def test_upload_investigates_only_the_top_cases_with_rules_when_there_is_no_key(
     time.sleep(0.1)
     assert sorted(M.RESULTS) == IDS[:TOP]
     assert app["policies"] == ["heuristic"] * TOP
-    assert sorted(app["memory"]) == IDS[:TOP]
+    assert sorted(app["memory"]) == [(cid, 1) for cid in IDS[:TOP]]
 
 
 def test_with_a_working_key_the_llm_policy_runs(app, monkeypatch):
@@ -81,6 +84,15 @@ def test_with_a_working_key_the_llm_policy_runs(app, monkeypatch):
     assert set(app["policies"]) == {"llm"}
 
 
+def test_the_queued_jobs_exist_before_the_upload_is_announced(app, monkeypatch):
+    slow = threading.Event()
+    monkeypatch.setattr(llm, "available", lambda: slow.wait(5) or False)   # a slow key check must not delay them
+    app["gate"].clear()
+    M.accept_batch(batch_result(1), "file.csv")
+    assert all(M._job_brief(cid) for cid in IDS[:TOP]) and M._job_brief(IDS[TOP]) is None
+    slow.set()
+
+
 def test_opening_a_case_joins_its_running_job_instead_of_starting_another(app):
     app["gate"].clear()
     M.prefetch("B1")
@@ -88,9 +100,7 @@ def test_opening_a_case_joins_its_running_job_instead_of_starting_another(app):
     job = c.get(f"/api/cases/{IDS[0]}").json()["job"]
     assert job["status"] in ("queued", "running")
     assert c.post(f"/api/cases/{IDS[0]}/investigate").json()["job_id"] == job["id"]
-    waiting = c.get(f"/api/cases/{IDS[2]}").json()["job"]
-    assert waiting["status"] == "queued"                          # 2 at a time: the third waits its turn
-    app["gate"].set()
+    assert c.get(f"/api/cases/{IDS[2]}").json()["job"]["status"] == "queued"   # 2 at a time: the third waits
 
 
 def test_batch_reports_how_many_of_the_top_cases_are_investigated(app):
@@ -98,12 +108,26 @@ def test_batch_reports_how_many_of_the_top_cases_are_investigated(app):
     app["gate"].clear()
     M.prefetch("B1")
     b = c.get("/api/batches/B1").json()
-    assert b["prefetch"] == {"total": TOP, "done": 0}
+    assert b["prefetch"] == {"total": TOP, "done": 0, "failed": 0}
     assert b["cases"][0]["job"]["status"] in ("queued", "running") and b["cases"][TOP]["job"] is None
     app["gate"].set()
     wait(lambda: len(M.RESULTS) == TOP and all(M.RUNNER.active(cid) is None for cid in IDS))
     b = c.get("/api/batches/B1").json()
-    assert b["prefetch"] == {"total": TOP, "done": TOP} and b["cases"][0]["job"] is None
+    assert b["prefetch"] == {"total": TOP, "done": TOP, "failed": 0} and b["cases"][0]["job"] is None
+
+
+def test_a_failed_case_is_counted_and_can_be_run_again(app):
+    app["fail"].add(IDS[1])
+    M.prefetch("B1")
+    wait(lambda: len(M.RESULTS) == TOP - 1 and M.RUNNER.failed(IDS[1]))
+    c = TestClient(M.app)
+    b = c.get("/api/batches/B1").json()
+    assert b["prefetch"] == {"total": TOP, "done": TOP - 1, "failed": 1}
+    assert b["cases"][1]["failed"] is True and b["cases"][0]["failed"] is False
+    app["fail"].clear()
+    c.post(f"/api/cases/{IDS[1]}/investigate")
+    wait(lambda: IDS[1] in M.RESULTS)
+    assert c.get("/api/batches/B1").json()["prefetch"]["failed"] == 0
 
 
 def test_reupload_during_a_run_never_attaches_old_results_to_renumbered_cases(app):
@@ -119,13 +143,24 @@ def test_reupload_during_a_run_never_attaches_old_results_to_renumbered_cases(ap
     time.sleep(0.1)
     assert {r["gen"] for r in M.RESULTS.values()} == {2}
     assert all(j.status == "cancelled" for j in old)
+    assert {gen for _, gen in app["memory"]} == {2}               # no case memory from the cancelled run
 
 
-def test_startup_requeues_top_cases_without_a_finished_result(app):
+def test_startup_requeues_top_cases_without_a_result_newest_upload_first(app, monkeypatch):
+    newer = batch_result(1, batch="B2", window=(5, 6))
+    monkeypatch.setitem(M.BATCHES, "B2", newer["summary"])
+    M.CASES.update(newer["cases"])
     M.RESULTS[IDS[0]] = {"case_id": IDS[0], "gen": 1, "disposition": {"action": "CLOSE", "risk": 0.1, "confidence_label": "Low"}}
     started = M.requeue_unfinished()
-    assert sorted(j_cid for j_cid in started) == IDS[1:TOP]
-    wait(lambda: len(M.RESULTS) == TOP)
+    assert started == ["B2-C001", "B2-C002", "B2-C003"] + IDS[1:TOP]
+    wait(lambda: len(M.RESULTS) == 2 * TOP)
+
+
+def test_the_app_requeues_on_startup(app, monkeypatch):
+    called = threading.Event()
+    monkeypatch.setattr(M, "requeue_unfinished", lambda: called.set())
+    with TestClient(M.app):
+        assert called.wait(2)
 
 
 def test_event_stream_stays_open_while_a_job_is_queued():

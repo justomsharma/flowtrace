@@ -3,7 +3,8 @@ import threading
 import time
 
 from flowtrace.api import jobs
-from flowtrace.api.runner import CaseRunner, batch_of
+from flowtrace.api.runner import CaseRunner
+from flowtrace.pipeline.cases import batch_of
 
 
 def wait(pred, s=5.0):
@@ -17,6 +18,7 @@ def wait(pred, s=5.0):
 
 def test_batch_of_reads_the_upload_from_the_case_id():
     assert batch_of("B12AB-C007") == "B12AB"
+    assert batch_of("MULE") is None and batch_of("X-Cat") is None
 
 
 def test_queued_cases_never_run_more_than_parallel_at_once():
@@ -87,3 +89,60 @@ def test_a_result_that_finishes_after_a_reupload_is_discarded():
     gate.set()
     wait(lambda: j.status in jobs.TERMINAL)
     assert got == [] and j.status == "cancelled"
+
+
+def test_shutdown_cancels_queued_work_and_returns_at_once():
+    r, gate = CaseRunner(parallel=1), threading.Event()
+    running = r.start("B1-C001", lambda emit: (emit({"type": "x"}), gate.wait(5), emit({"type": "y"})), lambda res: None, queued=True)
+    queued = [r.start(f"B1-C00{i}", lambda emit: None, lambda res: None, queued=True) for i in (2, 3, 4)]
+    wait(lambda: running.status == "running")
+    t0 = time.time()
+    r.shutdown()
+    assert time.time() - t0 < 1.0
+    assert all(j.status == "cancelled" for j in queued)
+    gate.set()
+    wait(lambda: running.status == "cancelled")
+
+
+def test_clicking_a_queued_case_runs_it_now_and_only_once():
+    r, gate, runs, got = CaseRunner(parallel=1), threading.Event(), [], []
+    r.start("B1-C001", lambda emit: gate.wait(5), lambda res: None, queued=True)       # occupies the only worker
+
+    def fn(emit):
+        runs.append(1)
+        return {"ok": True}
+    queued = r.start("B1-C002", fn, got.append, queued=True)
+    assert queued.status == "queued"
+    clicked = r.start("B1-C002", lambda emit: {"other": True}, got.append)
+    assert clicked is queued
+    wait(lambda: queued.status == "done")                                           # did not wait for the worker
+    gate.set()
+    time.sleep(0.2)
+    assert runs == [1] and got == [{"ok": True}]
+
+
+def test_reads_do_not_wait_for_a_slow_result_write():
+    r, slow = CaseRunner(parallel=1), threading.Event()
+    j = r.start("B1-C001", lambda emit: {"ok": True}, lambda res: time.sleep(1.0) or slow.set())
+    wait(lambda: j.status == "running")
+    time.sleep(0.1)
+    t0 = time.time()
+    r.active("B2-C001"), r.failed("B1-C001")
+    assert time.time() - t0 < 0.2
+    wait(slow.is_set)
+
+
+def test_cancel_and_start_cannot_both_win():
+    for _ in range(200):
+        j = jobs.create("case", status="queued")
+        t = threading.Thread(target=jobs.execute, args=(j, lambda emit: emit({"type": "x"}), None))
+        t.start()
+        jobs.cancel(j)
+        t.join()
+        kinds = [e["type"] for e in j.events]
+        assert j.status in ("done", "cancelled") and kinds.count("cancelled") <= 1
+        assert kinds[-1] == ("done" if j.status == "done" else "cancelled")
+
+
+def test_a_cancelled_job_cannot_be_hidden_by_a_broad_except():
+    assert not issubclass(jobs.Cancelled, Exception)
