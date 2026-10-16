@@ -12,7 +12,8 @@ export interface MapLink {
 
 const EMPTY: string[] = []
 
-const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888'
+/** A colour token as seen from `el`, so the map follows the theme scope it sits in (the Live Network is dark). */
+const css = (v: string, el: Element = document.documentElement) => getComputedStyle(el).getPropertyValue(v).trim() || '#888'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
@@ -32,9 +33,10 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
   useEffect(() => {
     if (!host.current) return
     const el = host.current
-    const col = { normal: css('--axis'), flagged: css('--s2'), focus: css('--s2'), traced: css('--s1'), concern: css('--s8'), hold: css('--s4'), node: css('--ink-2') }
+    const c = (v: string) => css(v, el)
+    const col = { normal: c('--axis'), flagged: c('--s2'), focus: c('--s2'), traced: c('--s1'), concern: c('--s8'), hold: c('--s4'), node: c('--ink-2') }
     const graph = (ForceGraph3D as any)()(el)
-      .backgroundColor(css('--page'))
+      .backgroundColor(c('--page'))
       .showNavInfo(false)
       .width(el.clientWidth).height(el.clientHeight)
       .nodeRelSize(2.6).nodeOpacity(0.95).linkOpacity(0.6)
@@ -44,7 +46,7 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
       .linkWidth((l: any) => (l.kind === 'normal' ? 0 : l.kind === 'flagged' ? 0.6 : 1.6))
       .linkDirectionalParticleWidth(2.4).linkDirectionalParticleSpeed(0.014)
       .linkDirectionalParticleColor((l: any) => col[l.kind as keyof typeof col] ?? col.flagged)
-      .nodeLabel((n: any) => `<div style="font:12px system-ui;padding:3px 6px;background:${css('--surface-2')};color:${css('--ink')};border-radius:6px">account …${n.id.split(':')[1]?.slice(-5) ?? n.id}</div>`)
+      .nodeLabel((n: any) => `<div style="font:12px system-ui;padding:3px 6px;background:${c('--surface-2')};color:${c('--ink')};border-radius:6px">account …${n.id.split(':')[1]?.slice(-5) ?? n.id}</div>`)
       .graphData({ nodes: [], links: [] })
     graph.d3Force('charge').strength(-14)
     el.addEventListener('pointerdown', () => { orbit.current = false; moved.current = true })

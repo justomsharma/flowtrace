@@ -35,14 +35,19 @@ def case_currency(case: dict, plan: dict | None) -> str:
     return (plan or {}).get("currency") or "US Dollar"
 
 
+def fx_rate(currency: str) -> float:
+    """Units of `currency` per US dollar, from the rates derived from the data."""
+    from flowtrace.actions.planner import fx_rates
+    return 1.0 if currency == "US Dollar" else fx_rates().get(currency, 1.0)
+
+
 def case_rate(currency: str, plan: dict | None) -> float:
-    """Units of `currency` per US dollar: the plan's rate when it is in the same currency, else the data's rates."""
+    """The plan's rate when the plan is in the same currency, else the data's rate."""
     if currency == "US Dollar":
         return 1.0
     if (plan or {}).get("currency") == currency and plan.get("rate"):
         return plan["rate"]
-    from flowtrace.actions.planner import fx_rates
-    return fx_rates().get(currency, 1.0)
+    return fx_rate(currency)
 
 
 def _holds(actions: list[dict]) -> dict[str, str]:

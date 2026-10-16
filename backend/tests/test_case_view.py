@@ -230,3 +230,16 @@ def test_overview_survives_the_graph_being_down(monkeypatch):
         raise ConnectionError("graph down")
     monkeypatch.setattr(M.service, "list_actions", down)
     assert TestClient(M.app).get("/api/cases/BX-C001/overview").status_code == 200
+
+
+def test_batch_cases_carry_their_currency(monkeypatch):
+    from fastapi.testclient import TestClient
+    from flowtrace.api import main as M
+    euro = case([pay("t1", "A", "B", 100, cur="Euro")])
+    monkeypatch.setattr(M, "CASES", {"BX-C001": euro})
+    monkeypatch.setattr(M, "RESULTS", {})
+    monkeypatch.setattr(M, "BATCHES", {"BX": {"batch_id": "BX", "cases": [{"case_id": "BX-C001", "amount": 100}]}})
+    monkeypatch.setattr(M, "top_cases", lambda bid: [])
+    monkeypatch.setattr(V, "fx_rate", lambda cur: 0.9)
+    c = TestClient(M.app).get("/api/batches/BX").json()["cases"][0]
+    assert (c["currency"], c["rate"]) == ("Euro", 0.9)

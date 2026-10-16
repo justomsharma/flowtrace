@@ -289,7 +289,7 @@ def get_batch(batch_id: str) -> dict:
         raise HTTPException(404, "no such batch")
     b = dict(BATCHES[batch_id])
     b["cases"] = [c | {"result": _result_brief(c["case_id"]), "job": _job_brief(c["case_id"]),
-                       "failed": _failed(c["case_id"])} for c in b["cases"]]
+                       "failed": _failed(c["case_id"])} | _currency(c["case_id"]) for c in b["cases"]]
     top = top_cases(batch_id)
     b["prefetch"] = {"total": len(top), "done": sum(cid in RESULTS for cid in top), "failed": sum(map(_failed, top))}
     return b
@@ -301,6 +301,13 @@ def batch_graph(batch_id: str) -> dict:
     if not f.exists():
         raise HTTPException(404, "no graph for that batch")
     return json.loads(f.read_text())
+
+
+def _currency(case_id: str) -> dict:
+    """The currency of the case's own payments (US dollars when mixed or unknown), so the queue shows the case
+    amount the way the case page does."""
+    cur = case_view.case_currency(CASES.get(case_id, {}), None)
+    return {"currency": cur, "rate": case_view.fx_rate(cur)}
 
 
 def _result_brief(case_id: str) -> dict | None:
