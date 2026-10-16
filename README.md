@@ -36,7 +36,7 @@ CSV batch ─► parse ─► triage model (LightGBM) ─► load into FalkorDB 
 ```
 
 - **Backend:** Python, FastAPI, Server-Sent Events, FalkorDB (Python client), polars, LightGBM, networkx, Anthropic SDK
-- **Frontend:** React, Vite, TypeScript, Tailwind, Recharts, Cytoscape.js
+- **Frontend:** React, Vite, TypeScript, Tailwind, Recharts, 3d-force-graph (three.js)
 - **LLM:** Claude chooses the next tool and writes the report. It never computes facts, never runs its own Cypher, and never sets the disposition.
 
 ---
