@@ -49,6 +49,17 @@ def _restore() -> None:
 _restore()
 
 
+MAX_UPLOAD_MB = 50
+TOO_LARGE = (f"File too large ({MAX_UPLOAD_MB} MB max). A full HI-Small day is about 61 MB: evaluate full days offline "
+             f"with `python -m flowtrace.eval.fullday --day YYYY-MM-DD` (from backend/).")
+
+
+def is_curated_sample(name: str) -> bool:
+    """Demo files from data/samples are hand-picked around known laundering (~29x a real day's rate)."""
+    p = (SAMPLES / name).resolve()
+    return p.parent == SAMPLES.resolve() and p.exists()
+
+
 def forget_batch(batch_id: str) -> None:
     """Drop a batch's earlier cases, investigation results and case memory before it is stored again.
     Case ids are rank-based (B..-C001), so after a retune an old result would otherwise attach to a
@@ -120,14 +131,15 @@ async def create_batch(file: UploadFile | None = File(None), sample: str | None 
         data, name = p.read_bytes(), sample
     else:
         raise HTTPException(400, "upload a CSV file or choose a sample")
-    if len(data) > 50 * 1024 * 1024:
-        raise HTTPException(413, "file too large (50 MB max)")
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, TOO_LARGE)
 
     from flowtrace.pipeline.batch import process_batch
 
     def done(result: dict) -> None:
         s = result["summary"]
         forget_batch(s["batch_id"])
+        s["curated"] = is_curated_sample(name)
         BATCHES[s["batch_id"]] = s
         CASES.update(result["cases"])
         _persist("batches", s["batch_id"], s)

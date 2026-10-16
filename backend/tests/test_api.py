@@ -24,3 +24,15 @@ def test_reupload_forgets_old_cases_results_and_case_nodes(monkeypatch, tmp_path
 
 def test_save_case_replaces_its_account_links():
     assert "DELETE old" in Q.SAVE_CASE
+
+
+def test_only_files_from_the_samples_folder_count_as_curated(monkeypatch, tmp_path):
+    (tmp_path / "demo_mixed_2022-09-09.csv").write_text("x")
+    monkeypatch.setattr(M, "SAMPLES", tmp_path)
+    assert M.is_curated_sample("demo_mixed_2022-09-09.csv")
+    assert not M.is_curated_sample("bank_feed_2022-09-09.csv")
+    assert not M.is_curated_sample("../config.yaml")
+
+
+def test_too_large_upload_points_to_the_offline_full_day_eval():
+    assert "flowtrace.eval.fullday" in M.TOO_LARGE

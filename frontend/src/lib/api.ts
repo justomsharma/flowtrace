@@ -121,6 +121,8 @@ export interface BatchSummary {
   score_histogram: number[]
   flagged_tx: number
   capacity: number
+  /** True for the hand-picked demo files in data/samples (far more laundering than a real day). */
+  curated?: boolean
   detector_hits: number
   timings_ms: Record<string, number>
   has_labels: boolean
