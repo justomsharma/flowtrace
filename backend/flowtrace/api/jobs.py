@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 TERMINAL = ("done", "error", "cancelled")
+KEEP_FINISHED_S = 600   # a finished job stays replayable this long, then it is dropped from memory
 
 
 class Cancelled(BaseException):
@@ -23,6 +24,8 @@ class Job:
     status: str = "running"            # queued | running | done | error | cancelled
     run: str | None = None             # the upload run this job belongs to (case jobs)
     cancelled: bool = False
+    cancel_reason: str | None = None   # "reupload" | "shutdown": the UI tells the analyst why a run stopped
+    finished_at: float | None = None
     claimed: bool = False              # set once by whichever thread runs it (or by cancel): it runs at most once
     events: list[dict] = field(default_factory=list)
     result: Any = None
@@ -44,9 +47,17 @@ JOBS: dict[str, Job] = {}
 
 
 def create(kind: str, status: str = "running", run: str | None = None) -> Job:
+    _prune()
     job = Job(id=f"{kind}-{uuid.uuid4().hex[:8]}", kind=kind, status=status, run=run)
     JOBS[job.id] = job
     return job
+
+
+def _prune() -> None:
+    cutoff = time.time() - KEEP_FINISHED_S
+    for jid, j in list(JOBS.items()):
+        if j.finished_at is not None and j.finished_at < cutoff:
+            JOBS.pop(jid, None)
 
 
 def _finish(job: Job, status: str, event: dict) -> None:
@@ -55,18 +66,23 @@ def _finish(job: Job, status: str, event: dict) -> None:
         if job.status in TERMINAL:
             return
         job._append(event)
-        job.status = status
+        job.status, job.finished_at = status, time.time()
 
 
-def cancel(job: Job) -> None:
+def _cancelled_event(job: Job) -> dict:
+    # A result rejected because its upload run moved on is a re-upload too.
+    return {"type": "cancelled", "reason": job.cancel_reason or "reupload"}
+
+
+def cancel(job: Job, reason: str) -> None:
     """Stop a job: a queued one never starts, a running one stops at its next event and its result is dropped."""
     with job.lock:
         if job.status in TERMINAL:
             return
-        job.cancelled = True
+        job.cancelled, job.cancel_reason = True, job.cancel_reason or reason
         if not job.claimed:
             job.claimed = True
-            _finish(job, "cancelled", {"type": "cancelled"})
+            _finish(job, "cancelled", _cancelled_event(job))
 
 
 def execute(job: Job, fn: Callable[[Callable[[dict], None]], Any], on_done: Callable[[Any], bool | None] | None = None) -> None:
@@ -80,12 +96,12 @@ def execute(job: Job, fn: Callable[[Callable[[dict], None]], Any], on_done: Call
     try:
         result = fn(job.emit)
         if job.cancelled or (on_done and on_done(result) is False):
-            _finish(job, "cancelled", {"type": "cancelled"})
+            _finish(job, "cancelled", _cancelled_event(job))
             return
         job.result = result
         _finish(job, "done", {"type": "done"})
     except Cancelled:
-        _finish(job, "cancelled", {"type": "cancelled"})
+        _finish(job, "cancelled", _cancelled_event(job))
     except Exception as e:
         job.error = f"{type(e).__name__}: {e}"
         _finish(job, "error", {"type": "error", "error": job.error, "trace": traceback.format_exc()[-1500:]})

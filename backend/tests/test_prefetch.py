@@ -148,7 +148,8 @@ def test_reupload_during_a_run_never_attaches_old_results_to_renumbered_cases(ap
 
 def test_startup_requeues_top_cases_without_a_result_newest_upload_first(app, monkeypatch):
     newer = batch_result(1, batch="B2", window=(5, 6))
-    monkeypatch.setitem(M.BATCHES, "B2", newer["summary"])
+    monkeypatch.setitem(M.BATCHES, "B2", {**newer["summary"], "uploaded_at": 2.0})
+    M.BATCHES["B1"]["uploaded_at"] = 1.0
     M.CASES.update(newer["cases"])
     M.RESULTS[IDS[0]] = {"case_id": IDS[0], "gen": 1, "disposition": {"action": "CLOSE", "risk": 0.1, "confidence_label": "Low"}}
     started = M.requeue_unfinished()
@@ -176,3 +177,27 @@ def test_event_stream_stays_open_while_a_job_is_queued():
             if line.startswith("data:"):
                 types.append(json.loads(line[5:])["type"])
     assert types == ["step_start", "done"]
+
+
+def test_requeue_runs_only_in_the_serving_process(monkeypatch):
+    monkeypatch.delenv("FLOWTRACE_REQUEUE", raising=False)
+    assert M.should_requeue(parent=None) is True
+    assert M.should_requeue(parent=object()) is False           # uvicorn --reload / --workers child process
+    monkeypatch.setenv("FLOWTRACE_REQUEUE", "1")
+    assert M.should_requeue(parent=object()) is True
+    monkeypatch.setenv("FLOWTRACE_REQUEUE", "0")
+    assert M.should_requeue(parent=None) is False
+
+
+def test_requeue_orders_by_upload_time_not_data_window(app, monkeypatch):
+    older_data = batch_result(1, batch="B2", window=(-5, -4))
+    monkeypatch.setitem(M.BATCHES, "B2", {**older_data["summary"], "uploaded_at": 200.0})
+    M.BATCHES["B1"]["uploaded_at"] = 100.0
+    M.CASES.update(older_data["cases"])
+    assert M.requeue_unfinished()[:TOP] == ["B2-C001", "B2-C002", "B2-C003"]
+    wait(lambda: len(M.RESULTS) == 2 * TOP)
+
+
+def test_accepted_uploads_record_their_upload_time(app):
+    M.accept_batch(batch_result(1), "file.csv")
+    assert M.BATCHES["B1"]["uploaded_at"] > 0

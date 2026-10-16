@@ -137,7 +137,7 @@ def test_cancel_and_start_cannot_both_win():
         j = jobs.create("case", status="queued")
         t = threading.Thread(target=jobs.execute, args=(j, lambda emit: emit({"type": "x"}), None))
         t.start()
-        jobs.cancel(j)
+        jobs.cancel(j, "reupload")
         t.join()
         kinds = [e["type"] for e in j.events]
         assert j.status in ("done", "cancelled") and kinds.count("cancelled") <= 1
@@ -146,3 +146,38 @@ def test_cancel_and_start_cannot_both_win():
 
 def test_a_cancelled_job_cannot_be_hidden_by_a_broad_except():
     assert not issubclass(jobs.Cancelled, Exception)
+
+
+def test_workers_are_daemon_threads_so_exit_never_waits_for_an_llm_call():
+    r = CaseRunner(parallel=2)
+    assert len(r.workers) == 2 and all(t.daemon for t in r.workers)
+    r.shutdown()
+
+
+def test_cancelled_events_say_why():
+    r, gate = CaseRunner(parallel=1), threading.Event()
+    a = r.start("B1-C001", lambda emit: gate.wait(5), lambda res: None, queued=True)
+    b = r.start("B1-C002", lambda emit: None, lambda res: None, queued=True)
+    wait(lambda: a.status == "running")
+    r.new_run("B1")
+    assert b.events[-1] == {**b.events[-1], "type": "cancelled", "reason": "reupload"}
+    c = r.start("B2-C001", lambda emit: None, lambda res: None, queued=True)
+    r.shutdown()
+    gate.set()
+    wait(lambda: a.status == "cancelled")
+    assert a.events[-1]["reason"] == "reupload"
+    assert c.status == "cancelled" and c.events[-1]["reason"] == "shutdown"
+
+
+def test_finished_jobs_are_dropped_from_memory(monkeypatch):
+    r = CaseRunner(parallel=1)
+    ok = r.start("B1-C001", lambda emit: {"ok": 1}, lambda res: None)
+    bad = r.start("B1-C002", lambda emit: 1 / 0, lambda res: None)
+    wait(lambda: ok.status == "done" and bad.status == "error")
+    wait(lambda: "B1-C001" not in r.case_jobs)
+    assert r.failed("B1-C002") and ok.id not in r.tasks and bad.id not in r.tasks   # errors stay for "failed"
+    now = [time.time() + jobs.KEEP_FINISHED_S + 1]
+    monkeypatch.setattr(jobs.time, "time", lambda: now[0])
+    jobs.create("case")                                                          # creating a job prunes old ones
+    assert ok.id not in jobs.JOBS and bad.id not in jobs.JOBS
+    r.shutdown()

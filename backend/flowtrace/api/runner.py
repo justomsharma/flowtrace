@@ -1,9 +1,11 @@
 """Case investigations in the background: one job per case, tied to the upload run it belongs to.
 
-Pre-investigations go through a small pool (a few at a time, so the LLM's rate limits are respected).
-An analyst's click starts at once, and a click on a queued case runs that same job now. Re-uploading
-a file renumbers its cases, so a new run cancels the old run's jobs and drops any result that still
-arrives for them.
+Pre-investigations go through a few worker threads (a few at a time, so the LLM's rate limits are
+respected). An analyst's click starts at once, and a click on a queued case runs that same job now.
+Re-uploading a file renumbers its cases, so a new run cancels the old run's jobs and drops any result
+that still arrives for them.
+
+Workers are daemon threads: stopping the server never waits for an LLM call in flight.
 
 Locks: one lock per batch serialises "accept a result" against "start a new run" for that batch (graph
 and disk writes happen under it); a short lock guards the dicts. Reads (active, failed) take no lock.
@@ -11,9 +13,9 @@ Order is always batch lock, then dict lock.
 """
 from __future__ import annotations
 
+import queue
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from flowtrace.api import jobs
@@ -24,12 +26,15 @@ Work = Callable[[Callable[[dict], None]], Any]
 
 class CaseRunner:
     def __init__(self, parallel: int) -> None:
-        self.pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="case")
+        self.queue: queue.Queue = queue.Queue()
+        self.workers = [threading.Thread(target=self._work, name=f"case-{i}", daemon=True) for i in range(parallel)]
+        for w in self.workers:
+            w.start()
         self.lock = threading.RLock()
         self.batch_locks: dict[str, threading.RLock] = {}
         self.case_jobs: dict[str, jobs.Job] = {}
         self.runs: dict[str, str] = {}
-        self.tasks: dict[str, tuple[Work, Callable[[Any], bool]]] = {}
+        self.tasks: dict[str, tuple[str, Work, Callable[[Any], bool]]] = {}
 
     def batch_lock(self, batch_id: str) -> threading.RLock:
         with self.lock:
@@ -45,7 +50,7 @@ class CaseRunner:
             self.runs[batch_id] = uuid.uuid4().hex[:8]
             for cid, job in list(self.case_jobs.items()):
                 if batch_of(cid) == batch_id:
-                    jobs.cancel(job)
+                    jobs.cancel(job, "reupload")
                     del self.case_jobs[cid]
             return self.runs[batch_id]
 
@@ -63,7 +68,7 @@ class CaseRunner:
         with self.lock:
             if (j := self.active(case_id)) is not None:
                 if not queued and j.status == "queued":
-                    self._run_now(j)          # a click jumps the queue; the pool skips the job later
+                    self._run_now(j)          # a click jumps the queue; the worker skips the job later
                 return j
             job = jobs.create("case", status="queued" if queued else "running", run=self.run_of(batch))
             self.case_jobs[case_id] = job
@@ -75,20 +80,36 @@ class CaseRunner:
                     on_result(result)
                     return True
 
-            self.tasks[job.id] = (fn, on_done)
+            self.tasks[job.id] = (case_id, fn, on_done)
             if queued:
-                self.pool.submit(jobs.execute, job, fn, on_done)
+                self.queue.put(job)
             else:
                 self._run_now(job)
             return job
 
+    def _execute(self, job: jobs.Job) -> None:
+        task = self.tasks.get(job.id)
+        if task is None:
+            return
+        case_id, fn, on_done = task
+        jobs.execute(job, fn, on_done)
+        with self.lock:
+            # Done once (a click and a worker may both get here); errors stay listed for failed().
+            if job.status in jobs.TERMINAL and self.tasks.pop(job.id, None) is not None:
+                if job.status != "error" and self.case_jobs.get(case_id) is job:
+                    del self.case_jobs[case_id]
+
+    def _work(self) -> None:
+        while (job := self.queue.get()) is not None:
+            self._execute(job)
+
     def _run_now(self, job: jobs.Job) -> None:
-        fn, on_done = self.tasks[job.id]
-        threading.Thread(target=jobs.execute, args=(job, fn, on_done), daemon=True).start()
+        threading.Thread(target=self._execute, args=(job,), daemon=True).start()
 
     def shutdown(self) -> None:
-        """Server stopping: cancel everything and do not wait for queued work (it would keep spending tokens)."""
+        """Server stopping: cancel everything; queued work never starts and nothing waits for running work."""
         with self.lock:
             for job in self.case_jobs.values():
-                jobs.cancel(job)
-        self.pool.shutdown(wait=False, cancel_futures=True)
+                jobs.cancel(job, "shutdown")
+        for _ in self.workers:
+            self.queue.put(None)
