@@ -236,7 +236,7 @@ the top 20 laundering and top 20 legitimate cases of the full-day ranking, with 
 python -m flowtrace.eval.slice --day 2022-09-09 --pos 20 --neg 20      # writes data/samples/eval/day_slice_2022-09-09.csv
 python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 40
 ```
-Both commands upload the slice into the graph; delete its batch afterwards (see `DELETE_BATCH` in `graph/queries.py`).
+`compare` uploads the slice into the graph; delete its batch afterwards (see `DELETE_BATCH` in `graph/queries.py`).
 
 ## Tests
 
