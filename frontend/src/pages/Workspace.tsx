@@ -260,7 +260,7 @@ export default function Workspace() {
   const counter = result?.evidence.filter((e) => e.kind === 'counter') ?? []
 
   return (
-    <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 80px)', border: '1px solid var(--border)' }}>
+    <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 24px)', border: '1px solid var(--border)' }}>
       <LiveGraph3D links={links} focus={focus} pulse={pulse} marked={marked} />
 
       {/* Empty state: just the upload */}

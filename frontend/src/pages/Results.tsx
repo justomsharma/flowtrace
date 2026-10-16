@@ -19,7 +19,7 @@ const EVENT_PLAIN: Record<AuditEntry['event'], string> = {
 
 const caseLink = (caseId: string) => {
   const i = caseId.lastIndexOf('-C')
-  return i > 0 ? `/?batch=${caseId.slice(0, i)}&case=${caseId}` : '/'
+  return i > 0 ? `/case?batch=${caseId.slice(0, i)}&case=${caseId}` : '/'
 }
 
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString()
@@ -59,7 +59,7 @@ export default function Results() {
     <div className="mx-auto max-w-5xl flex flex-col gap-6 px-1 py-3">
       <header className="flex flex-col gap-5">
         <div>
-          <h1 className="text-lg font-semibold">Results</h1>
+          <h1 className="text-xl font-semibold">Holds &amp; audit</h1>
           <p className="text-sm" style={{ color: 'var(--ink-2)' }}>What people decided on the agent's proposals, and the money held because of it.</p>
         </div>
         <div className="flex flex-wrap gap-x-14 gap-y-4">

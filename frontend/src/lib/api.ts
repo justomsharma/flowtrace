@@ -113,6 +113,9 @@ export interface CaseBrief {
   job?: JobBrief | null
   /** Its background investigation ended in an error; it can be run again. */
   failed?: boolean
+  /** Currency of the case's own payments (US Dollar when mixed) and its units per US dollar. */
+  currency?: string
+  rate?: number
 }
 
 export interface JobBrief { id: string; status: 'queued' | 'running' }
@@ -383,3 +386,79 @@ export async function sendJSON<T>(path: string, body?: unknown, opts: { key?: st
   }
   return r.json() as Promise<T>
 }
+
+// --- case overview (GET /api/cases/{id}/overview) ---------------------------------------------
+
+export type PaymentStatus = 'flagged' | 'trail' | 'normal'
+export type Role = 'Sender' | 'Intermediary' | 'Destination'
+export type OverviewState = 'not_started' | 'queued' | 'investigating' | 'failed' | 'escalate' | 'review' | 'close'
+
+export interface FlowNode {
+  id: string
+  role: Role
+  /** Sent for a sender, received otherwise (US dollars). */
+  amount: number
+  sent: number
+  received: number
+  in_case: boolean
+  hold: 'proposed' | 'approved' | null
+  entity_type: string | null
+}
+
+export interface FlowEdge {
+  src: string
+  dst: string
+  amount: number
+  count: number
+  status: PaymentStatus
+  /** Carried case money into an account proposed for a hold, or held. */
+  hold: boolean
+  first_ts: number
+  last_ts: number
+}
+
+export interface Payment { tx_id: string; ts: number; src: string; dst: string; amount: number; fmt: string | null; status: PaymentStatus }
+
+export interface Finding {
+  id: string
+  code: string
+  claim: string
+  weight: number
+  confidence: 'High' | 'Medium' | 'Low'
+  escalator: boolean
+  accounts: string[]
+  tx_ids: string[]
+}
+
+export interface CaseOverview {
+  case_id: string
+  batch_id: string | null
+  primary: string
+  typology: string | null
+  tier: 'today' | 'lower' | null
+  case_score: number | null
+  ml_score: number | null
+  priority: 'High' | 'Medium' | 'Low'
+  window: [number, number]
+  uploaded_at: number | null
+  currency: string
+  rate: number
+  status: { state: OverviewState; job: JobBrief | null; risk: number | null; confidence: string | null; reasons: string[] }
+  kpis: { amount: number; accounts: number; payments: number; connected_accounts: number; traced_accounts: number; suspicious_patterns: number | null }
+  flow: { nodes: FlowNode[]; edges: FlowEdge[]; hidden_accounts: number }
+  transactions: Payment[]
+  timeline: { bucket: 'hour' | 'day'; bins: { t: number; flagged: number; other: number; n: number }[] }
+  distribution: { account: string | null; amount: number; share: number; accounts?: number }[]
+  findings: Finding[]
+  explanations: Finding[]
+  indicators: { key: 'model' | 'red_flags' | 'shape' | 'legitimacy'; value: number; contribution: number }[]
+  summary: { headline: string; text: string; by_ai: boolean } | null
+  next_steps: string[]
+  steps: StepInfo[]
+}
+
+/** "9 Sep 2022, 13:37 UTC": a payment's time. The dataset's timestamps carry no time zone, so they stay in UTC. */
+export const fmtUtc = (ms: number, withDate = true) =>
+  new Date(ms).toLocaleString('en-GB', {
+    ...(withDate ? { day: 'numeric', month: 'short', year: 'numeric' } : {}), hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+  }) + ' UTC'

@@ -1,4 +1,4 @@
-import type { ActionType } from './api'
+import type { ActionType, CaseBrief } from './api'
 
 /** Plain-language names for everything the system shows, written for a junior analyst or a non-technical reader. */
 
@@ -133,3 +133,20 @@ export const ACTION_PLAIN: Record<ActionType, { title: string; approve: string }
   FILE_STR: { title: 'File an STR with FIU-IND', approve: 'Approve filing' },
   CLOSE: { title: 'Close as normal activity', approve: 'Approve closing' },
 }
+
+/** One line on what the money did, in the data's own currency: "€33,855 passed through 3 accounts". */
+export function caseSentence(typology: string | null, amount: string, accounts: number): string {
+  switch (typology) {
+    case 'FAN-OUT': return `${amount} split out to ${accounts - 1} accounts`
+    case 'FAN-IN': return `${amount} collected from ${accounts - 1} accounts`
+    case 'CYCLE': return `${amount} went round a loop of ${accounts} accounts`
+    case 'GATHER-SCATTER': return `${amount} pooled, then pushed out again`
+    case 'SCATTER-GATHER': return `${amount} split across middlemen, re-collected`
+    case 'STACK': return `${amount} passed through layers of accounts`
+    case 'BIPARTITE': return `${amount} paid group-to-group`
+    default: return `${amount} moved between ${accounts} accounts`
+  }
+}
+
+/** Today's work = within the team's daily capacity. Batches saved before tiers existed fall back to rank. */
+export const inToday = (c: CaseBrief, i: number, capacity?: number) => (c.tier ? c.tier === 'today' : i < (capacity ?? 15))

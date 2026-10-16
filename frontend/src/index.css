@@ -1,8 +1,48 @@
 @import "tailwindcss";
 
-/* Tokens follow the validated reference palette (dataviz skill). Dark is the default analyst
-   console; light is selected by OS preference or data-theme="light". */
+/* Light analyst workspace. Series hues follow the validated reference palette (dataviz skill); status colours
+   are reserved for state (red = flagged, amber = hold, green = legitimate / done). The Live Network keeps its
+   dark 3D console inside .theme-dark. */
 :root {
+  color-scheme: light;
+  --page: #f3f6fa;
+  --surface: #ffffff;
+  --surface-2: #f1f4f9;
+  --border: #e2e8f0;
+  --ink: #0f1d33;
+  --ink-2: #46566e;
+  --muted: #74839a;
+  --grid: #e8edf3;
+  --axis: #c5cfdc;
+
+  --brand: #1f5fd1;
+  --brand-ink: #ffffff;
+  --brand-tint: #eaf1fd;
+
+  --s1: #2a78d6; /* blue */
+  --s2: #eb6834; /* orange */
+  --s3: #1baf7a; /* aqua */
+  --s4: #eda100; /* yellow */
+  --s5: #e87ba4; /* magenta */
+  --s6: #008300; /* green */
+  --s7: #6250d6; /* violet */
+  --s8: #e34948; /* red */
+
+  --good: #138a52;
+  --warning: #c98500;
+  --serious: #d4682f;
+  --critical: #d23a3a;
+
+  --hold: #c98500;        /* proposed / approved holds */
+  --hold-tint: #fff5df;
+  --flag-tint: #fdeeee;
+  --good-tint: #e9f7f0;
+  --violet-tint: #f0edfc;
+
+  --focus: #1f5fd1;
+}
+
+.theme-dark {
   color-scheme: dark;
   --page: #0d0d0d;
   --surface: #1a1a19;
@@ -13,62 +53,20 @@
   --muted: #898781;
   --grid: #2c2c2a;
   --axis: #383835;
-
-  --s1: #3987e5; /* blue */
-  --s2: #d95926; /* orange */
-  --s3: #199e70; /* aqua */
-  --s4: #c98500; /* yellow */
-  --s5: #d55181; /* magenta */
-  --s6: #008300; /* green */
-  --s7: #9085e9; /* violet */
-  --s8: #e66767; /* red */
-
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #c98500;
+  --s5: #d55181;
+  --s6: #008300;
+  --s7: #9085e9;
+  --s8: #e66767;
   --good: #0ca30c;
   --warning: #fab219;
   --serious: #ec835a;
   --critical: #d03b3b;
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    color-scheme: light;
-    --page: #f9f9f7;
-    --surface: #fcfcfb;
-    --surface-2: #f3f2ef;
-    --border: rgba(11, 11, 11, 0.10);
-    --ink: #0b0b0b;
-    --ink-2: #52514e;
-    --muted: #898781;
-    --grid: #e1e0d9;
-    --axis: #c3c2b7;
-    --s1: #2a78d6;
-    --s2: #eb6834;
-    --s3: #1baf7a;
-    --s4: #eda100;
-    --s5: #e87ba4;
-    --s6: #008300;
-    --s7: #6250d6;
-    --s8: #e34948;
-  }
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --surface-2: #f3f2ef;
-  --border: rgba(11, 11, 11, 0.10);
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --s1: #2a78d6;
-  --s2: #eb6834;
-  --s3: #1baf7a;
-  --s4: #eda100;
-  --s5: #e87ba4;
-  --s7: #6250d6;
-  --s8: #e34948;
+  background: var(--page);
+  color: var(--ink);
 }
 
 html, body, #root {
@@ -79,8 +77,13 @@ body {
   margin: 0;
   background: var(--page);
   color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .card {
@@ -91,4 +94,8 @@ body {
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
