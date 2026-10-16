@@ -104,3 +104,33 @@ def test_read_tools_never_write(runs, monkeypatch):
     assert registry.call("get_case", {"case_id": CASE["case_id"]})["case"]["case_id"] == CASE["case_id"]
     assert registry.call("plan_holds", {"case_id": CASE["case_id"]})["holds"]
     assert registry.call("list_cases", {})[0]["case_id"] == CASE["case_id"]
+
+
+@pytest.mark.parametrize("disposition", ["CLOSE", None])
+def test_propose_action_refuses_holds_the_investigation_did_not_recommend(runs, proposals, disposition):
+    res = runs / "results" / f"{CASE['case_id']}.json"
+    if disposition is None:
+        res.unlink()
+    else:
+        res.write_text(json.dumps({**result(disposition), "case_id": CASE["case_id"], "report": {}}))
+    with pytest.raises(ToolError, match="investigation"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M1",
+                                         "reason": "Hold it please"})
+
+
+def test_release_needs_an_approved_hold(runs, proposals):
+    made, open_ = proposals
+    with pytest.raises(ToolError, match="no approved hold"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "RELEASE", "account": "M1",
+                                         "reason": "Customer explained it"})
+    open_.append({"type": "HOLD", "status": "APPROVED", "account": "M1"})
+    assert registry.call("propose_action", {"case_id": CASE["case_id"], "type": "RELEASE", "account": "M1",
+                                            "reason": "Customer explained it"})["created"]
+
+
+def test_act_plans_once(runs, proposals, monkeypatch):
+    calls = []
+    real = P.plan_holds
+    monkeypatch.setattr(P, "plan_holds", lambda *a, **k: calls.append(1) or real(*a, **k))
+    registry.act(CASE["case_id"])
+    assert len(calls) == 1

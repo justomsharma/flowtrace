@@ -75,9 +75,17 @@ def test_actions_and_audit_endpoints(monkeypatch):
 
 
 def test_get_plan_returns_the_saved_plan_and_current_actions(case, monkeypatch):
-    monkeypatch.setattr(M.store, "load_plan", lambda cid: {"case_id": cid})
-    monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [{"id": "A1"}])
-    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": {"case_id": case}, "actions": [{"id": "A1"}]}
+    plan = {"case_id": case, "network": {"nodes": [], "edges": []}}
+    act = {"id": "A1", "type": "FILE_STR", "status": "PROPOSED"}
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: plan)
+    monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [act])
+    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": plan, "actions": [act], "blocked_open": 0}
+
+
+def test_get_plan_before_any_plan_exists(case, monkeypatch):
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: None)
+    monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [])
+    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": None, "actions": [], "blocked_open": None}
 
 
 def test_a_stored_result_triggers_the_act_step_and_survives_its_failure(monkeypatch, tmp_path):
@@ -92,3 +100,15 @@ def test_a_stored_result_triggers_the_act_step_and_survives_its_failure(monkeypa
     monkeypatch.setattr(registry, "act", act)
     M._store_result("BX-C001", {"case_id": "BX-C001"})
     assert acted == ["BX-C001"] and "BX-C001" in M.RESULTS
+
+
+def test_get_plan_says_what_the_open_holds_block(case, monkeypatch):
+    plan = {"case_id": case, "network": {"nodes": [], "edges": []}}
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: plan)
+    monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [
+        {"id": "A1", "type": "HOLD", "status": "APPROVED", "account": "M1"},
+        {"id": "A2", "type": "HOLD", "status": "REJECTED", "account": "M2"}])
+    seen = []
+    monkeypatch.setattr(M.planner, "blocked_by", lambda p, held: seen.append((p, held)) or 123.0)
+    r = client.get(f"/api/cases/{case}/plan").json()
+    assert r["blocked_open"] == 123.0 and seen == [(plan, ["M1"])]

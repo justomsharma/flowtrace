@@ -97,17 +97,13 @@ def decide(action_id: str, approve: bool, reason: str, by: str = "analyst", key:
     now = now or now_ms()
     to = "APPROVED" if approve else "REJECTED"
     expires = add_business_days(now, a["expiry_days"]) if approve and a["type"] == "HOLD" else None
+    # One query: the decision, its audit entry, the verdict, the release and withdrawn alternatives.
     rows = rw(Q.DECIDE_ACTION, {"id": action_id, "to": to, "by": by, "now": now, "reason": reason, "key": key,
-                                "expires_ts": expires, "audit_id": _id("AU")}).rows
+                                "expires_ts": expires, "audit_id": _id("AU"),
+                                "verdict": VERDICT.get(a["type"]) if approve else None}).rows
     if not rows:  # someone else decided between our read and our write
         return _already(get(action_id), key)
-    a = dict(rows[0]["action"])
-    if approve and a["type"] in VERDICT:
-        rw(Q.SET_VERDICT, {"case_id": a["case_id"], "verdict": VERDICT[a["type"]], "by": by, "now": now,
-                           "reason": reason, "action_id": a["id"], "audit_id": _id("AU")})
-    if approve and a["type"] == "RELEASE":
-        rw(Q.RELEASE_HOLD, {"case_id": a["case_id"], "account": a["account"], "now": now, "by": by, "reason": reason})
-    return a
+    return dict(rows[0]["action"])
 
 
 def _already(a: dict, key: str | None) -> dict:
@@ -121,8 +117,11 @@ def expire_due(now: int | None = None) -> int:
     return rw(Q.EXPIRE_DUE, {"now": now or now_ms()}).rows[0]["n"]
 
 
-def expire_proposals(case_prefix: str, reason: str, now: int | None = None) -> int:
-    return rw(Q.EXPIRE_PROPOSALS, {"prefix": case_prefix, "reason": reason, "now": now or now_ms()}).rows[0]["n"]
+def retire_batch(case_prefix: str, reason: str, now: int | None = None) -> dict:
+    """A batch was uploaded again and its cases renumbered: withdraw its open proposals and retire its decided
+    actions, so none of them attaches to a different case that now has the same id."""
+    p = {"prefix": case_prefix, "reason": reason, "now": now or now_ms()}
+    return {"withdrawn": rw(Q.EXPIRE_PROPOSALS, p).rows[0]["n"], "retired": rw(Q.RETIRE_DECIDED, p).rows[0]["n"]}
 
 
 def list_actions(case_id: str | None = None, status: str | None = None, expire: bool = True) -> list[dict]:

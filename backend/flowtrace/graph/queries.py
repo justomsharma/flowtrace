@@ -257,9 +257,13 @@ MATCH (a:Account) WHERE a.id IN $accounts
 MERGE (c)-[:ABOUT]->(a)
 """
 
-# Re-uploading a batch renumbers its cases, so the old case memory for that batch is dropped.
+# Re-uploading a batch renumbers its cases, so the old case memory for that batch is dropped. A case with a
+# person's verdict is kept under a retired id ("<id>~<now>"), so later uploads still learn from that decision.
 DELETE_BATCH_CASES = """
-MATCH (c:Case) WHERE c.id STARTS WITH $prefix
+MATCH (c:Case) WHERE c.id STARTS WITH $prefix AND c.retired_id IS NULL
+FOREACH (_ IN CASE WHEN c.verdict IS NULL THEN [] ELSE [1] END |
+  SET c.retired_id = c.id, c.id = c.id + '~' + toString($now))
+WITH c WHERE c.verdict IS NULL
 DETACH DELETE c
 """
 
@@ -294,7 +298,8 @@ DELETE t
 
 # --- Actions (the agent proposes, a person decides) -----------------------------------------
 # (:Action)-[:FOR]->(:Case), (:Action)-[:ON]->(:Account). dedup_key = "case|type|account" while the action is
-# open (proposed, approved or rejected); it is cleared when a hold ends, so the account can be held again.
+# current (proposed, approved or rejected); it is cleared when a hold ends (so the account can be held again) and
+# when the batch is uploaded again (its cases are renumbered).
 
 PROPOSE_ACTION = """
 MERGE (c:Case {id: $case_id})
@@ -316,13 +321,40 @@ MATCH (a:Action {id: $id})
 RETURN properties(a) AS action
 """
 
-# Approve or reject: only a PROPOSED action changes, so a second click finds nothing to change.
+# Approve or reject: only a PROPOSED action changes, so a second click finds nothing to change. Everything the
+# decision causes happens in the same query, so it all happens or none of it does:
+#   $verdict   (approved FILE_STR / ESCALATE / CLOSE) the person's verdict on the Case, and the case's other
+#              open case decisions are withdrawn (SUPERSEDED)
+#   RELEASE    (approved) the case's approved hold on that account ends now, and the release's own
+#              dedup_key is cleared so the account can be released again after a new hold
 DECIDE_ACTION = """
 MATCH (a:Action {id: $id}) WHERE a.status = 'PROPOSED'
 SET a.status = $to, a.decided_by = $by, a.decided_at = $now, a.reason = $reason, a.decision_key = $key,
-    a.expires_ts = $expires_ts
+    a.expires_ts = $expires_ts,
+    a.dedup_key = CASE WHEN a.type = 'RELEASE' AND $to = 'APPROVED' THEN NULL ELSE a.dedup_key END
 CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, event: $to, action_id: a.id, case_id: a.case_id,
                 account: a.account, from_status: 'PROPOSED', to_status: $to, reason: $reason})
+WITH a
+OPTIONAL MATCH (c:Case {id: a.case_id})
+FOREACH (_ IN CASE WHEN $verdict IS NOT NULL AND c IS NOT NULL THEN [1] ELSE [] END |
+  SET c.verdict = $verdict, c.verdict_by = $by, c.verdict_at = $now, c.verdict_reason = $reason,
+      c.verdict_action = a.id
+  CREATE (:Audit {id: $audit_id + '-V', ts: $now, actor: $by, event: 'VERDICT', action_id: a.id, case_id: c.id,
+                  from_status: coalesce(c.disposition, ''), to_status: $verdict, reason: $reason}))
+WITH a
+OPTIONAL MATCH (o:Action {case_id: a.case_id})
+WHERE o.id <> a.id AND o.retired_at IS NULL AND (
+      ($to = 'APPROVED' AND a.type = 'RELEASE' AND o.type = 'HOLD' AND o.status = 'APPROVED' AND o.account = a.account)
+   OR ($verdict IS NOT NULL AND o.status = 'PROPOSED' AND o.type IN ['ESCALATE', 'FILE_STR', 'CLOSE']))
+WITH a, collect(o) AS others
+FOREACH (o IN others |
+  SET o.status = 'EXPIRED', o.dedup_key = NULL,
+      o.released_at = CASE WHEN o.type = 'HOLD' THEN $now ELSE o.released_at END
+  CREATE (:Audit {id: $audit_id + '-' + o.id, ts: $now, actor: $by,
+                  event: CASE WHEN o.type = 'HOLD' THEN 'RELEASED' ELSE 'SUPERSEDED' END, action_id: o.id,
+                  case_id: o.case_id, account: o.account,
+                  from_status: CASE WHEN o.type = 'HOLD' THEN 'APPROVED' ELSE 'PROPOSED' END, to_status: 'EXPIRED',
+                  reason: $reason}))
 RETURN properties(a) AS action
 """
 
@@ -336,38 +368,31 @@ CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'syste
 RETURN count(a) AS n
 """
 
-# An approved RELEASE ends the case's approved hold on that account early.
-RELEASE_HOLD = """
-MATCH (a:Action {type: 'HOLD', status: 'APPROVED', case_id: $case_id, account: $account})
-SET a.status = 'EXPIRED', a.dedup_key = NULL, a.released_at = $now
-CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: $by, event: 'RELEASED',
-                action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'APPROVED',
-                to_status: 'EXPIRED', reason: $reason})
-RETURN count(a) AS n
-"""
-
-# A re-uploaded batch renumbers its cases: proposals nobody decided on are withdrawn; approved holds stay.
+# A re-uploaded batch renumbers its cases, so case B-C001 may now be a different case. Proposals nobody decided
+# on are withdrawn. Decided actions are retired: their dedup_key is cleared and the case's panel no longer lists
+# them, so nothing merges onto them; an approved hold keeps its status (that money is really held).
 EXPIRE_PROPOSALS = """
-MATCH (a:Action {status: 'PROPOSED'}) WHERE a.case_id STARTS WITH $prefix
-SET a.status = 'EXPIRED', a.dedup_key = NULL
+MATCH (a:Action {status: 'PROPOSED'}) WHERE a.case_id STARTS WITH $prefix AND a.retired_at IS NULL
+SET a.status = 'EXPIRED', a.dedup_key = NULL, a.retired_at = $now
 CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'system', event: 'CASE_REUPLOADED',
                 action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'PROPOSED',
                 to_status: 'EXPIRED', reason: $reason})
 RETURN count(a) AS n
 """
 
-# The analyst's verdict, kept next to the agent's disposition (which is never overwritten).
-SET_VERDICT = """
-MATCH (c:Case {id: $case_id})
-SET c.verdict = $verdict, c.verdict_by = $by, c.verdict_at = $now, c.verdict_reason = $reason,
-    c.verdict_action = $action_id
-CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, event: 'VERDICT', action_id: $action_id, case_id: c.id,
-                from_status: coalesce(c.disposition, ''), to_status: $verdict, reason: $reason})
-RETURN c.id AS case_id
+RETIRE_DECIDED = """
+MATCH (a:Action) WHERE a.case_id STARTS WITH $prefix AND a.retired_at IS NULL AND a.status <> 'PROPOSED'
+SET a.dedup_key = NULL, a.retired_at = $now
+CREATE (:Audit {id: 'AU-' + a.id + '-R' + toString($now), ts: $now, actor: 'system', event: 'CASE_REUPLOADED',
+                action_id: a.id, case_id: a.case_id, account: a.account, from_status: a.status,
+                to_status: a.status, reason: $reason})
+RETURN count(a) AS n
 """
 
+# A case's panel lists only its current actions; the global list (Results) keeps retired ones.
 LIST_ACTIONS = """
-MATCH (a:Action) WHERE ($case_id IS NULL OR a.case_id = $case_id) AND ($status IS NULL OR a.status = $status)
+MATCH (a:Action) WHERE ($case_id IS NULL OR (a.case_id = $case_id AND a.retired_at IS NULL))
+  AND ($status IS NULL OR a.status = $status)
 RETURN properties(a) AS action
 ORDER BY a.proposed_at DESC, a.id
 LIMIT 1000

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from flowtrace import store
-from flowtrace.actions import service
+from flowtrace.actions import planner, service
 from flowtrace.agent import registry
 from flowtrace.agent.investigate import save_case_memory
 from flowtrace.api import jobs
@@ -117,7 +117,9 @@ def release_due_holds(stop: threading.Event) -> None:
 def forget_batch(batch_id: str) -> None:
     """Drop a batch's earlier cases, investigation results, hold plans and case memory before it is stored
     again, and withdraw its undecided proposals. Case ids are rank-based (B..-C001), so after a retune an old
-    result would otherwise attach to a different case. Approved holds stay: that money is really held."""
+    result would otherwise attach to a different case. Decided actions are retired from the renumbered cases;
+    approved holds keep running (that money is really held), and cases with a person's verdict stay in case
+    memory under a retired id."""
     prefix = f"{batch_id}-C"
     for kind, mem in (("cases", CASES), ("results", RESULTS)):
         for cid in [c for c in mem if c.startswith(prefix)]:
@@ -125,8 +127,8 @@ def forget_batch(batch_id: str) -> None:
             (RUNS / kind / f"{cid}.json").unlink(missing_ok=True)
     for f in (RUNS / "plans").glob(f"{prefix}*.json") if (RUNS / "plans").exists() else []:
         f.unlink(missing_ok=True)
-    rw(Q.DELETE_BATCH_CASES, {"prefix": prefix})
-    service.expire_proposals(prefix, "The file was uploaded again, so its cases were renumbered")
+    rw(Q.DELETE_BATCH_CASES, {"prefix": prefix, "now": int(time.time() * 1000)})
+    service.retire_batch(prefix, "The file was uploaded again, so its cases were renumbered")
 
 
 @app.get("/api/health")
@@ -337,8 +339,8 @@ class Decision(BaseModel):
 
 @app.post("/api/cases/{case_id}/plan")
 def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
-    """Plan holds for an investigated case and propose them. Safe to repeat: proposals are merged on
-    case, type and account, so a double click (or a repeat with the same Idempotency-Key) adds nothing."""
+    """Plan holds for an investigated case and propose them. Safe to repeat: proposals are merged on case,
+    type and account, so a double click adds nothing (the Idempotency-Key header is accepted but not needed)."""
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     if case_id not in RESULTS:
@@ -348,7 +350,11 @@ def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
 
 @app.get("/api/cases/{case_id}/plan")
 def get_plan(case_id: str) -> dict:
-    return {"plan": store.load_plan(case_id), "actions": service.list_actions(case_id=case_id)}
+    """The saved plan, the case's current actions, and what the holds still open (proposed or approved) block:
+    once a person rejects one, the rest no longer add up to the plan's total."""
+    plan, actions = store.load_plan(case_id), service.list_actions(case_id=case_id)
+    held = [a["account"] for a in actions if a["type"] == "HOLD" and a["status"] in ("PROPOSED", "APPROVED")]
+    return {"plan": plan, "actions": actions, "blocked_open": planner.blocked_by(plan, held) if plan else None}
 
 
 @app.get("/api/actions")

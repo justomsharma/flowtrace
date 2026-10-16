@@ -91,43 +91,81 @@ def _min_vertex_cut(supply: dict[str, float], routes: dict[str, set[str]], exits
     return sorted(n for n in _nodes(supply, routes) if (n, "in") in reach and (n, "out") not in reach)
 
 
-def _marginals(order: list[str], supply, routes, exits) -> list[tuple[str, float]]:
-    out, done, held = [], 0.0, set()
-    for n in order:
-        held.add(n)
-        b = _blocked(supply, routes, exits, held)
-        out.append((n, round(b - done, 2)))
-        done = b
-    return out
+def _attribute(held: set[str], supply, routes, exits) -> dict[str, float]:
+    """Money each hold blocks: what sits in it, plus an equal share of the money resting upstream whose every
+    route out reaches the holds (split among the holds that money can reach). Adds up to the blocked total."""
+    amount = {h: supply.get(h, 0.0) for h in held}
+    live = _live(supply, routes, exits, held)
+    for u, r in supply.items():
+        if r <= 0 or u in held or u in live:
+            continue
+        reached, stack, seen = set(), [u], {u}
+        while stack:
+            for v in routes.get(stack.pop(), ()):
+                if v in seen:
+                    continue
+                seen.add(v)
+                if v in held:
+                    reached.add(v)
+                else:
+                    stack.append(v)
+        for h in reached:
+            amount[h] += r / len(reached)
+    return amount
 
 
 def choose_holds(supply: dict[str, float], routes: dict[str, set[str]], exits: set[str], cap: int,
                  min_usd: float) -> tuple[list[tuple[str, float]], str, int]:
-    """Holds in the order chosen with the money each one adds, the method used, and the min-cut size."""
+    """Holds with the money each one blocks (largest first), the method used, and the min-cut size."""
     if sum(supply.values()) <= 0:
         return [], "none", 0
     # A loop with no exit seen (a round trip) still lets money leave from any of its accounts.
     exits = exits | (_nodes(supply, routes) - _live(supply, routes, exits, set()))
     cut = _min_vertex_cut(supply, routes, exits)
-    pool, method = (cut, "min-cut") if len(cut) <= cap else (sorted(_nodes(supply, routes)), "greedy")
-    order: list[str] = []
-    done = 0.0
-    while len(order) < cap:
-        # max() keeps the first of equals: more money blocked, then more money already there, then name order.
-        cands = [n for n in pool if n not in order]
-        if not cands:
+    if len(cut) <= cap:
+        # The whole cut blocks everything by construction. Taking its accounts one at a time would miss
+        # parallel collectors: when each mule pays both A and B, neither alone blocks anything.
+        chosen, method = set(cut), "min-cut"
+    else:
+        chosen, method, done = set(), "greedy", 0.0
+        while len(chosen) < cap:
+            # max() keeps the first of equals: more money blocked, then more money already there, then name order.
+            cands = sorted(_nodes(supply, routes) - chosen)
+            best = max(cands, key=lambda n: (_blocked(supply, routes, exits, chosen | {n}), supply.get(n, 0.0)))
+            b = _blocked(supply, routes, exits, chosen | {best})
+            if b - done <= 0:
+                break
+            chosen.add(best)
+            done = b
+    # Drop holds that add less than min_usd to what the others block (leave-one-out), weakest first.
+    while chosen:
+        total = _blocked(supply, routes, exits, chosen)
+        adds = {h: total - _blocked(supply, routes, exits, chosen - {h}) for h in chosen}
+        weakest = min(sorted(chosen), key=lambda h: (adds[h], supply.get(h, 0.0)))
+        if adds[weakest] >= min_usd:
             break
-        best = max(cands, key=lambda n: (_blocked(supply, routes, exits, set(order) | {n}), supply.get(n, 0.0)))
-        b = _blocked(supply, routes, exits, set(order) | {best})
-        if b - done <= 0:
-            break
-        order.append(best)
-        done = b
-    holds = _marginals(order, supply, routes, exits)
-    while holds and min(g for _, g in holds) < min_usd:     # dropping one can change the others' share
-        weakest = min(holds, key=lambda h: h[1])[0]
-        holds = _marginals([n for n, _ in holds if n != weakest], supply, routes, exits)
+        chosen.remove(weakest)
+    amount = _attribute(chosen, supply, routes, exits)
+    holds = sorted(((h, round(amount[h], 2)) for h in chosen), key=lambda x: (-x[1], x[0]))
     return holds, method, len(cut)
+
+
+def _network(plan: dict) -> tuple[dict[str, float], dict[str, set[str]], set[str]]:
+    """Money at rest, routes and exits of a saved plan (no graph queries)."""
+    nodes = {n["id"]: n for n in plan["network"]["nodes"] if not n["hub"]}
+    routes: dict[str, set[str]] = defaultdict(set)
+    for e in plan["network"]["edges"]:
+        if e["kind"] == "trail" and e["src"] in nodes and e["dst"] in nodes:
+            routes[e["src"]].add(e["dst"])
+    return {a: n["at_rest"] for a, n in nodes.items()}, dict(routes), {a for a, n in nodes.items() if n["exit"]}
+
+
+def blocked_by(plan: dict, held: list[str]) -> float:
+    """Money still in motion that these held accounts block, from a saved plan. Used when a person has
+    approved or rejected some of the proposed holds, so the open ones no longer add up to the plan's total."""
+    supply, routes, exits = _network(plan)
+    exits |= _nodes(supply, routes) - _live(supply, routes, exits, set())
+    return round(_blocked(supply, routes, exits, set(held) & set(supply)), 2)
 
 
 # --- the plan -----------------------------------------------------------------------------------

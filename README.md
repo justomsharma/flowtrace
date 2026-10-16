@@ -110,7 +110,7 @@ Every query lives in two files: [`backend/flowtrace/graph/queries.py`](backend/f
 | Network shape | `SHARED_DESTINATIONS` / `SHARED_SOURCES`, `CYCLES` |
 | Case memory | `SAVE_CASE`, `PRIOR_CASES`, `NEAREST_ESCALATED` (`shortestPath` to escalated accounts). Both read `coalesce(c.verdict, c.disposition)`, so a person's verdict replaces the agent's, and human verdicts come first |
 | Hold planner | `TRACE_FORWARD_HOP` from the case accounts, `HUB_DEGREES` + `DEGREES` (hub rules), `HOLD_FLOWS` (what each trail account received and sent after the case money arrived) |
-| Actions | `PROPOSE_ACTION` (MERGE on `dedup_key`; audit entry only when created), `DECIDE_ACTION` (`WHERE a.status = 'PROPOSED'`, so a second click changes nothing), `EXPIRE_DUE`, `RELEASE_HOLD`, `SET_VERDICT`, `AUDIT_LOG` |
+| Actions | `PROPOSE_ACTION` (MERGE on `dedup_key`; audit entry only when created), `DECIDE_ACTION` (`WHERE a.status = 'PROPOSED'`, so a second click changes nothing), `EXPIRE_DUE`, `EXPIRE_PROPOSALS` + `RETIRE_DECIDED` (re-upload), `AUDIT_LOG`. The decision, its verdict, an approved release and withdrawing the case's other open decisions happen in one query |
 
 FalkorDB specifics we rely on:
 - **`GRAPH.RO_QUERY`:** every agent tool is read-only, enforced by the database.

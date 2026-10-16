@@ -134,3 +134,26 @@ def test_money_in_a_closed_loop_can_still_leave():
     """A round trip with no exit seen: money can leave from any account in the loop, so it is held where it sits."""
     holds, method, _ = P.choose_holds({"A": 5000.0, "B": 0.0}, {"A": {"B"}, "B": {"A"}}, exits=set(), cap=3, min_usd=1000)
     assert holds == [("A", 5000.0)] and method == "min-cut"
+
+
+def test_parallel_collectors_are_held_together():
+    """Each mule pays both collectors: neither alone blocks anything, the pair blocks it all (review finding)."""
+    supply = {"M0": 5000.0, "M1": 5000.0, "M2": 5000.0, "A": 0.0, "B": 0.0}
+    routes = {m: {"A", "B"} for m in ("M0", "M1", "M2")}
+    holds, method, k = P.choose_holds(supply, routes, exits={"A", "B"}, cap=3, min_usd=1000)
+    assert sorted(holds) == [("A", 7500.0), ("B", 7500.0)]
+    assert (method, k) == ("min-cut", 2)
+
+
+def test_parallel_collectors_with_four_mules():
+    supply = {f"M{i}": 2000.0 for i in range(4)}
+    holds, _, _ = P.choose_holds(supply, {m: {"A", "B"} for m in supply}, exits={"A", "B"}, cap=3, min_usd=1000)
+    assert sorted(holds) == [("A", 4000.0), ("B", 4000.0)]
+
+
+def test_blocked_by_open_holds_is_recomputed_from_the_plan(world):
+    world(mule_world())
+    plan = P.plan_holds(CASE, cfg(), result("ESCALATE"))
+    assert P.blocked_by(plan, ["M1", "M2"]) == pytest.approx(25000)
+    assert P.blocked_by(plan, ["M1"]) == pytest.approx(20000)
+    assert P.blocked_by(plan, []) == 0

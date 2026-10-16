@@ -5,8 +5,9 @@
   propose_action the only write: creates PROPOSED actions. Nothing here can approve; only a person can,
                  through the API the UI calls.
 
-propose_action checks every caller the same way: a known type, a HOLD only on an account of the case's
-money trail that is not a hub, and at most actions.max_holds_per_case open holds per case.
+propose_action checks every caller the same way: a known type; a HOLD only when the investigation recommends
+it (actions.propose_for), only on an account of the case's money trail that is not a hub, and at most
+actions.max_holds_per_case open holds per case; a RELEASE only of an approved hold.
 """
 from __future__ import annotations
 
@@ -84,19 +85,32 @@ def plan_holds(a: CaseArgs) -> dict:
 def propose_action(a: ProposeArgs) -> dict:
     """Propose an action for a person to approve or reject (HOLD, RELEASE, ESCALATE, FILE_STR, CLOSE).
     It is only a proposal: it changes nothing until a person approves it."""
+    return _propose(a)
+
+
+def _propose(a: ProposeArgs, plan: dict | None = None) -> dict:
+    """plan: the case's hold plan when the caller already has it (the act step), so it is computed once."""
     case = _case(a.case_id)
     if a.type in ("HOLD", "RELEASE") and not a.account:
         raise ToolError(f"a {a.type} needs an account")
+    current = service.list_actions(case_id=a.case_id, expire=False) if a.type in ("HOLD", "RELEASE") else []
+    if a.type == "RELEASE" and not any(x["type"] == "HOLD" and x["status"] == "APPROVED" and x.get("account") == a.account
+                                       for x in current):
+        raise ToolError(f"there is no approved hold on {a.account} in this case to release")
     numbers: dict = {}
     if a.type == "HOLD":
-        plan = planner.plan_holds(case, cfg(), store.load_result(a.case_id))
+        result = store.load_result(a.case_id)
+        disposition = (result or {}).get("disposition", {}).get("action")
+        if disposition not in cfg()["actions"]["propose_for"]:
+            raise ToolError("a hold needs an investigation that recommends one (escalate or review); "
+                            + (f"this one recommends {disposition.lower()}" if disposition else "this case is not investigated yet"))
+        plan = plan or planner.plan_holds(case, cfg(), result)
         node = next((n for n in plan["network"]["nodes"] if n["id"] == a.account), None)
         if a.account in plan["skipped_hubs"] or (node and node["hub"]):
             raise ToolError(f"{a.account} is a hub (a merchant or processor): FlowTrace never holds hubs")
         if node is None:
             raise ToolError(f"{a.account} is not on this case's money trail")
-        open_holds = {x["account"] for x in service.list_actions(case_id=a.case_id, expire=False)
-                      if x["type"] == "HOLD" and x["status"] in ("PROPOSED", "APPROVED")}
+        open_holds = {x["account"] for x in current if x["type"] == "HOLD" and x["status"] in ("PROPOSED", "APPROVED")}
         cap = cfg()["actions"]["max_holds_per_case"]
         if a.account not in open_holds and len(open_holds) >= cap:
             raise ToolError(f"this case already has {len(open_holds)} open holds (the most is {cap})")
@@ -144,8 +158,8 @@ def act(case_id: str) -> dict:
     store.save_plan(case_id, plan)
     actions = []
     for h in plan["holds"]:
-        actions.append(call("propose_action", {"case_id": case_id, "type": "HOLD", "account": h["account"],
-                                               "reason": h["why"], "evidence_ids": h["evidence_ids"]})["action"])
+        args = ProposeArgs(case_id=case_id, type="HOLD", account=h["account"], reason=h["why"], evidence_ids=h["evidence_ids"])
+        actions.append(_propose(args, plan)["action"])
     if plan["case_action"] and plan["disposition"]:
         actions.append(call("propose_action", {"case_id": case_id, "type": plan["case_action"]["type"],
                                                "reason": plan["case_action"]["why"]})["action"])

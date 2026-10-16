@@ -133,13 +133,52 @@ def test_approving_a_release_ends_the_hold(g):
     assert "RELEASED" in [e["event"] for e in S.audit()]
 
 
-def test_reupload_expires_open_proposals_but_keeps_approved_holds(g):
+def test_reupload_withdraws_proposals_and_retires_decisions_so_renumbered_cases_start_clean(g):
     a, _ = hold(now=LIVE)
     b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", amount_blocked=2000.0, now=LIVE)
+    c, _ = S.propose("ZZ-C001", "FILE_STR", why="The evidence points to laundering", now=LIVE)
     S.decide(a["id"], True, "Money is still moving to cash", now=LIVE)
-    assert S.expire_proposals("ZZ-C", "The file was uploaded again") == 1
-    assert (S.get(a["id"])["status"], S.get(b["id"])["status"]) == ("APPROVED", "EXPIRED")
-    assert "CASE_REUPLOADED" in [e["event"] for e in S.audit()]
+    S.decide(c["id"], False, "Not enough to file yet", now=LIVE)
+    assert S.retire_batch("ZZ-C", "The file was uploaded again") == {"withdrawn": 1, "retired": 2}
+    assert (S.get(a["id"])["status"], S.get(b["id"])["status"]) == ("APPROVED", "EXPIRED")  # the hold is still real
+    # The renumbered ZZ-C001 may be a different case: none of the old decisions attach to it.
+    assert S.list_actions(case_id="ZZ-C001") == []
+    fresh, created = hold(now=LIVE + 1)
+    again, created2 = S.propose("ZZ-C001", "FILE_STR", why="The evidence points to laundering", now=LIVE + 1)
+    assert created and created2 and fresh["id"] != a["id"] and again["status"] == "PROPOSED"
+    assert a["id"] in [x["id"] for x in S.list_actions(status="APPROVED")]  # Results still shows the old hold
+    assert [e["event"] for e in S.audit()].count("CASE_REUPLOADED") == 3
+
+
+def test_approving_one_case_decision_withdraws_the_other_open_ones(g):
+    f, _ = S.propose("ZZ-C001", "FILE_STR", why="The evidence points to laundering", now=LIVE)
+    c, _ = S.propose("ZZ-C001", "CLOSE", why="Legitimate explanations", now=LIVE)
+    h, _ = hold(now=LIVE)
+    S.decide(f["id"], True, "Confirmed mule chain", now=LIVE)
+    assert (S.get(c["id"])["status"], S.get(h["id"])["status"]) == ("EXPIRED", "PROPOSED")
+    assert "SUPERSEDED" in [e["event"] for e in S.audit()]
+
+
+def test_a_released_account_can_be_held_and_released_again(g):
+    a, _ = hold(now=LIVE)
+    S.decide(a["id"], True, "Money is still moving to cash", now=LIVE)
+    r, _ = S.propose("ZZ-C001", "RELEASE", account="ACC1", why="Customer showed the invoice", now=LIVE + 1)
+    S.decide(r["id"], True, "Invoice checked with the supplier", now=LIVE + 2)
+    b, _ = hold(now=LIVE + 3)
+    S.decide(b["id"], True, "New money arrived from the same mule", now=LIVE + 3)
+    r2, created = S.propose("ZZ-C001", "RELEASE", account="ACC1", why="Cleared again", now=LIVE + 4)
+    assert created and r2["id"] != r["id"]
+
+
+def test_a_reupload_keeps_cases_with_a_human_verdict_in_case_memory(g):
+    seed_cases(("ZZ-C001", "REVIEW", 100), ("ZZ-C002", "ESCALATE", 100))
+    a, _ = S.propose("ZZ-C001", "FILE_STR", why="The evidence points to laundering")
+    S.decide(a["id"], True, "Confirmed mule chain", by="Priya")
+    rw(Q.DELETE_BATCH_CASES, {"prefix": "ZZ-C", "now": 5})
+    left = ro("MATCH (c:Case) RETURN c.id AS id, c.retired_id AS was, c.verdict AS v").rows
+    assert left == [{"id": "ZZ-C001~5", "was": "ZZ-C001", "v": "ESCALATE"}]
+    prior = ro(Q.PRIOR_CASES, {"id": "B", "batch_prefix": "YY-C", "t0": 200}).rows  # a later upload still sees it
+    assert (prior[0]["case_id"], prior[0]["decided_by"]) == ("ZZ-C001~5", "human")
 
 
 # --- verdicts and case memory -----------------------------------------------------------------------

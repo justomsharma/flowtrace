@@ -23,9 +23,10 @@ import statistics as st
 
 import polars as pl
 
-from flowtrace.actions.planner import _hubs, plan_holds
+from flowtrace.actions.planner import plan_holds
 from flowtrace.agent.investigate import investigate, new_context
 from flowtrace.eval.funnel import cleanup
+from flowtrace.graph import queries as Q
 from flowtrace.graph.client import ro
 from flowtrace.pipeline.batch import batch_id_for, process_batch
 from flowtrace.settings import cfg, settings
@@ -35,6 +36,19 @@ def laundering_accounts() -> set[str]:
     tx = pl.read_parquet(settings().processed_dir / "transactions.parquet", columns=["src", "dst", "is_laundering"])
     bad = tx.filter(pl.col("is_laundering") == 1)
     return set(bad["src"].to_list()) | set(bad["dst"].to_list())
+
+
+def hubs_among(ids: list[str], t0: int, rules: dict) -> set[str]:
+    """Re-check held accounts against the hub rules with fresh queries (not the planner's own filter)."""
+    if not ids:
+        return set()
+    c, day = rules["cases"], 86_400_000
+    window = {r["id"]: r["in_deg"] + r["out_deg"] for r in
+              ro(Q.HUB_DEGREES, {"ids": ids, "h0": t0 - c["hub_lookback_days"] * day, "t0": t0}).rows}
+    total = {r["id"]: r for r in ro(Q.DEGREES, {"ids": ids}).rows}
+    return {a for a in ids if window.get(a, 0) >= c["hub_degree"]
+            or total[a]["in_deg"] + total[a]["out_deg"] > rules["trace"]["hub_degree"]
+            or total[a]["in_deg"] >= rules["legitimacy"]["hub_receiver_in_degree"]}
 
 
 def case_row(case: dict, disposition: str, plan: dict, laundering: set[str], hubs: set[str]) -> dict:
@@ -91,7 +105,7 @@ def main() -> None:
                             save_memory=False)
             p = plan_holds(c, rules, r)
             held = [h["account"] for h in p["holds"]]
-            rows.append(case_row(c, r["disposition"]["action"], p, bad, _hubs(held, c["t0"], rules)))
+            rows.append(case_row(c, r["disposition"]["action"], p, bad, hubs_among(held, c["t0"], rules)))
             x = rows[-1]
             print(f"  {x['case_id']} truth={x['truth']} {x['disposition']:8s} motion={x['in_motion']:>12,.0f} "
                   f"blocked={x['blocked']:>12,.0f} holds={x['holds']} on_laundering={x['holds_on_laundering']} {x['method']}")

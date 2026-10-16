@@ -22,16 +22,23 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
 }) {
   const [plan, setPlan] = useState<HoldPlan | null>(null)
   const [actions, setActions] = useState<Action[]>([])
+  const [blockedOpen, setBlockedOpen] = useState<number | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState(readName)
   const planKey = useRef(crypto.randomUUID())
+  // A reply that lands after the analyst opened another case must not paint that case's map.
+  const alive = useRef(true)
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
 
   const load = useCallback(() => {
-    getJSON<{ plan: HoldPlan | null; actions: Action[] }>(`/api/cases/${caseId}/plan`)
-      .then((r) => { setPlan(r.plan); setActions(r.actions); setLoaded(true); onPlan(r.plan, r.actions) })
-      .catch((e) => { setError(String(e)); setLoaded(true) })
+    getJSON<{ plan: HoldPlan | null; actions: Action[]; blocked_open: number | null }>(`/api/cases/${caseId}/plan`)
+      .then((r) => {
+        if (!alive.current) return
+        setPlan(r.plan); setActions(r.actions); setBlockedOpen(r.blocked_open); setLoaded(true); onPlan(r.plan, r.actions)
+      })
+      .catch((e) => { if (alive.current) { setError(String(e)); setLoaded(true) } })
   }, [caseId, onPlan])
 
   useEffect(() => { load() }, [load, refreshKey])
@@ -40,6 +47,7 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
     setPlanning(true); setError(null)
     try {
       const r = await sendJSON<{ plan: HoldPlan; actions: Action[] }>(`/api/cases/${caseId}/plan`, undefined, planKey.current)
+      if (!alive.current) return
       setPlan(r.plan); onPlan(r.plan, r.actions); load()
     } catch (e) { setError((e as Error).message) } finally { setPlanning(false) }
   }
@@ -70,7 +78,7 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
         </div>
       )}
 
-      {plan && <Effect plan={plan} open={holds.filter((a) => a.type === 'HOLD' && (a.status === 'PROPOSED' || a.status === 'APPROVED'))} />}
+      {plan && <Effect plan={plan} blockedOpen={blockedOpen} open={holds.filter((a) => a.type === 'HOLD' && (a.status === 'PROPOSED' || a.status === 'APPROVED'))} />}
 
       {holds.length > 0 && (
         <ul className="flex flex-col gap-2.5">
@@ -102,9 +110,10 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
 
 /** "Holding 2 accounts blocks X of Y still in motion", with the money split into blocked, loose and gone.
  *  Counts the holds still proposed or approved, so a rejection shows straight away. */
-function Effect({ plan, open }: { plan: HoldPlan; open: Action[] }) {
+function Effect({ plan, open, blockedOpen }: { plan: HoldPlan; open: Action[]; blockedOpen: number | null }) {
   const m = (v: number) => fmtMoney(v, plan.currency, plan.rate)
-  const blocked = Math.min(open.reduce((s, a) => s + (a.amount_blocked ?? 0), 0), plan.in_motion)
+  // The server recomputes what the open holds block together; their separate amounts need not add up to it.
+  const blocked = Math.min(blockedOpen ?? open.reduce((s, a) => s + (a.amount_blocked ?? 0), 0), plan.in_motion)
   const loose = Math.max(plan.in_motion - blocked, 0)
   const total = plan.in_motion + plan.already_out
   const n = open.length

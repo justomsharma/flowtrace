@@ -45,16 +45,16 @@ def _run(name: str, args: dict, ctx: CaseContext | None = None):
 
 def build_server() -> MCPServer:
     server = MCPServer("flowtrace", instructions=INSTRUCTIONS)
-    sessions: dict[str, CaseContext] = {}
+    sessions: dict[str, tuple[dict, CaseContext]] = {}
 
     def session(case_id: str) -> CaseContext:
-        if case_id not in sessions:
-            case = store.load_case(case_id)
-            if case is None:
-                raise MCPToolError(f"no such case {case_id}")
+        case = store.load_case(case_id)
+        if case is None:
+            raise MCPToolError(f"no such case {case_id}")
+        if case_id not in sessions or sessions[case_id][0] != case:  # new, or renumbered by a re-upload
             from flowtrace.agent.investigate import new_context  # imports the policies, which import the registry
-            sessions[case_id] = new_context(case, cfg(), emit=lambda e: None)
-        return sessions[case_id]
+            sessions[case_id] = (case, new_context(case, cfg(), emit=lambda e: None))
+        return sessions[case_id][1]
 
     def case_tool(name: str, model: type[BaseModel]):
         def tool(case_id: str, args: model) -> dict[str, Any]:
