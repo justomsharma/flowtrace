@@ -90,7 +90,8 @@ UNWIND $frontier AS f
 WITH a, f WHERE f.id = a.id
 MATCH (a)-[t:TRANSFER]->(b:Account)
 WHERE t.ts + 0 >= f.ts AND t.ts + 0 <= f.ts + $max_gap_ms AND NOT b.id IN $visited
-RETURN a.id AS src, b.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt
+RETURN a.id AS src, b.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt, t.cur AS cur,
+       t.xcur AS xcur
 ORDER BY t.amount DESC
 LIMIT 200
 """
@@ -101,7 +102,8 @@ UNWIND $frontier AS f
 WITH a, f WHERE f.id = a.id
 MATCH (a)<-[t:TRANSFER]-(b)
 WHERE t.ts + 0 <= f.ts AND t.ts + 0 >= f.ts - $max_gap_ms AND NOT b.id IN $visited
-RETURN b.id AS src, a.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt
+RETURN b.id AS src, a.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt, t.cur AS cur,
+       t.xcur AS xcur
 ORDER BY t.amount DESC
 LIMIT 200
 """
@@ -124,6 +126,22 @@ WITH a, count(o) AS out_deg
 OPTIONAL MATCH (a)<-[i:TRANSFER]-() WHERE i.ts + 0 >= $h0 AND i.ts + 0 < $t0
 RETURN a.id AS id, out_deg, count(i) AS in_deg
 """
+
+# --- Hold planner -------------------------------------------------------------------------
+
+# What each trail account did with money after the case money first reached it ($since: [{id, ts}]),
+# up to the decision time $t1. exit_sum = money sent in hard-to-trace form or across currencies.
+HOLD_FLOWS = """
+MATCH (a:Account) WHERE a.id IN $ids
+UNWIND $since AS f
+WITH a, f WHERE f.id = a.id
+OPTIONAL MATCH (a)-[o:TRANSFER]->() WHERE o.ts + 0 >= f.ts AND o.ts + 0 < $t1
+WITH a, f, count(o) AS out_cnt, coalesce(sum(o.amount), 0.0) AS out_sum,
+     coalesce(sum(CASE WHEN o.fmt IN $exit_fmts OR o.xcur THEN o.amount ELSE 0.0 END), 0.0) AS exit_sum
+OPTIONAL MATCH (a)<-[i:TRANSFER]-() WHERE i.ts + 0 >= f.ts AND i.ts + 0 < $t1
+RETURN a.id AS id, out_cnt, out_sum, exit_sum, count(i) AS in_cnt, coalesce(sum(i.amount), 0.0) AS in_sum
+"""
+
 
 # --- Relationship history (legitimacy evidence) -------------------------------------------
 
