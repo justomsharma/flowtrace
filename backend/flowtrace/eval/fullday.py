@@ -42,12 +42,10 @@ def day_cases(day: pl.DataFrame, p_raw: np.ndarray, rules: dict, degrees: dict[s
     return build_cases(tx, [], "DAY", rules, degrees)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--day", type=date.fromisoformat, default=date(2022, 9, 9))
-    args = ap.parse_args()
-    s, rules = settings(), cfg()
-    d = day_of(args.day)
+def rank_day(the_day: date, rules: dict) -> tuple[list[dict], pl.DataFrame]:
+    """Every payment of the day scored and turned into ranked cases, as an upload of the whole day would."""
+    s = settings()
+    d = day_of(the_day)
     feats = pl.scan_parquet(s.processed_dir / "features.parquet").filter(pl.col("day") == d).collect()
     bundle = load_model()
     x = feats.select(bundle["features"]).to_pandas()
@@ -61,7 +59,15 @@ def main() -> None:
         on="tx_id", how="left", maintain_order="left")  # keeps the feature row order, so p_raw lines up
     first = int(day["ts"].min())
     degrees = hub_degrees(scan.select("src", "dst", "ts"), first, rules["cases"]["hub_lookback_days"])
-    cases = day_cases(day, p_raw, rules, degrees)
+    return day_cases(day, p_raw, rules, degrees), day
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--day", type=date.fromisoformat, default=date(2022, 9, 9))
+    args = ap.parse_args()
+    rules = cfg()
+    cases, day = rank_day(args.day, rules)
     cap = rules["cases"]["daily_capacity"]
     out = {"day": str(args.day), "kind": "full day (offline, no detectors)", "bar": rules["cases"]["flag_probability"],
            "laundering_rate": round(float(day["is_laundering"].mean()), 5),

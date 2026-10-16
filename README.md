@@ -229,6 +229,15 @@ It reports:
 - the unsupported-claim rate;
 - queries and seconds per case.
 
+The curated demo file has almost no legitimate cases. For a fairer comparison, build a slice of the real day:
+the top 20 laundering and top 20 legitimate cases of the full-day ranking, with every payment of their accounts.
+
+```bash
+python -m flowtrace.eval.slice --day 2022-09-09 --pos 20 --neg 20      # writes data/samples/eval/day_slice_2022-09-09.csv
+python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 40
+```
+Both commands upload the slice into the graph; delete its batch afterwards (see `DELETE_BATCH` in `graph/queries.py`).
+
 ## Tests
 
 `backend/tests` holds unit tests for recurring-payment detection, the agent loop, the LLM client (mocked OpenAI: success, refusal, truncation, invalid JSON, no key, API errors), pass-through pairing, case building (hubs, size cap, score, tiers), calibration, idempotent uploads, sample date range and the loader's index wait. The agent tests use a small in-memory stand-in for FalkorDB, so the tool, policy and disposition logic can be tested without a database. The real Cypher is checked against FalkorDB by `flowtrace.graph.smoke`.
