@@ -190,8 +190,8 @@ def auto_hold(case_id: str, actions: list[dict]) -> list[str]:
     conf = d.get("confidence") or 0.0
     if d.get("action") != "ESCALATE" or conf < rule["min_confidence"]:
         return []
-    reason = (f"Automatic hold: escalated at {round(conf * 100)}% confidence (policy: {round(rule['min_confidence'] * 100)}% "
-              f"or more). An analyst confirms by filing, or releases it by closing the case.")
+    reason = (f"Escalated at {round(conf * 100)}% confidence (policy: {round(rule['min_confidence'] * 100)}% or more). "
+              f"Closing the case releases it.")
     held = []
     for a in actions:
         if a.get("type") == "HOLD" and a.get("status") == "PROPOSED":

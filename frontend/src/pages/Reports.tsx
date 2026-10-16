@@ -28,7 +28,7 @@ export default function Reports() {
   }, [openId])
 
   return (
-    <div className="px-6 py-5 flex flex-col gap-5 max-w-[1240px]">
+    <div className="px-6 py-5 flex flex-col gap-5">
       <header>
         <h1 className="text-2xl font-semibold">Reports</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--ink-2)' }}>
@@ -89,7 +89,7 @@ function Draft({ blocks }: { blocks: Block[] }) {
     if (b.type === 'h1') out.push(<h2 key={i} className="text-xl font-semibold">{<Text segs={b.text} />}</h2>)
     else if (b.type === 'h2') out.push(<h3 key={i} className="text-base font-semibold mt-3">{<Text segs={b.text} />}</h3>)
     else if (b.type === 'h3') out.push(<h4 key={i} className="text-sm font-semibold mt-2">{<Text segs={b.text} />}</h4>)
-    else if (b.type === 'p') out.push(<p key={i} className="text-sm leading-relaxed max-w-[75ch]" style={{ color: 'var(--ink-2)' }}><Text segs={b.text} /></p>)
+    else if (b.type === 'p') out.push(<p key={i} className="text-sm leading-relaxed" style={{ color: 'var(--ink-2)' }}><Text segs={b.text} /></p>)
     else if (b.type === 'table') out.push(
       <div key={i} className="overflow-x-auto">
         <table className="text-sm tabular whitespace-nowrap">

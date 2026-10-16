@@ -4,8 +4,8 @@ import { AlertOctagon, CheckCircle2, Eye } from 'lucide-react'
 export function ActionBadge({ action, large = false }: { action: string; large?: boolean }) {
   const map: Record<string, { color: string; label: string; Icon: typeof Eye }> = {
     ESCALATE: { color: 'var(--critical)', label: 'Escalate', Icon: AlertOctagon },
-    REVIEW: { color: 'var(--warning)', label: 'Human review', Icon: Eye },
-    CLOSE: { color: 'var(--good)', label: 'Close (explained)', Icon: CheckCircle2 },
+    REVIEW: { color: 'var(--warning)', label: 'Review', Icon: Eye },
+    CLOSE: { color: 'var(--good)', label: 'Close', Icon: CheckCircle2 },
   }
   const m = map[action] ?? map.REVIEW
   return (

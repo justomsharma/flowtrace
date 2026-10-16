@@ -4,7 +4,8 @@ import { AlertTriangle, CircleCheck, MinusCircle, OctagonAlert, type LucideIcon 
 import { getJSON, type Action, type AuditEntry } from '../lib/api'
 import { useBatch } from '../lib/batch'
 import { fmtMoney } from '../lib/money'
-import { ACTION_PLAIN, caseNo, shortAcct } from '../lib/plain'
+import { ACTION_PLAIN, caseNo } from '../lib/plain'
+import { fullId } from '../lib/names'
 import { timeLeft, untilLabel, useNow } from '../lib/time'
 
 const EVENT_PLAIN: Record<AuditEntry['event'], string> = {
@@ -124,7 +125,7 @@ export default function Results() {
   useEffect(() => { if (due && reloaded.current !== due.id) { reloaded.current = due.id; load() } }, [due, load])
 
   return (
-    <div className="mx-auto max-w-5xl flex flex-col gap-6 px-1 py-3">
+    <div className="px-6 py-5 flex flex-col gap-6">
       <header className="flex flex-col gap-5">
         <div>
           <h1 className="text-xl font-semibold">Holds &amp; audit</h1>
@@ -182,7 +183,7 @@ export default function Results() {
               <tbody>
                 {active.map((a) => (
                   <tr key={a.id} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td className="py-2 pr-4">{a.account ? shortAcct(a.account) : ''}</td>
+                    <td className="py-2 pr-4 font-mono text-xs">{a.account ? fullId(a.account) : ''}</td>
                     <td className="pr-4"><Link to={caseLink(a.case_id)} className="underline underline-offset-2">Case {caseNo(a.case_id)}</Link></td>
                     <td className="pr-4 text-right font-semibold" style={{ color: 'var(--s4)' }}>{fmtMoney(a.hold_amount ?? 0, a.currency, a.rate)}</td>
                     <td className="pr-4">{a.decided_by}</td>
@@ -252,7 +253,7 @@ export default function Results() {
           <p className="text-sm" style={{ color: 'var(--ink-2)' }}>{audit.length ? 'No entries in this group.' : 'Nothing yet.'}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm min-w-[1100px]">
               <thead>
                 <tr className="text-left text-xs" style={{ color: 'var(--muted)' }}>
                   <th className="py-1.5 pr-4 font-medium">Status</th>
@@ -266,11 +267,11 @@ export default function Results() {
                   <tr key={e.id} className="align-top [&>td]:py-2" style={{ borderTop: '1px solid var(--border)' }}>
                     <td className="pr-4"><StatusPill g={g} /></td>
                     <td className="pr-4 whitespace-nowrap tabular" style={{ color: 'var(--ink-2)' }}>{untilLabel(e.ts)}</td>
-                    <td className="pr-4 whitespace-nowrap">{e.actor === 'agent' ? 'Agent' : e.actor === 'mcp' ? 'MCP client' : e.actor === 'system' ? 'System' : e.actor}</td>
-                    <td className="pr-4 whitespace-nowrap">{what(e, typeOf[e.action_id])}</td>
+                    <td className="pr-4 whitespace-nowrap">{e.actor === 'agent' ? 'Agent' : e.actor === 'mcp' ? 'MCP client' : e.actor === 'system' ? 'System' : e.actor.includes('auto-hold') ? 'Agent (auto-hold)' : e.actor}</td>
+                    <td className="pr-4 whitespace-nowrap">{e.actor.includes('auto-hold') && e.event === 'APPROVED' ? 'Hold applied automatically' : what(e, typeOf[e.action_id])}</td>
                     <td className="pr-4 whitespace-nowrap tabular"><Link to={caseLink(e.case_id)} className="underline underline-offset-2">Case {caseNo(e.case_id)}</Link></td>
-                    <td className="pr-4 tabular">{e.account ? shortAcct(e.account) : ''}</td>
-                    <td className="max-w-md" style={{ color: 'var(--ink-2)' }}>{e.reason}</td>
+                    <td className="pr-4 whitespace-nowrap font-mono text-xs">{e.account ? fullId(e.account) : ''}</td>
+                    <td className="min-w-[260px]" style={{ color: 'var(--ink-2)' }}>{e.reason}</td>
                   </tr>
                 ))}
               </tbody>

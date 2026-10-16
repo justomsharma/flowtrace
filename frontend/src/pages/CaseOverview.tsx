@@ -157,7 +157,7 @@ function CasePage({ caseId }: { caseId: string }) {
 
   return (
     <NamesProvider names={o.names ?? {}}>
-    <div className="px-6 py-5 flex flex-col gap-5 max-w-[1560px]">
+    <div className="px-6 py-5 flex flex-col gap-5">
       <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm" style={{ color: 'var(--muted)' }}>
         <Link to={{ pathname: '/today', search: query(null) }} className="hover:underline">Today's work</Link>
         <ChevronRight size={14} aria-hidden />

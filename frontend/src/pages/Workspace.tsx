@@ -413,10 +413,10 @@ function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: numbe
         <span className="text-xs tabular w-6 self-stretch flex items-center pl-1.5"
           style={{ color: 'var(--muted)', borderLeft: quiet ? '2px solid transparent' : '2px solid var(--s2)' }}>{rank}</span>
         <span className="flex-1 min-w-0">
-          <span className="block text-sm truncate">{caseLine(c)}</span>
+          <span className="block text-sm leading-snug">{caseLine(c)}</span>
           <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals ?? [])}</span>
         </span>
-        {c.result ? <ActionBadge action={c.result.action} />
+        {c.result ? <span className="shrink-0"><ActionBadge action={c.result.action} /></span>
           : c.failed ? <span className="text-xs" style={{ color: 'var(--critical)' }}>Failed</span>
           : c.job ? (
             <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ink-2)' }}>

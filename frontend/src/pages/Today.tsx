@@ -69,7 +69,7 @@ export default function Today() {
   )
 
   return (
-    <div className="px-6 py-5 flex flex-col gap-5 max-w-[1240px]">
+    <div className="px-6 py-5 flex flex-col gap-5">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Today's work</h1>

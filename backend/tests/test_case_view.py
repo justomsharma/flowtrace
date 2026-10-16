@@ -189,7 +189,7 @@ def test_report_md_has_sections():
                {"id": "A2", "type": "FILE_STR", "status": "APPROVED", "decided_by": "Asha", "reason": "Clear layering",
                 "proposed_by": "agent"}]
     md = V.str_markdown(case(CHAIN), full_result(), None, actions)
-    for part in ("# STR draft: BX-C001", "Money passed through three accounts", "## Red flags",
+    for part in ("# STR draft: Case 1", "Case reference: BX-C001", "Money passed through three accounts", "## Red flags",
                  "Passed on within 2 hours.", "## Legitimate explanations", "Known counterparty for 6 days.",
                  "## Proposed actions", "Hold account B: $90 (waiting for a decision)",
                  "File an STR: approved by Asha (Clear layering)", "## STR narrative", "STR text.",

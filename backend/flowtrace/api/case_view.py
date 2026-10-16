@@ -9,6 +9,8 @@ the investigation result, the hold plan and the case's actions. Read-only: no gr
 """
 from __future__ import annotations
 
+import re
+
 from collections import defaultdict
 
 from flowtrace.agent.brief import alert_reasons, assess, brief
@@ -390,14 +392,16 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     by = ("written by the rule-based fallback (no AI model)" if author in (None, "template")
           else f"written by AI ({author})")
     evidence = result.get("evidence", [])
-    out = [f"# STR draft: {case['case_id']}", "",
+    no = case["case_id"].rsplit("-C", 1)[-1].lstrip("0") or case["case_id"]
+    out = [f"# STR draft: Case {no}", "", f"Case reference: {case['case_id']}", "",
            f"Draft for a person to review before filing. The narrative was {by}; every figure comes from the "
            f"payment graph. Amounts in US dollars.", "",
            "## Summary", "", f"**{clean(rep['headline'])}**", ""]
     f = flow(case, result, plan, actions, {"ui": {"flow_max_accounts": 10_000}})
     names = account_names(f["nodes"], list(case.get("accounts", [])))
     out += [f"- {p}" for p in summary_points(rep, evidence, result, names)] + ["",
-           f"Recommendation: **{d['action']}** (risk {d['risk']:.2f}, confidence {d.get('confidence_label', '')}). "
+           f"Recommendation: **{d['action'].capitalize()}** (risk {'High' if d['risk'] >= 0.55 else 'Medium' if d['risk'] >= 0.25 else 'Low'}, "
+           f"confidence {round((d.get('confidence') or 0) * 100)}%). "
            f"Case amount {m(case.get('amount', 0.0))} across {len(case.get('accounts', []))} accounts and "
            f"{len(case.get('edges', []))} payments, {_utc(case.get('t0'))} to {_utc(case.get('t1'))}.", ""]
     if rep.get("subject_profile"):
@@ -433,4 +437,5 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     out += ["## Payments in the case", "", "| Time | From | To | Amount | Format |", "|---|---|---|---|---|"]
     out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | {e.get('fmt') or ''} |"
             for e in sorted(case.get("edges", []), key=lambda e: e["ts"])]
-    return "\n".join(out) + "\n"
+    # Generated text says "1 accounts"; an STR should not.
+    return re.sub(r"\b1 (account|payment|receiver|sender)s\b", r"1 \1", "\n".join(out)) + "\n"
