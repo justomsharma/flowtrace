@@ -230,7 +230,14 @@ It reports:
 - queries and seconds per case.
 
 The curated demo file has almost no legitimate cases. For a fairer comparison, build a slice of the real day:
-the top 20 laundering and top 20 legitimate cases of the full-day ranking, with every payment of their accounts.
+pick the top 20 laundering and top 20 legitimate cases of the full-day ranking, and keep every payment of their
+accounts. Uploading that slice rebuilds its own cases (for 2022-09-09: **21 laundering + 19 legitimate**, because
+cases group differently when only these accounts are present); `compare` scores the top 40 of that ranking.
+
+Read the results with care:
+- The slice is about **50% laundering**, far above a real day (well under 1%). Escalation precision measured on it is
+  **not real-world precision**; use it only to compare policies with each other.
+- **n = 40** is small: one case moves recall by about 5 points. Treat differences of a few cases as noise.
 
 ```bash
 python -m flowtrace.eval.slice --day 2022-09-09 --pos 20 --neg 20      # writes data/samples/eval/day_slice_2022-09-09.csv

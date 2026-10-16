@@ -1,9 +1,14 @@
 """Eval slice from a real day's ranking, for comparing investigation policies on realistic cases.
 
 The curated demo files hold ~29x a real day's laundering and almost no legitimate cases. This file
-takes the highest-ranked laundering cases and the highest-ranked legitimate cases of the full day
+picks the highest-ranked laundering cases and the highest-ranked legitimate cases of the full day
 (ranked offline exactly as an upload of the whole day would be), and keeps every payment of their
-accounts that day, so the uploaded slice rebuilds those cases with same-day features.
+accounts that day. Uploading the slice rebuilds its own cases with same-day features; they group a
+little differently when only these accounts are present (--pos 20 --neg 20 on 2022-09-09 gives 21
+laundering + 19 legitimate), and eval.compare scores the top --cases of that ranking.
+
+Caveats: the slice is ~50% laundering, so escalation precision on it is not real-world precision
+(compare policies with it, nothing more), and n=40 is small.
 
 Run:  python -m flowtrace.eval.slice --day 2022-09-09 --pos 20 --neg 20
       python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 40
