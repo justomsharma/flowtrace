@@ -91,7 +91,9 @@ export default function Workspace() {
     if (opts.file) fd.append('file', opts.file)
     try {
       const { job_id } = await postJSON<{ job_id: string }>('/api/batches', fd)
+      let thisBatch: string | null = null  // announced by the job itself; never guessed from the batch list
       streamJob(job_id, (e: JobEvent) => {
+        if (e.type === 'batch') thisBatch = e.batch_id
         if (e.type === 'stage') setStages((s) => ({ ...s, [e.stage]: e.status }))
         if (e.type === 'graph_rows') {
           const rows: MapLink[] = e.links.map((l: MapLink) => ({ ...l, kind: 'normal' as const }))
@@ -135,8 +137,7 @@ export default function Workspace() {
         if (e.type === 'done') {
           enqueue(async () => {
             setCaption('')
-            const bs = await getJSON<{ batch_id: string }[]>('/api/batches')
-            if (bs.length) setParams({ batch: bs[0].batch_id })
+            if (thisBatch) setParams({ batch: thisBatch })
           })
         }
       }, () => enqueue(async () => setBusy(false)))

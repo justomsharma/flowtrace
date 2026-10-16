@@ -15,6 +15,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from flowtrace.api import jobs
 from flowtrace.api.overview import build_overview
+from flowtrace.graph import queries as Q
+from flowtrace.graph.client import rw
 from flowtrace.settings import cfg, settings
 
 app = FastAPI(title="FlowTrace", version="0.2.0")
@@ -45,6 +47,18 @@ def _restore() -> None:
 
 
 _restore()
+
+
+def forget_batch(batch_id: str) -> None:
+    """Drop a batch's earlier cases, investigation results and case memory before it is stored again.
+    Case ids are rank-based (B..-C001), so after a retune an old result would otherwise attach to a
+    different case."""
+    prefix = f"{batch_id}-C"
+    for kind, store in (("cases", CASES), ("results", RESULTS)):
+        for cid in [c for c in store if c.startswith(prefix)]:
+            del store[cid]
+            (RUNS / kind / f"{cid}.json").unlink(missing_ok=True)
+    rw(Q.DELETE_BATCH_CASES, {"prefix": prefix})
 
 
 @app.get("/api/health")
@@ -113,6 +127,7 @@ async def create_batch(file: UploadFile | None = File(None), sample: str | None 
 
     def done(result: dict) -> None:
         s = result["summary"]
+        forget_batch(s["batch_id"])
         BATCHES[s["batch_id"]] = s
         CASES.update(result["cases"])
         _persist("batches", s["batch_id"], s)

@@ -45,3 +45,14 @@ def test_hub_degree_counts_only_the_history_window_before_the_batch(monkeypatch)
     first = 1662717600000  # 2022/09/09 10:00 UTC, the batch's first payment
     assert p["t0"] == first
     assert p["h0"] == first - B.cfg()["cases"]["hub_lookback_days"] * 86_400_000
+
+
+def test_pipeline_announces_its_batch_id_first(monkeypatch):
+    events = []
+    monkeypatch.setattr(B, "score", lambda batch: np.array([0.99, 0.98, 0.0]))
+    monkeypatch.setattr(B, "rw", lambda *a, **k: None)
+    monkeypatch.setattr(B, "run_detectors", lambda *a, **k: [])
+    monkeypatch.setattr(B, "ro", lambda c, p, **k: QueryResult(
+        rows=[{"id": i, "out_deg": 1, "in_deg": 1} for i in p.get("ids", [])], cypher=c, params=p, ms=0.1))
+    B.process_batch(CSV, "t.csv", events.append)
+    assert events[0] == {"type": "batch", "batch_id": B.batch_id_for(CSV)}

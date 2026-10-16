@@ -108,6 +108,7 @@ def process_batch(data: bytes, filename: str, emit: Emit) -> dict:
     rules = cfg()
     s = settings()
     batch_id = batch_id_for(data)
+    emit({"type": "batch", "batch_id": batch_id})  # the UI opens exactly this batch when the job is done
     timings: dict[str, float] = {}
 
     def stage(name, status, **kw):

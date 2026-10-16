@@ -212,14 +212,24 @@ ORDER BY c.created_ts DESC
 LIMIT 10
 """
 
+# Re-investigating a case replaces its account links instead of adding to them.
 SAVE_CASE = """
 MERGE (c:Case {id: $case_id})
 SET c.disposition = $disposition, c.typology = $typology, c.crime_hypothesis = $crime,
     c.score = $score, c.confidence = $confidence, c.created_ts = $created_ts,
     c.summary = $summary, c.tx_ids = $tx_ids, c.expires_ts = $expires_ts
 WITH c
+OPTIONAL MATCH (c)-[old:ABOUT]->()
+DELETE old
+WITH DISTINCT c
 MATCH (a:Account) WHERE a.id IN $accounts
 MERGE (c)-[:ABOUT]->(a)
+"""
+
+# Re-uploading a batch renumbers its cases, so the old case memory for that batch is dropped.
+DELETE_BATCH_CASES = """
+MATCH (c:Case) WHERE c.id STARTS WITH $prefix
+DETACH DELETE c
 """
 
 # --- Uploaded batches ---------------------------------------------------------------------
