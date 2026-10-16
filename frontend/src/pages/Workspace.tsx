@@ -227,15 +227,15 @@ export default function Workspace() {
                 [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'],
                 [today.length, 'for today'],
               ]} />
+              <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
+                New file
+                <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }) }} />
+              </label>
               {batch.curated && (
                 <p className="basis-full text-xs" style={{ color: 'var(--muted)' }}>
                   Curated demo sample: picked around known schemes, so it holds about 29 times more laundering than a real day.
                 </p>
               )}
-              <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
-                New file
-                <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }) }} />
-              </label>
             </>
           ) : (
             <span className="text-sm">Checking payments…</span>
