@@ -66,6 +66,15 @@ export const TRICKS: Record<string, TrickInfo> = {
 
 export const trickName = (t?: string) => (t && TRICKS[t]?.name) || t || 'Unclassified'
 
+/** Why a case is on the list, in plain words: its two strongest signals, e.g. "Model 92%, Collect 5%". */
+export const caseReason = (signals: { signal: string; p: number }[]) =>
+  signals.slice(0, 2).map((s) => `${s.signal === 'model' ? 'Model' : trickName(s.signal)} ${pct(s.p)}`).join(', ')
+
+/** Percent with one decimal below 10% so small detector precisions don't all read as "0%",
+ *  and never "100%": a model score is not certainty. */
+export const pct = (p: number) =>
+  p >= 0.995 ? '>99%' : p < 0.1 ? `${(p * 100).toFixed(1)}%` : `${Math.round(p * 100)}%`
+
 export const GLOSSARY: Record<string, string> = {
   alert: 'A payment or group of payments the system thinks deserves a closer look.',
   case: 'A group of connected suspicious payments investigated together.',

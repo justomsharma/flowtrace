@@ -1,9 +1,12 @@
 """Run every Cypher query FlowTrace depends on against the loaded graph and check the answers.
 
-Run after `python -m flowtrace.graph.load`:   python -m flowtrace.graph.smoke
+Run after `python -m flowtrace.graph.load`:   python -m flowtrace.graph.smoke            read-only
+                                              python -m flowtrace.graph.smoke --write    also checks writes
+The --write checks use their own SMOKE ids and always remove them, even when a check fails.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import datetime, timezone
 
@@ -11,13 +14,44 @@ import polars as pl
 
 from flowtrace.detectors import alerts as A
 from flowtrace.graph import queries as Q
-from flowtrace.graph.client import ro
+from flowtrace.graph.client import ro, rw
 from flowtrace.settings import cfg, settings
 
 DAY = 86_400_000
 
 
+def write_checks(acc: str, cp: str, t1: int) -> int:
+    """Upload idempotency and case-memory replacement. Everything written uses SMOKE ids and is deleted."""
+    failures = 0
+    rows = [{"tx_id": f"PSMOKE{i}", "src": acc, "dst": cp, "ts": t1 + i, "amount": 1.0, "fmt": "ACH",
+             "cur": "US Dollar", "xcur": False} for i in range(2)]
+    case = {"case_id": "SMOKE-C001", "disposition": "REVIEW", "typology": None, "crime": "", "score": 0.0,
+            "confidence": "low", "created_ts": t1, "summary": "", "tx_ids": [], "expires_ts": t1}
+    try:
+        for _ in range(2):
+            rw(Q.INSERT_BATCH, {"rows": rows, "batch": "SMOKE"})
+        n = ro("MATCH ()-[t:TRANSFER {batch: 'SMOKE'}]->() RETURN count(t) AS n", {}).rows[0]["n"]
+        rw(Q.SAVE_CASE, {**case, "accounts": [acc, cp]})
+        rw(Q.SAVE_CASE, {**case, "accounts": [acc]})
+        links = ro("MATCH (c:Case {id: 'SMOKE-C001'})-[r:ABOUT]->() RETURN count(r) AS n", {}).rows[0]["n"]
+    finally:
+        rw(Q.DELETE_BATCH, {"batch": "SMOKE"})
+        rw(Q.DELETE_BATCH_CASES, {"prefix": "SMOKE-C"})
+    print(f"  idempotent insert: {n} edges after inserting 2 payments twice (expected 2)")
+    print(f"  case memory: {links} account link(s) after re-saving a case with 1 account (expected 1)")
+    if n != 2:
+        failures += 1
+        print("  FAIL re-inserting a batch duplicated edges")
+    if links != 1:
+        failures += 1
+        print("  FAIL re-saving a case kept its old account links")
+    return failures
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--write", action="store_true", help="also run the write checks (cleaned up afterwards)")
+    args = ap.parse_args()
     s, rules = settings(), cfg()
     tx = pl.read_parquet(s.processed_dir / "transactions.parquet", columns=["tx_id", "src", "dst", "ts"])
     cutoff = int(datetime(2022, 9, 9, tzinfo=timezone.utc).timestamp() * 1000)
@@ -43,19 +77,21 @@ def main() -> int:
         "TRACE_BACKWARD_HOP": {"ids": [acc], "frontier": [{"id": acc, "ts": t1}], "max_gap_ms": 72 * 3_600_000,
                                "visited": [acc]},
         "DEGREES": {"ids": [acc, cp]},
+        "HUB_DEGREES": {"ids": [acc, cp], "h0": t0, "t0": t1},
         "PAIR_HISTORY_OUT": {"id": acc, "cps": [cp], "before": t1},
         "PAIR_HISTORY_IN": {"id": cp, "cps": [acc], "before": t1},
         "FLOW_SERIES": {"id": acc, "before": t1},
         "SHARED_DESTINATIONS": {"ids": [acc, cp], "t0": t0, "t1": t1},
         "SHARED_SOURCES": {"ids": [acc, cp], "t0": t0, "t1": t1},
         "CYCLES": {"id": acc, "t0": t0, "t1": t1},
-        "NEAREST_ESCALATED": {"id": acc},
-        "PRIOR_CASES": {"id": acc},
+        "NEAREST_ESCALATED": {"id": acc, "case_id": "SMOKE"},
+        "PRIOR_CASES": {"id": acc, "case_id": "SMOKE"},
     }
     detectors = {
         "FAN_OUT": {"ids": [acc], "t0": t0, "t1": t1, "min": 2},
         "FAN_IN": {"ids": [cp], "t0": t0, "t1": t1, "min": 1},
-        "PASS_THROUGH": {"ids": [acc, cp], "t0": t0, "t1": t1, "ratio": 0.1},
+        "PASS_THROUGH": {"ids": [acc, cp], "t0": t0, "t1": t1, "day0": t0, "gap": DAY, "lo": 0.0, "hi": 10.0,
+                         "min_amount": 0},
         "SCATTER_GATHER": {"ids": [acc], "t0": t0, "t1": t1, "min": 1, "gap": DAY},
         "CYCLE": {"ids": [acc], "t0": t0, "t1": t1},
     }
@@ -78,6 +114,10 @@ def main() -> int:
     if got != min(expect_out, 300) or not ph or ph[0]["prior_cnt"] != expect_pair:
         failures += 1
         print("  FAIL counts differ from the parquet source")
+    until = ro(Q.HISTORY_UNTIL, {}).rows
+    print(f"  history cutoff marker: {until[0]['until'] if until else 'missing (reload the graph to add it)'}")
+    if args.write:
+        failures += write_checks(acc, cp, t1)
     print(f"\n{'all queries passed' if not failures else f'{failures} failure(s)'}")
     return 1 if failures else 0
 

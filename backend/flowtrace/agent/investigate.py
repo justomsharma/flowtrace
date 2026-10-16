@@ -38,6 +38,16 @@ def crime_hypotheses(ctx: CaseContext, rules: dict) -> list[dict]:
     return uniq
 
 
+def policy_ran(chosen: str, calls: list[dict]) -> str:
+    """The policy that actually picked the steps: Claude falls back to rules when it has no key or fails."""
+    used = {c.get("policy", chosen) for c in calls}
+    if not used or used == {chosen}:
+        return chosen
+    if chosen not in used:
+        return f"{next(iter(used))} fallback" if len(used) == 1 else " + ".join(sorted(used))
+    return " + ".join([chosen] + sorted(used - {chosen})) + " fallback"
+
+
 def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: bool = True,
                 save_memory: bool = True) -> dict:
     rules = ctx.rules
@@ -76,7 +86,8 @@ def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: b
             summary, error = {}, f"{type(e).__name__}: {e}"
         new_ev = [e.as_dict() for e in ctx.book.items[before:]]
         ctx.calls.append({"step": ctx.step, "tool": step["action"], "args": step["args"], "summary": summary,
-                          "error": error, "reason": step["reason"], "ms": round((time.perf_counter() - t0) * 1000, 1)})
+                          "error": error, "reason": step["reason"], "ms": round((time.perf_counter() - t0) * 1000, 1),
+                          "policy": step.get("policy", policy.name)})
         interim = decide(ctx.book, ctx.ml_score, shape_conf, rules)
         ctx.emit({"type": "step_done", "step": ctx.step, "tool": step["action"], "summary": summary, "error": error,
                   "evidence": new_ev, "ms": ctx.calls[-1]["ms"], "risk": interim.risk, "action": interim.action})
@@ -98,7 +109,7 @@ def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: b
         "stats": {"steps": len(ctx.calls), "queries": len(ctx.queries),
                   "query_ms": round(sum(q["ms"] for q in ctx.queries), 1),
                   "seconds": round(time.perf_counter() - started, 2), "stop_reason": stop_reason,
-                  "policy": policy.name,
+                  "policy": policy_ran(policy.name, ctx.calls),
                   "llm_calls": len(getattr(policy, "meta", [])) + (1 if report.get("llm") else 0)},
     }
     if save_memory:

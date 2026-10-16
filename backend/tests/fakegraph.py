@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
+from flowtrace.detectors import alerts as A
+from flowtrace.detectors.alerts import passthrough_pairs
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import QueryResult
 
@@ -60,6 +62,9 @@ class World:
                     rows.append({"cp": cp, "prior_cnt": len(es), "first_ts": min(e["ts"] for e in es),
                                  "ts_list": [e["ts"] for e in es], "amounts": [e["amount"] for e in es]})
             return rows
+        if c == Q.HUB_DEGREES:
+            return [{"id": i, "out_deg": len(self.out(i, p["h0"], p["t0"])), "in_deg": len(self.inc(i, p["h0"], p["t0"]))}
+                    for i in p["ids"]]
         if c in (Q.CP_INFO, Q.DEGREES):
             rows = []
             for i in p["ids"]:
@@ -105,5 +110,30 @@ class World:
             eid = acc.get(p["id"], {}).get("entity_id")
             return [{"id": a, "bank": "1"} for a, v in acc.items() if eid and v.get("entity_id") == eid and a != p["id"]]
         if c in (Q.CYCLES, Q.PRIOR_CASES, Q.NEAREST_ESCALATED):
+            return []
+        if c in (A.FAN_OUT, A.FAN_IN):
+            rows = []
+            for a in p["ids"]:
+                es = self.out(a, p["t0"], p["t1"]) if c == A.FAN_OUT else self.inc(a, p["t0"], p["t1"])
+                k = len({e["dst"] if c == A.FAN_OUT else e["src"] for e in es} - {a})
+                if k >= p["min"]:
+                    rows.append({"account": a, "k": k, "total": sum(e["amount"] for e in es),
+                                 "tx_ids": [e["tx_id"] for e in es][:60]})
+            return rows
+        if c == A.PASS_THROUGH:
+            rule = {"max_gap_hours": p["gap"] / 3_600_000, "ratio_low": p["lo"], "ratio_high": p["hi"],
+                    "min_amount_usd": p["min_amount"]}
+            rows = []
+            for a in p["ids"]:
+                ins = [{**e, "cp": e["src"]} for e in self.inc(a, p["t0"], p["t1"]) if e["src"] != a]
+                outs = [{**e, "cp": e["dst"]} for e in self.out(a, p["day0"], p["t1"]) if e["dst"] != a]
+                pairs = passthrough_pairs(ins, outs, rule)
+                if pairs:
+                    i_tx = list(dict.fromkeys(i["tx_id"] for i, _ in pairs))
+                    o_tx = list(dict.fromkeys(o["tx_id"] for _, o in pairs))
+                    rows.append({"account": a, "pairs": len(pairs), "n_in": len(i_tx), "n_out": len(o_tx),
+                                 "tx_ids": i_tx + o_tx})
+            return rows
+        if c in (A.SCATTER_GATHER, A.CYCLE):
             return []
         raise AssertionError(f"fake graph has no answer for query:\n{c[:120]}")

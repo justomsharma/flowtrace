@@ -115,6 +115,16 @@ OPTIONAL MATCH (a)<-[i:TRANSFER]-()
 RETURN a.id AS id, out_deg, count(i) AS in_deg
 """
 
+# Hub check for case grouping: degree over a fixed history window before the batch, so the
+# threshold (cases.hub_degree, fitted on a window of the same length) means the same thing every day.
+HUB_DEGREES = """
+MATCH (a:Account) WHERE a.id IN $ids
+OPTIONAL MATCH (a)-[o:TRANSFER]->() WHERE o.ts + 0 >= $h0 AND o.ts + 0 < $t0
+WITH a, count(o) AS out_deg
+OPTIONAL MATCH (a)<-[i:TRANSFER]-() WHERE i.ts + 0 >= $h0 AND i.ts + 0 < $t0
+RETURN a.id AS id, out_deg, count(i) AS in_deg
+"""
+
 # --- Relationship history (legitimacy evidence) -------------------------------------------
 
 # For each counterparty: how long and how often these two accounts have transacted before.
@@ -179,10 +189,10 @@ RETURN [x IN r | x.tx_id] AS tx_ids, [n IN nodes(p) | n.id] AS accounts,
 LIMIT 10
 """
 
-# How close is this account to accounts already escalated by earlier cases?
+# How close is this account to accounts already escalated by earlier cases? (never the case itself)
 NEAREST_ESCALATED = """
 MATCH (a:Account {id: $id}), (c:Case {disposition: 'ESCALATE'})-[:ABOUT]->(x:Account)
-WHERE x.id <> a.id
+WHERE x.id <> a.id AND c.id <> $case_id
 WITH a, c, x, shortestPath((a)-[:TRANSFER*1..3]-(x)) AS p
 WHERE p IS NOT NULL
 RETURN x.id AS account, c.id AS case_id, length(p) AS hops
@@ -191,33 +201,59 @@ LIMIT 5
 """
 
 # --- Case memory --------------------------------------------------------------------------
+# $case_id is the case under investigation: its own saved result must not count as prior evidence.
 
 PRIOR_CASES = """
 MATCH (a:Account {id: $id})<-[:ABOUT]-(c:Case)
+WHERE c.id <> $case_id
 RETURN c.id AS case_id, c.disposition AS disposition, c.typology AS typology,
        c.score AS score, c.created_ts AS created_ts, c.summary AS summary
 ORDER BY c.created_ts DESC
 LIMIT 10
 """
 
+# Re-investigating a case replaces its account links instead of adding to them.
 SAVE_CASE = """
 MERGE (c:Case {id: $case_id})
 SET c.disposition = $disposition, c.typology = $typology, c.crime_hypothesis = $crime,
     c.score = $score, c.confidence = $confidence, c.created_ts = $created_ts,
     c.summary = $summary, c.tx_ids = $tx_ids, c.expires_ts = $expires_ts
 WITH c
+OPTIONAL MATCH (c)-[old:ABOUT]->()
+DELETE old
+WITH DISTINCT c
 MATCH (a:Account) WHERE a.id IN $accounts
 MERGE (c)-[:ABOUT]->(a)
 """
 
+# Re-uploading a batch renumbers its cases, so the old case memory for that batch is dropped.
+DELETE_BATCH_CASES = """
+MATCH (c:Case) WHERE c.id STARTS WITH $prefix
+DETACH DELETE c
+"""
+
 # --- Uploaded batches ---------------------------------------------------------------------
 
+# The loader records where history ends. Payments before it are already in the graph under their
+# original ids, so an upload that overlaps it would add them a second time.
+HISTORY_UNTIL = """
+MATCH (m:Meta {id: 'history'})
+RETURN m.until AS until
+"""
+
+SET_HISTORY_UNTIL = """
+MERGE (m:Meta {id: 'history'})
+SET m.until = $until
+"""
+
+# Payments are merged on their content-derived tx_id, so re-uploading a file (or an overlapping one)
+# adds nothing. The edge keeps the batch id of the upload that first wrote it.
 INSERT_BATCH = """
 UNWIND $rows AS r
 MERGE (s:Account {id: r.src})
 MERGE (d:Account {id: r.dst})
-CREATE (s)-[:TRANSFER {tx_id: r.tx_id, ts: r.ts, amount: r.amount, fmt: r.fmt, cur: r.cur,
-                       xcur: r.xcur, batch: $batch}]->(d)
+MERGE (s)-[t:TRANSFER {tx_id: r.tx_id}]->(d)
+ON CREATE SET t.ts = r.ts, t.amount = r.amount, t.fmt = r.fmt, t.cur = r.cur, t.xcur = r.xcur, t.batch = $batch
 """
 
 DELETE_BATCH = """

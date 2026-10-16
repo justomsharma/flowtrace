@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import date, datetime, timezone
 
 import polars as pl
 
+from flowtrace.graph import queries as Q
 from flowtrace.graph.client import graph, rw
 from flowtrace.settings import settings
 
@@ -106,6 +108,24 @@ def create_indexes() -> None:
             print(f"  index skipped: {e}")
 
 
+def index_statuses() -> list[str]:
+    return [r["status"] for r in rw("CALL db.indexes() YIELD status RETURN status").rows]
+
+
+def wait_for_indexes(statuses=index_statuses, poll_s: float = 2.0, timeout_s: float = 900) -> None:
+    """FalkorDB builds indexes in the background; until they are OPERATIONAL every lookup by id scans
+    the whole graph (an upload of 2,000 payments times out). Return only once they are ready."""
+    end = time.monotonic() + timeout_s
+    while True:
+        pending = [s for s in statuses() if s != "OPERATIONAL"]
+        if not pending:
+            return
+        if time.monotonic() > end:
+            raise TimeoutError(f"indexes still building after {timeout_s:.0f}s: {pending}")
+        print(f"  waiting for indexes: {pending}")
+        time.sleep(poll_s)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--until", default="2022-09-09", help="load transfers strictly before this date")
@@ -119,6 +139,9 @@ def main() -> None:
     paths = export_csvs(date.fromisoformat(a.until))
     bulk_insert(paths)
     create_indexes()
+    wait_for_indexes()
+    until = date.fromisoformat(a.until)
+    rw(Q.SET_HISTORY_UNTIL, {"until": int(datetime(until.year, until.month, until.day, tzinfo=timezone.utc).timestamp() * 1000)})
     print(rw("MATCH (a:Account) RETURN count(a) AS accounts").rows,
           rw("MATCH ()-[t:TRANSFER]->() RETURN count(t) AS transfers").rows)
 

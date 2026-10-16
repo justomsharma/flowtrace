@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, Loader2, Upload } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Loader2, Upload } from 'lucide-react'
 import LiveGraph3D, { type MapLink } from '../components/LiveGraph3D'
 import { ActionBadge } from '../components/badges'
 import {
   fmtInt, fmtUsd, getJSON, postJSON, streamJob, type BatchSummary, type CaseBrief, type CaseResult, type JobEvent,
 } from '../lib/api'
-import { STAGE_PLAIN, STEP_PLAIN, shortAcct, trickName } from '../lib/plain'
+import { STAGE_PLAIN, STEP_PLAIN, caseReason, pct, shortAcct, trickName } from '../lib/plain'
 
 interface GraphLink { tx_id: string; source: string; target: string; amount: number; p: number; case: string | null }
 interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[] }
@@ -14,6 +14,9 @@ interface LiveStep { step: number; tool: string; reason: string; done: boolean; 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const panel = { background: 'color-mix(in srgb, var(--surface) 88%, transparent)', border: '1px solid var(--border)', backdropFilter: 'blur(6px)' }
+
+/** Today's work = within the team's daily capacity. Batches saved before tiers existed fall back to rank. */
+const inToday = (c: CaseBrief, i: number, capacity?: number) => (c.tier ? c.tier === 'today' : i < (capacity ?? 15))
 
 function caseLine(c: CaseBrief): string {
   const n = c.accounts.length
@@ -68,6 +71,10 @@ export default function Workspace() {
   }, [batchId, loadBatch])
 
   const current = batch?.cases.find((c) => c.case_id === caseId) ?? null
+  // Cases arrive ranked; the top `capacity` are today's work, the rest stay listed (folded) below.
+  const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
+  const lower = useMemo(() => batch?.cases.filter((c, i) => !inToday(c, i, batch.capacity)) ?? [], [batch])
+  const [showLower, setShowLower] = useState(false)
 
   useEffect(() => {
     setTraced([]); setSteps([]); setResult(null); setPulse(new Set())
@@ -84,7 +91,9 @@ export default function Workspace() {
     if (opts.file) fd.append('file', opts.file)
     try {
       const { job_id } = await postJSON<{ job_id: string }>('/api/batches', fd)
+      let thisBatch: string | null = null  // announced by the job itself; never guessed from the batch list
       streamJob(job_id, (e: JobEvent) => {
+        if (e.type === 'batch') thisBatch = e.batch_id
         if (e.type === 'stage') setStages((s) => ({ ...s, [e.stage]: e.status }))
         if (e.type === 'graph_rows') {
           const rows: MapLink[] = e.links.map((l: MapLink) => ({ ...l, kind: 'normal' as const }))
@@ -128,8 +137,7 @@ export default function Workspace() {
         if (e.type === 'done') {
           enqueue(async () => {
             setCaption('')
-            const bs = await getJSON<{ batch_id: string }[]>('/api/batches')
-            if (bs.length) setParams({ batch: bs[0].batch_id })
+            if (thisBatch) setParams({ batch: thisBatch })
           })
         }
       }, () => enqueue(async () => setBusy(false)))
@@ -213,14 +221,21 @@ export default function Workspace() {
         <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl px-5 py-3" style={panel}>
           {batch ? (
             <>
-              <Num label="Payments" value={fmtInt(batch.rows)} />
-              <Num label="Accounts" value={fmtInt(batch.accounts)} />
-              <Num label="Suspicious" value={fmtInt(batch.flagged_tx)} color="var(--s2)" />
-              <Num label="Cases" value={fmtInt(batch.cases.length)} />
+              <Funnel steps={[
+                [batch.rows, 'payments'],
+                [batch.flagged_tx, 'flagged'],
+                [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'],
+                [today.length, 'for today'],
+              ]} />
               <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
                 New file
                 <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }) }} />
               </label>
+              {batch.curated && (
+                <p className="basis-full text-xs" style={{ color: 'var(--muted)' }}>
+                  Curated demo sample: picked around known schemes, so it holds about 29 times more laundering than a real day.
+                </p>
+              )}
             </>
           ) : (
             <span className="text-sm">Checking payments…</span>
@@ -245,25 +260,34 @@ export default function Workspace() {
           )}
 
           {batch && !current && !busy && (
-            <>
-              <div className="px-4 pt-4 pb-2 text-sm font-semibold">{batch.cases.length} cases, most suspicious first</div>
-              <ul className="flex-1 overflow-y-auto px-2 pb-2">
-                {batch.cases.map((c, i) => (
-                  <li key={c.case_id}>
-                    <button onClick={() => setParams({ batch: batch.batch_id, case: c.case_id })}
-                      className="w-full text-left px-2 py-2.5 rounded-lg flex items-center gap-3 hover:brightness-125"
-                      style={{ borderBottom: '1px solid var(--border)' }}>
-                      <span className="text-xs tabular w-5" style={{ color: 'var(--muted)' }}>{i + 1}</span>
-                      <span className="flex-1 min-w-0">
-                        <span className="block text-sm truncate">{caseLine(c)}</span>
-                        <span className="block text-xs" style={{ color: 'var(--muted)' }}>{trickName(c.shape.typology)}</span>
-                      </span>
-                      {c.result ? <ActionBadge action={c.result.action} /> : <Risk p={c.ml_score} />}
-                    </button>
-                  </li>
-                ))}
+            <div className="flex-1 overflow-y-auto pb-2">
+              <div className="px-4 pt-4 pb-1">
+                <h2 className="text-sm font-semibold">Today's work</h2>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
+                  {batch.cases.length === 0
+                    ? 'No payment in this file reached the review bar.'
+                    : `${today.length} of ${batch.cases.length} cases, highest chance of laundering first`}
+                </p>
+              </div>
+              <ul className="px-2">
+                {today.map((c, i) => <CaseRow key={c.case_id} c={c} rank={i + 1} onOpen={() => setParams({ batch: batch.batch_id, case: c.case_id })} />)}
               </ul>
-            </>
+              {lower.length > 0 && (
+                <>
+                  <button onClick={() => setShowLower((v) => !v)} aria-expanded={showLower}
+                    className="mx-4 mt-4 mb-1 flex items-center gap-1.5 text-sm font-semibold" style={{ color: 'var(--ink-2)' }}>
+                    {showLower ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+                    Lower priority <span className="font-normal tabular" style={{ color: 'var(--muted)' }}>{lower.length}</span>
+                  </button>
+                  {showLower && (
+                    <ul className="px-2">
+                      {lower.map((c, i) => <CaseRow key={c.case_id} c={c} rank={today.length + i + 1} quiet
+                        onOpen={() => setParams({ batch: batch.batch_id, case: c.case_id })} />)}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
           )}
 
           {current && (
@@ -332,18 +356,39 @@ export default function Workspace() {
   )
 }
 
-function Num({ label, value, color }: { label: string; value: string; color?: string }) {
+/** The day narrowed down, read left to right: payments, flagged, cases, and what the team works today. */
+function Funnel({ steps }: { steps: [number, string][] }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-[10px] uppercase tracking-widest" style={{ color: 'var(--muted)' }}>{label}</span>
-      <span className="text-xl font-semibold tabular" style={{ color: color ?? 'var(--ink)' }}>{value}</span>
-    </div>
+    <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1" aria-label={steps.map(([n, l]) => `${n} ${l}`).join(', ')}>
+      {steps.map(([n, label], i) => (
+        <span key={label} className="flex items-baseline gap-2">
+          {i > 0 && <ChevronRight size={14} className="self-center" style={{ color: 'var(--muted)' }} aria-hidden />}
+          <span className="text-xl font-semibold tabular" style={{ color: i === steps.length - 1 ? 'var(--s2)' : 'var(--ink)' }}>{fmtInt(n)}</span>
+          <span className="text-sm" style={{ color: 'var(--ink-2)' }}>{label}</span>
+        </span>
+      ))}
+    </p>
   )
 }
 
-function Risk({ p }: { p: number }) {
-  const label = p >= 0.7 ? 'High' : p >= 0.4 ? 'Medium' : 'Low'
-  return <span className="text-xs px-2 py-0.5 rounded-full" style={{ border: '1px solid var(--border)', color: 'var(--ink-2)' }}>{label}</span>
+function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: number; quiet?: boolean; onOpen: () => void }) {
+  return (
+    <li>
+      <button onClick={onOpen} className="w-full text-left px-2 py-2.5 rounded-lg flex items-center gap-3 hover:brightness-125"
+        style={{ borderBottom: '1px solid var(--border)', opacity: quiet ? 0.75 : 1 }}>
+        <span className="text-xs tabular w-6 self-stretch flex items-center pl-1.5"
+          style={{ color: 'var(--muted)', borderLeft: quiet ? '2px solid transparent' : '2px solid var(--s2)' }}>{rank}</span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm truncate">{caseLine(c)}</span>
+          <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals ?? [])}</span>
+        </span>
+        {c.result ? <ActionBadge action={c.result.action} />
+          : <span className="text-sm font-semibold tabular"
+              title="Chance that at least one signal is right (model and detectors treated as independent)"
+              style={{ color: quiet ? 'var(--ink-2)' : 'var(--ink)' }}>{pct(c.case_score ?? c.ml_score)}</span>}
+      </button>
+    </li>
+  )
 }
 
 function Reasons({ title, color, items }: { title: string; color: string; items: string[] }) {

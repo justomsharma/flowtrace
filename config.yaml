@@ -23,13 +23,36 @@ detectors:
   window_hours: 24
   fan_out_min: 5             # distinct receivers in window
   fan_in_min: 5              # distinct senders in window
-  passthrough_ratio: 0.8     # share of inflow that leaves again within window
+  passthrough:               # money in, similar amount out within the gap (FATF 2023, FinCEN FIN-2014-A005)
+    max_gap_hours: 24
+    ratio_low: 0.80          # outgoing amount / incoming amount
+    ratio_high: 1.05
+    min_amount_usd: 1000
+  # Share of each detector's hits that were real laundering on the validation days (eval.tune),
+  # shrunk toward the pooled rate of all detectors as if it had precision_prior_hits more hits.
+  precision_prior_hits: 20
+  precision: {FAN-OUT: 0.0108, FAN-IN: 0.054, GATHER-SCATTER: 0.0087, PASS-THROUGH: 0.0112, SCATTER-GATHER: 0.1098, CYCLE: 0.2959}
   scatter_gather_min_mid: 3  # intermediaries between one source and one sink
   cycle_max_hops: 4
   structuring:
     threshold_inr: 1000000   # PMLA cash reporting threshold (Rs 10 lakh)
     band_low: 0.80           # amounts between 80% and 100% of the threshold
     min_count: 3
+
+# --- Cases (Stage B) -------------------------------------------------------------------------
+# A signal opens a case when its probability reaches flag_probability; cases are ranked by the chance
+# at least one of their signals is right, and the top daily_capacity become "Today's work".
+cases:
+  flag_probability: 0.50    # tuned on Sep 7-8: 10-20 cases a day, most attempts in the top 15 (data/runs/tune.json)
+  hub_degree: 70            # degree over the lookback window at which an account is a hub (p99, eval.tune)
+  hub_lookback_days: 6      # history window for that degree; eval.tune fits hub_degree on a window of this length
+  max_accounts: 30          # largest case one analyst reviews; bigger groups split around their riskiest accounts
+  daily_capacity: 15        # cases the team works per day -> "Today's work"
+
+# Raw model score -> probability of laundering (isotonic on Sep 7-8, written by eval.tune).
+calibration:
+  x: [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.92, 0.94, 0.96, 0.98, 1.0]
+  y: [0.0, 0.00202, 0.00777, 0.01113, 0.01429, 0.01759, 0.01797, 0.01797, 0.02098, 0.02098, 0.02098, 0.05004, 0.05004, 0.05004, 0.07212, 0.07778, 0.07778, 0.07778, 0.08654, 0.13423, 0.15116, 0.18072, 0.20455, 0.22222, 0.35897, 0.59184, 0.63158, 0.63636, 0.75, 0.925, 0.98765, 1.0]
 
 # --- Legitimacy checks (counter-evidence) --------------------------------------------------
 legitimacy:
@@ -66,7 +89,6 @@ disposition:
   close_below: 0.25         # risk below, with legitimacy >= close_min_legit and no escalator -> CLOSE
   close_min_legit: 0.5
   close_expiry_days: 90
-  candidate_score: 0.30     # model score that makes a transfer an alert candidate
 
 # --- Crime hypotheses (interpretation, not a measured label) --------------------------------
 # The dataset labels laundering yes/no only. These map observed shapes to the predicate crimes
