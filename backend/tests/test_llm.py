@@ -76,6 +76,7 @@ def test_success_returns_parsed_json_and_usage(use):
     assert meta["provider"] == "openai" and meta["model"] == "gpt-6-luna"
     assert meta["served_by"] == "gpt-6-luna-2026-09-01"
     assert (meta["input_tokens"], meta["output_tokens"], meta["reasoning_tokens"]) == (120, 30, 10)
+    assert isinstance(meta["ms"], int) and meta["ms"] >= 0      # wall time of the call, for latency reports
 
 
 def test_request_uses_strict_json_schema_effort_and_token_cap(use):

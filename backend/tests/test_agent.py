@@ -125,3 +125,24 @@ def test_case_memory_never_reads_its_own_case(monkeypatch):
     for q in (Q.PRIOR_CASES, Q.NEAREST_ESCALATED):
         assert "c.id <> $case_id" in q
         assert [p["case_id"] for c, p in seen if c == q] == ["B1-C001"]
+
+
+def test_stats_report_llm_time_and_the_report_asks_for_low_effort(monkeypatch):
+    from flowtrace.agent import policy as policy_mod, report as report_mod
+    monkeypatch.setattr(policy_mod, "structured", lambda *a, **k: (None, {"error": "x", "ms": 1500}))
+    efforts = []
+
+    def report_llm(system, user, schema, **k):
+        efforts.append(k.get("effort"))
+        return None, {"error": "y", "ms": 2500}
+    monkeypatch.setattr(report_mod, "structured", report_llm)
+    w = mule_world()
+    monkeypatch.setattr(ctx_mod, "ro", w.ro)
+    monkeypatch.setattr(trace_mod, "ro", w.ro)
+    alert = [e for e in w.edges if e["src"] == "X" and e["ts"] >= T0]
+    case = {"case_id": "MULE", "primary": "X", "accounts": ["X"], "tx_ids": [e["tx_id"] for e in alert], "edges": alert,
+            "t0": T0, "t1": T0 + DAY, "ml_score": 0.81, "shape": {"typology": "FAN-OUT", "confidence": 0.9}}
+    out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="llm", save_memory=False)
+    steps = out["stats"]["llm_calls"] - 1
+    assert out["stats"]["llm_seconds"] == round((steps * 1500 + 2500) / 1000, 2)
+    assert efforts == ["low"]   # medium cost ~7 s per case for no gain in validity (measured 2026-10-16)

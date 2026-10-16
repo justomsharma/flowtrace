@@ -94,9 +94,11 @@ def structured(system: str, user: str, schema: dict, effort: str = "medium", max
     """Return (parsed JSON or None, call metadata)."""
     s = settings()
     meta: dict = {"provider": s.llm_provider, "model": model_name()}
-    if s.llm_provider == "openai":
-        return _openai_structured(system, user, schema, effort, max_tokens, meta)
-    return _anthropic_structured(system, user, schema, effort, max_tokens, meta)
+    call = _openai_structured if s.llm_provider == "openai" else _anthropic_structured
+    t0 = time.perf_counter()
+    out, meta = call(system, user, schema, effort, max_tokens, meta)
+    meta["ms"] = round((time.perf_counter() - t0) * 1000)
+    return out, meta
 
 
 def _parse(text: str, meta: dict) -> tuple[dict | None, dict]:

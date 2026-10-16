@@ -137,7 +137,7 @@ def write_report(ctx: CaseContext, disp: Disposition, use_llm: bool = True) -> d
             "decision_reasons": disp.reasons, "typology": ctx.shape,
             "model_score": round(ctx.ml_score, 3), "evidence": evidence,
         }, default=str)
-        out, meta = structured(SYSTEM, user, SCHEMA, effort="medium", max_tokens=16000)
+        out, meta = structured(SYSTEM, user, SCHEMA, effort="low", max_tokens=16000)
         if out is not None:
             out["author"] = meta.get("served_by", "llm")
             out["llm"] = meta
