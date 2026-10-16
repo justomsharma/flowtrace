@@ -11,7 +11,6 @@ import {
 import { STAGE_PLAIN, caseReason, pct, shortAcct, trickName } from '../lib/plain'
 
 interface GraphLink { tx_id: string; source: string; target: string; amount: number; p: number; case: string | null }
-interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[] }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -50,13 +49,10 @@ export default function Workspace() {
   const [base, setBase] = useState<GraphLink[]>([])
   const [traced, setTraced] = useState<MapLink[]>([])
   const [pulse, setPulse] = useState<Set<string>>(new Set())
-  const [, setSteps] = useState<LiveStep[]>([])
   const [result, setResult] = useState<CaseResult | null>(null)
   const [investigating, setInvestigating] = useState(false)
-  const [, setJobStatus] = useState<JobBrief['status'] | null>(null)
   // The hold plan: accounts proposed for a hold (or held) are marked on the map, with the trail payments into them.
   const [holdPlan, setHoldPlan] = useState<{ plan: HoldPlan | null; actions: Action[] }>({ plan: null, actions: [] })
-  const [, setPlanVersion] = useState(0)
   const stopStream = useRef<(() => void) | null>(null)
   const following = useRef<string | null>(null)  // the job the panel is streaming, so it is never followed twice
   const caseRef = useRef(caseId)
@@ -98,20 +94,20 @@ export default function Workspace() {
   const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
   const lower = useMemo(() => batch?.cases.filter((c, i) => !inToday(c, i, batch.capacity)) ?? [], [batch])
   const [showLower, setShowLower] = useState(false)
-  const marked = useMemo(() => holdPlan.actions.filter((a) => a.type === 'HOLD' && a.account && (a.status === 'PROPOSED' || a.status === 'APPROVED'))
+  const marked = useMemo(() => holdPlan.actions.filter((a) => a.type === 'HOLD' && a.account && (a.status === 'PROPOSED' || a.status === 'PROVISIONAL' || a.status === 'APPROVED'))
     .map((a) => a.account as string), [holdPlan])
 
   // Opening a case shows its finished result, or joins its background investigation (replayed, then live).
   useEffect(() => {
     let stale = false
     stopStream.current?.(); stopStream.current = null; following.current = null
-    setTraced([]); setSteps([]); setResult(null); setPulse(new Set()); setInvestigating(false); setJobStatus(null); setError(null)
+    setTraced([]); setResult(null); setPulse(new Set()); setInvestigating(false); setError(null)
     setHoldPlan({ plan: null, actions: [] })
     if (caseId) {
       getJSON<{ result: CaseResult | null; job: JobBrief | null }>(`/api/cases/${caseId}`).then((r) => {
         if (stale) return
         if (r.result) setResult(r.result)
-        else if (r.job) { setJobStatus(r.job.status); follow(r.job.id) }
+        else if (r.job) follow(r.job.id)
       }).catch(() => undefined)
     }
     return () => { stale = true; stopStream.current?.(); stopStream.current = null; following.current = null }
@@ -120,7 +116,7 @@ export default function Workspace() {
   // A case opened before its background job existed (or whose run was replaced): join the job once the list shows it.
   const currentJob = current?.job?.id
   useEffect(() => {
-    if (current?.job && !result && !investigating) { setJobStatus(current.job.status); follow(current.job.id) }
+    if (current?.job && !result && !investigating) follow(current.job.id)
   }, [currentJob])
 
   async function upload(opts: { sample?: string; file?: File }) {
@@ -196,14 +192,8 @@ export default function Workspace() {
     if (following.current === jobId) return  // already streaming it (the case-open fetch and the list can both see it)
     stopStream.current?.()
     following.current = jobId
-    setInvestigating(true); setSteps([]); setTraced([]); setResult(null); setError(null)
+    setInvestigating(true); setTraced([]); setResult(null); setError(null)
     stopStream.current = streamJob(jobId, (e: JobEvent) => {
-        if (e.type === 'step_start') {
-          setJobStatus('running')
-          setSteps((s) => [...s, { step: e.step, tool: e.tool, reason: e.reason, done: false, found: [] }])
-        }
-        if (e.type === 'step_done') setSteps((s) => s.map((x) => x.step === e.step
-          ? { ...x, done: true, found: (e.evidence ?? []).filter((v: { kind: string }) => v.kind !== 'context').map((v: { claim: string }) => v.claim) } : x))
         if (e.type === 'trace_wave' || e.type === 'graph') {
           const add: MapLink[] = (e.edges ?? []).map((x: { tx_id: string; src: string; dst: string; amount: number }) => ({
             tx_id: x.tx_id, source: x.src, target: x.dst, amount: x.amount, kind: 'traced' as const }))
@@ -220,7 +210,7 @@ export default function Workspace() {
             ? 'The server stopped, so this run was stopped. It is investigated again when the server restarts.'
             : 'This file was uploaded again, so this run was stopped.')
         }
-      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch(); setPlanVersion((v) => v + 1) })
+      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch() })
   }
 
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.

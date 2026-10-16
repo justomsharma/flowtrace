@@ -59,7 +59,7 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
     `${name(n.id)} · ${ROLE_NAME[n.role]}${n.entity_type ? ` · ${n.entity_type}` : ''}`,
     fullId(n.id),
     n.role === 'Sender' ? `Sent ${m(n.sent)}` : n.role === 'Destination' ? `Received ${m(n.received)}` : `Received ${m(n.received)} · Sent ${m(n.sent)}`,
-    ...(n.hold ? [n.hold === 'approved' ? 'Hold approved' : 'Hold proposed'] : n.in_case ? [] : ['Found by following the money']),
+    ...(n.hold ? [HOLD_LINE[n.hold]] : n.in_case ? [] : ['Found by following the money']),
   ]
   // The tooltip follows the pointer and goes below it near the top edge, so it never covers what you point at.
   const show = (ev: MouseEvent, lines: string[]) => {
@@ -141,8 +141,11 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
   )
 }
 
+const HOLD_LINE = { approved: 'Hold approved', provisional: 'Held provisionally (auto-hold), waiting for a person', proposed: 'Hold proposed' }
+const HOLD_PILL = { approved: 'held', provisional: 'held?', proposed: 'hold?' }
+
 function RolePill({ x, y, role, hold }: { x: number; y: number; role: Role; hold: FlowNode['hold'] }) {
-  const text = hold ? `${ROLE_NAME[role]} · ${hold === 'approved' ? 'held' : 'hold?'}` : ROLE_NAME[role]
+  const text = hold ? `${ROLE_NAME[role]} · ${HOLD_PILL[hold]}` : ROLE_NAME[role]
   const w = text.length * 6.6 + 16
   const r = ROLE[role]
   return (

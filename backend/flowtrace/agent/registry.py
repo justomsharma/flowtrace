@@ -2,13 +2,17 @@
 
   case tools     the investigation tools (agent.tools.TOOLS): run inside one case's context and add evidence.
   read tools     get_case, list_cases, plan_holds: read-only (GRAPH.RO_QUERY and saved files).
-  propose_action the only write: creates PROPOSED actions. Nothing here can approve; only a person can,
+  propose_action the only write tool: creates PROPOSED actions. Nothing here can approve; only a person can,
                  through the API the UI calls.
+  auto_hold      not a tool (the MCP server never reaches it): after an investigation finishes, the API's act
+                 step may place proposed holds PROVISIONALLY (actions.auto_hold, needs APPROVER_TOKEN). A person
+                 confirms or rejects each one; unconfirmed, it is released after 1 business day. So nothing is
+                 frozen until a person approves, except that provisional hold.
 
 propose_action checks every caller the same way: a known type; a HOLD only after an investigation that
 recommends escalation (actions.propose_for), only on an account of the case's money trail that is not a hub,
 only for at least actions.min_hold_usd of case money, and at most actions.max_holds_per_case open holds per
-case (checked inside the write); a RELEASE only of an approved hold. Each proposal records where it came
+case (checked inside the write); a RELEASE only of an approved or provisional hold. Each proposal records where it came
 from: 'agent' (the app) or 'mcp' (an MCP client).
 """
 from __future__ import annotations

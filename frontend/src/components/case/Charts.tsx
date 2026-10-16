@@ -1,6 +1,6 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { CaseOverview } from '../../lib/api'
-import { fmtMoney } from '../../lib/money'
+import { fmtMoney, USD_EQ } from '../../lib/money'
 import { useName } from '../../lib/names'
 import { TipBox, axisProps } from '../ui'
 
@@ -14,7 +14,7 @@ const binLabel = (t: number, bucket: 'hour' | 'day', multiDay = false) =>
     ? { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' } : { day: 'numeric', month: 'short', timeZone: 'UTC' })
 
 export function TimelineChart({ o }: { o: CaseOverview }) {
-  const m = (v: number) => fmtMoney(v, o.currency, 1)  // values below are already in the data's currency
+  const m = (v: number) => fmtMoney(v, o.currency, 1)  // USD equivalent
   const { bucket, bins } = o.timeline
   const multiDay = bins.length > 0 && new Date(bins[0].t).getUTCDate() !== new Date(bins[bins.length - 1].t).getUTCDate()
   const data = bins.map((b) => ({ ...b, flagged: b.flagged * o.rate, other: b.other * o.rate, label: binLabel(b.t, bucket, multiDay) }))
@@ -71,7 +71,7 @@ export function DistributionBars({ o }: { o: CaseOverview }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="text-sm" style={{ color: 'var(--ink-2)' }}>
-        <span className="text-lg font-semibold tabular" style={{ color: 'var(--ink)' }}>{fmtMoney(total)}</span> received in total
+        <span className="text-lg font-semibold tabular" style={{ color: 'var(--ink)' }}>{fmtMoney(total)}</span> received in total ({USD_EQ})
       </div>
       <ul className="flex flex-col gap-2.5">
         {rows.map((r) => (

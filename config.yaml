@@ -100,6 +100,9 @@ disposition:
   escalate_at: 0.55         # risk at or above -> ESCALATE (human review + draft STR)
   close_below: 0.25         # risk below, with legitimacy >= close_min_legit and no escalator -> CLOSE
   close_min_legit: 0.5
+  # The confidence score (distance from the nearest threshold, plus how much evidence was gathered) is not a
+  # calibrated probability, so it is only shown as High / Medium / Low, at these cut-offs.
+  confidence_labels: {high: 0.8, medium: 0.6}
   close_expiry_days: 90
 
 # --- Actions (hold planner + human approval) ------------------------------------------------
@@ -146,13 +149,12 @@ crime_hypotheses:
   PASS-THROUGH: ["money mule (cyber fraud or ransom)"]
   RANDOM: []              # a chain with no regular shape points to no single crime on its own
 
-# What the investigation found also points to likely crimes (indicative), used with the shape above.
+# Indicators with a well-supported link to a predicate crime, used with the shape above (escalated cases only).
+# Money returning to its sender is the cycle typology (as CYCLE above); money forwarded straight on is the
+# money-mule pattern (FATF 2022, "Money laundering from cyber-enabled fraud"). Splits, cash or crypto, many
+# sources and convergence are left out: they are common in normal accounts and point to no single crime.
 crime_by_indicator:
   CYCLE: [embezzlement]
   ROUND_TRIP: [embezzlement]
-  MANY_SOURCES: [loan sharking, gambling]
-  CONVERGENCE: [drugs, smuggling]
-  CASH_OR_CRYPTO_EXIT: [drugs, smuggling]
   PASS_THROUGH: ["money mule (cyber fraud or ransom)"]
   FAST_ONWARD_TRANSFER: ["money mule (cyber fraud or ransom)"]
-  EQUAL_SPLITS: [extortion]

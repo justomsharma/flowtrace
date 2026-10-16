@@ -21,7 +21,7 @@ export default function KpiCards({ o }: { o: CaseOverview }) {
   const k = o.kpis
   return (
     <div className="grid gap-4 grid-cols-2 min-[1180px]:grid-cols-4">
-      <Kpi label="Amount" note="flagged money" Icon={Coins} ink="var(--critical)" value={fmtMoney(k.amount)} />
+      <Kpi label="Amount" note="flagged, USD equivalent" Icon={Coins} ink="var(--critical)" value={fmtMoney(k.amount)} />
       <Kpi label="Accounts" note={k.traced_accounts > 0 ? `${k.traced_accounts} found by tracing` : 'in the case'}
         Icon={Network} ink="var(--brand)" value={k.connected_accounts} />
       <Kpi label="Payments" note="flagged" Icon={ArrowLeftRight} ink="var(--s7)" value={k.payments} />

@@ -92,7 +92,8 @@ def decide(book: EvidenceBook, ml_score: float, shape_conf: float, rules: dict,
     margin = min(abs(risk - r["escalate_at"]), abs(risk - r["close_below"]))
     n = len(support) + len(counter)
     conf = max(0.3, min(0.97, 0.5 + 1.2 * margin + 0.03 * min(n, 8)))
-    label = "High" if conf >= 0.8 else "Medium" if conf >= 0.6 else "Low"
+    t = r["confidence_labels"]
+    label = "High" if conf >= t["high"] else "Medium" if conf >= t["medium"] else "Low"
     return Disposition(action, round(risk, 3), round(conf, 2), label,
                        {**comps, "red_raw": round(red, 3), "legit_raw": round(legit, 3), "ml_raw": round(ml_score, 3),
                         "shape_raw": round(shape_conf, 3)}, reasons)

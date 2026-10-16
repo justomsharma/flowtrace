@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ArrowRight } from 'lucide-react'
 import { fmtUtc, type Payment } from '../../lib/api'
-import { fmtMoney } from '../../lib/money'
+import { fmtMoney, fmtOriginal, USD_EQ } from '../../lib/money'
 import { fullId, useName } from '../../lib/names'
 import { StatusPill } from './Panel'
 
@@ -12,6 +12,9 @@ const gap = (ms: number) => {
   const h = Math.floor(min / 60)
   return h < 48 ? `${h}h ${min % 60}m later` : `${Math.round(h / 24)} days later`
 }
+
+/** The payment in its own currency ("EUR 1,050"), or the currency's name when the amount is unknown. */
+const paidIn = (p: Payment) => fmtOriginal(p.amount_orig, p.cur) || p.cur || ''
 
 /** The flow as a sequence: every payment in time order, with the wait before it. */
 export function PaymentSequence({ payments, currency, rate }: { payments: Payment[]; currency: string; rate: number }) {
@@ -29,7 +32,10 @@ export function PaymentSequence({ payments, currency, rate }: { payments: Paymen
               {i > 0 && <span className="text-xs" style={{ color: 'var(--muted)' }}>{gap(p.ts - shown[i - 1].ts)}</span>}
             </span>
             <span className="flex items-center gap-2 font-medium">{name(p.src)} <ArrowRight size={14} style={{ color: 'var(--muted)' }} aria-label="to" /> {name(p.dst)}</span>
-            <span className="font-semibold text-right">{fmtMoney(p.amount, currency, rate)}</span>
+            <span className="flex flex-col text-right">
+              <span className="font-semibold">{fmtMoney(p.amount, currency, rate)}</span>
+              <span className="text-xs" style={{ color: 'var(--muted)' }}>{paidIn(p)}</span>
+            </span>
             <StatusPill status={p.status} />
           </li>
         ))}
@@ -57,7 +63,8 @@ export function PaymentsTable({ payments, currency, rate, fill = false }: { paym
               <th className="py-2 px-3 font-medium rounded-l-lg">Time (UTC)</th>
               <th className="px-3 font-medium">From</th>
               <th className="px-3 font-medium">To</th>
-              <th className="px-3 font-medium text-right">Amount</th>
+              <th className="px-3 font-medium text-right">Amount ({USD_EQ})</th>
+              <th className="px-3 font-medium">Paid in</th>
               <th className="px-3 font-medium">Type</th>
               <th className="px-3 font-medium rounded-r-lg">Status</th>
             </tr>
@@ -69,6 +76,7 @@ export function PaymentsTable({ payments, currency, rate, fill = false }: { paym
                 <td className="px-3 font-medium" title={fullId(p.src)}>{name(p.src)}</td>
                 <td className="px-3 font-medium" title={fullId(p.dst)}>{name(p.dst)}</td>
                 <td className="px-3 text-right">{fmtMoney(p.amount, currency, rate)}</td>
+                <td className="px-3" style={{ color: 'var(--ink-2)' }}>{paidIn(p)}</td>
                 <td className="px-3" style={{ color: 'var(--ink-2)' }}>{p.fmt ?? ''}</td>
                 <td className="px-3"><StatusPill status={p.status} /></td>
               </tr>
@@ -77,7 +85,7 @@ export function PaymentsTable({ payments, currency, rate, fill = false }: { paym
         </table>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--muted)' }}>
-        <span>Followed: money the investigation traced onward.</span>
+        <span>Followed: money the investigation traced onward. Amounts are the {USD_EQ}; "Paid in" is the payment's own currency.</span>
         {!fill && payments.length > 8 && (
           <button onClick={() => setAll((v) => !v)} className="ml-auto text-sm font-medium" style={{ color: 'var(--brand)' }}>
             {all ? 'Show the latest 8' : `Show all ${payments.length} payments`}

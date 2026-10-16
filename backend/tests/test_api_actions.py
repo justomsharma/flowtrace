@@ -107,14 +107,16 @@ def test_get_plan_returns_the_saved_plan_and_current_actions(case, monkeypatch):
     act = {"id": "A1", "type": "FILE_STR", "status": "PROPOSED"}
     monkeypatch.setattr(M.store, "load_plan", lambda cid: plan)
     monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [act])
-    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": plan, "actions": [act],
-                                                            "open_effect": {"frozen": 0, "on_routes": 0}}
+    r = client.get(f"/api/cases/{case}/plan").json()
+    assert {k: r[k] for k in ("plan", "actions", "held_effect", "open_effect")} == {
+        "plan": plan, "actions": [act], "held_effect": {"frozen": 0, "on_routes": 0}, "open_effect": {"frozen": 0, "on_routes": 0}}
 
 
 def test_get_plan_before_any_plan_exists(case, monkeypatch):
     monkeypatch.setattr(M.store, "load_plan", lambda cid: None)
     monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [])
-    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": None, "actions": [], "open_effect": None}
+    r = client.get(f"/api/cases/{case}/plan").json()
+    assert (r["plan"], r["actions"], r["held_effect"], r["open_effect"]) == (None, [], None, None)
 
 
 def test_a_stored_result_triggers_the_act_step_and_survives_its_failure(monkeypatch, tmp_path):
@@ -146,8 +148,21 @@ def test_get_plan_says_what_the_open_holds_block(case, monkeypatch):
     monkeypatch.setattr(M.store, "load_plan", lambda cid: plan)
     monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [
         {"id": "A1", "type": "HOLD", "status": "APPROVED", "account": "M1"},
-        {"id": "A2", "type": "HOLD", "status": "REJECTED", "account": "M2"}])
+        {"id": "A2", "type": "HOLD", "status": "REJECTED", "account": "M2"},
+        {"id": "A3", "type": "HOLD", "status": "PROVISIONAL", "account": "M3"},
+        {"id": "A4", "type": "HOLD", "status": "PROPOSED", "account": "M4"}])
     seen = []
     monkeypatch.setattr(M.planner, "effect", lambda p, held: seen.append((p, held)) or {"frozen": 1.0, "on_routes": 2.0})
     r = client.get(f"/api/cases/{case}/plan").json()
-    assert r["open_effect"] == {"frozen": 1.0, "on_routes": 2.0} and seen == [(plan, ["M1"])]
+    assert r["open_effect"] == {"frozen": 1.0, "on_routes": 2.0}
+    # In place now (approved or provisional), then what approving the proposals too would freeze.
+    assert seen == [(plan, ["M1", "M3"]), (plan, ["M1", "M3", "M4"])]
+
+
+@pytest.mark.parametrize("enabled,token,active", [(True, "t", True), (True, None, False), (False, "t", False)])
+def test_the_ui_is_told_exactly_when_auto_hold_can_act(monkeypatch, enabled, token, active):
+    rules = {**M.cfg(), "actions": {**M.cfg()["actions"], "auto_hold": {"enabled": enabled, "min_confidence": 0.9,
+                                                                        "confirm_business_days": 1}}}
+    monkeypatch.setattr(M, "cfg", lambda: rules)
+    monkeypatch.setattr(M, "approver_token", lambda: token)
+    assert M.auto_hold_policy() == {"active": active, "min_confidence": 0.9, "confirm_business_days": 1}

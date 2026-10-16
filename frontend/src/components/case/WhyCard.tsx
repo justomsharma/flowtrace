@@ -29,8 +29,9 @@ export default function WhyCard({ o, onInvestigate }: { o: CaseOverview; onInves
   const strong = o.findings.filter((f) => f.tag === 'Strong sign').length
   const weak = o.findings.length - strong
   const normal = o.explanations.length
-  const level = s.risk === null ? null : s.risk >= 0.55 ? 'High' : s.risk >= 0.25 ? 'Medium' : 'Low'
-  const color = s.risk === null ? 'var(--axis)' : s.risk >= 0.55 ? 'var(--critical)' : s.risk >= 0.25 ? 'var(--warning)' : 'var(--good)'
+  // Levels come from the server, at the thresholds in config.yaml (disposition.escalate_at / close_below).
+  const level = s.risk_level
+  const color = level === 'High' ? 'var(--critical)' : level === 'Medium' ? 'var(--warning)' : level === 'Low' ? 'var(--good)' : 'var(--axis)'
   const basis = o.summary
     ? `Based on ${strong} strong sign${strong === 1 ? '' : 's'}, ${weak} weaker sign${weak === 1 ? '' : 's'} and ${normal} normal explanation${normal === 1 ? '' : 's'}.`
     : null
@@ -61,11 +62,11 @@ export default function WhyCard({ o, onInvestigate }: { o: CaseOverview; onInves
       </Cell>
 
       <Cell label="Confidence">
-        <span className="text-lg font-semibold">{s.confidence ? `${s.confidence} · ${s.confidence_pct}%` : '–'}</span>
-        <span className="text-xs" style={{ color: 'var(--muted)' }}>How sure the verdict is</span>
+        <span className="text-lg font-semibold">{s.confidence ?? '–'}</span>
+        <span className="text-xs" style={{ color: 'var(--muted)' }}>How far the case is from a decision line (a score, not a probability)</span>
       </Cell>
 
-      <Cell label="Likely crime type (indicative)">
+      <Cell label="Possible crime type (indicative, not a finding)">
         {o.crime_guess.length ? (
           <span className="flex flex-wrap gap-1.5">
             {o.crime_guess.slice(0, 3).map((c) => (
@@ -78,7 +79,8 @@ export default function WhyCard({ o, onInvestigate }: { o: CaseOverview; onInves
           <>
             <span className="text-base font-semibold">Not determined</span>
             <span className="text-xs" style={{ color: 'var(--muted)' }}>
-              {o.summary ? 'The pattern does not point to one crime.' : 'Shown after the investigation.'}
+              {!o.summary ? 'Shown after the investigation.' : s.state === 'escalate'
+                ? 'The pattern does not point to one crime.' : 'Shown for escalated cases only.'}
             </span>
           </>
         )}

@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, CircleCheck, MinusCircle, OctagonAlert, type LucideIcon } from 'lucide-react'
-import { getJSON, type Action, type AuditEntry } from '../lib/api'
+import { getJSON, type Action, type AuditEntry, type AutoHoldPolicy } from '../lib/api'
+import { holdPromise, isAutoHold } from '../lib/holds'
 import { useBatch } from '../lib/batch'
-import { fmtMoney } from '../lib/money'
+import { currencyNote, fmtMoney } from '../lib/money'
 import { ACTION_PLAIN, caseNo } from '../lib/plain'
 import { fullId } from '../lib/names'
 import { timeLeft, untilLabel, useNow } from '../lib/time'
 
 const EVENT_PLAIN: Record<AuditEntry['event'], string> = {
   PROPOSED: 'Proposed',
+  PROVISIONAL: 'Held provisionally (auto-hold)',
   APPROVED: 'Approved',
   REJECTED: 'Rejected',
   AUTO_RELEASED: 'Released: time up',
@@ -32,7 +34,8 @@ const BLOCKING = new Set(['HOLD', 'ESCALATE', 'FILE_STR'])
 
 function group(e: AuditEntry, type?: string): Group {
   switch (e.event) {
-    case 'PROPOSED': return 'review'                       // a person still has to approve or reject it
+    case 'PROPOSED':
+    case 'PROVISIONAL': return 'review'                    // a person still has to approve, confirm or reject it
     case 'APPROVED': return type && BLOCKING.has(type) ? 'alert' : 'cleared'
     case 'VERDICT': return e.to_status === 'ESCALATE' ? 'alert' : e.to_status === 'CLOSE' ? 'cleared' : 'review'
     case 'AUTO_RELEASED':
@@ -61,8 +64,6 @@ function StatusPill({ g }: { g: Group }) {
   )
 }
 
-/** Holds the agent applied itself under the auto-hold policy (critical cases only). */
-const isAuto = (a: Action) => (a.decided_by ?? '').includes('auto-hold')
 
 const caseLink = (caseId: string) => {
   const i = caseId.lastIndexOf('-C')
@@ -84,6 +85,8 @@ export default function Results() {
   const [audit, setAudit] = useState<AuditEntry[]>([])
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<Group | 'all'>('all')
+  const [policy, setPolicy] = useState<AutoHoldPolicy | null>(null)
+  useEffect(() => { getJSON<{ auto_hold?: AutoHoldPolicy }>('/api/health').then((h) => setPolicy(h.auto_hold ?? null)).catch(() => undefined) }, [])
   const now = useNow(1000)
 
   const load = useCallback(() => {
@@ -93,21 +96,24 @@ export default function Results() {
   }, [])
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t) }, [load])
 
-  const active = useMemo(() => (actions ?? []).filter((a) => a.type === 'HOLD' && a.status === 'APPROVED')
-    .sort((a, b) => (a.expires_ts ?? 0) - (b.expires_ts ?? 0)), [actions])
+  // Holds in place: approved by a person, or provisional (an auto-hold waiting for a person).
+  const ends = (a: Action) => (a.status === 'PROVISIONAL' ? a.provisional_until : a.expires_ts) ?? 0
+  const active = useMemo(() => (actions ?? []).filter((a) => a.type === 'HOLD' && (a.status === 'APPROVED' || a.status === 'PROVISIONAL'))
+    .sort((a, b) => ends(a) - ends(b)), [actions])
   const today = active.filter((a) => a.decided_at && sameDay(a.decided_at, now))
-  const waiting = (actions ?? []).filter((a) => a.status === 'PROPOSED')
+  const waiting = (actions ?? []).filter((a) => a.status === 'PROPOSED' || a.status === 'PROVISIONAL')
   const { batch } = useBatch()
   const inBatch = (a: Action) => !!batch && a.case_id.startsWith(`${batch.batch_id}-`)
   const mine = (actions ?? []).filter(inBatch)
+  const investigated = (batch?.cases ?? []).filter((x) => x.result).length
   const verdicts = (batch?.cases ?? []).reduce((c, x) => {
     const k = x.result?.action ?? 'PENDING'
     return { ...c, [k]: (c[k] ?? 0) + 1 }
   }, {} as Record<string, number>)
   const proposedHolds = mine.filter((a) => a.type === 'HOLD' && a.status === 'PROPOSED')
-  const decided = mine.filter((a) => (a.status === 'APPROVED' || a.status === 'REJECTED') && !isAuto(a)).length
-  const autoHeld = mine.filter((a) => a.type === 'HOLD' && isAuto(a)).length
-  const waitingHere = new Set(mine.filter((a) => a.status === 'PROPOSED').map((a) => a.case_id)).size
+  const decided = mine.filter((a) => a.status === 'APPROVED' || a.status === 'REJECTED').length
+  const autoHeld = mine.filter((a) => a.type === 'HOLD' && isAutoHold(a)).length
+  const waitingHere = new Set(mine.filter((a) => a.status === 'PROPOSED' || a.status === 'PROVISIONAL').map((a) => a.case_id)).size
   // One row per case in "Needs review": a case usually carries several proposals (an STR plus holds).
   const byCase = useMemo(() => {
     const m = new Map<string, Action[]>()
@@ -121,7 +127,7 @@ export default function Results() {
 
   // Reload as soon as a hold's time is up, so it shows as released without waiting for the next poll.
   const reloaded = useRef<string | null>(null)
-  const due = active.find((a) => a.expires_ts && a.expires_ts <= now)
+  const due = active.find((a) => ends(a) && ends(a) <= now)
   useEffect(() => { if (due && reloaded.current !== due.id) { reloaded.current = due.id; load() } }, [due, load])
 
   return (
@@ -129,13 +135,15 @@ export default function Results() {
       <header className="flex flex-col gap-5">
         <div>
           <h1 className="text-xl font-semibold">Holds &amp; audit</h1>
-          <p className="text-sm" style={{ color: 'var(--ink-2)' }}>What people decided on the agent's proposals, and the money held because of it.</p>
+          <p className="text-sm" style={{ color: 'var(--ink-2)' }}>What people decided on the agent's proposals, and the money held because of it. {currencyNote()}</p>
         </div>
         <div className="flex flex-wrap gap-x-14 gap-y-4">
         <Figure label="Frozen today" value={today.length ? total(today) : '$0'}
           note={today.length ? `${today.length} hold${today.length === 1 ? '' : 's'} approved today`
             : waiting.some((a) => a.type === 'HOLD') ? 'holds are proposed, none approved yet' : 'no hold approved today'} accent />
-        <Figure label="Holds in place" value={String(active.length)} note={active.length ? `${total(active)} frozen` : 'none right now'} />
+        <Figure label="Holds in place" value={String(active.length)} note={active.length
+          ? `${total(active)} frozen${active.some((a) => a.status === 'PROVISIONAL') ? `, ${active.filter((a) => a.status === 'PROVISIONAL').length} provisional (auto-hold)` : ''}`
+          : 'none right now'} />
         <Figure label="Needs review" value={String(byCase.length)} note={`case${byCase.length === 1 ? '' : 's'} across all uploads, ${waiting.length} proposal${waiting.length === 1 ? '' : 's'} in total`} />
         </div>
       </header>
@@ -150,17 +158,18 @@ export default function Results() {
           <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Step n={batch.rows} label="Payments checked" note={`${(batch.rows - batch.flagged_tx).toLocaleString('en-US')} passed as not suspicious`} />
             <Step n={batch.flagged_tx} label="Payments flagged" note={`grouped into ${batch.cases.length} case${batch.cases.length === 1 ? '' : 's'}`} />
-            <Step n={batch.cases.length} label="Cases investigated by the agent"
+            <Step n={investigated} label="Cases investigated by the agent"
               note={[['ESCALATE', 'escalate'], ['REVIEW', 'review'], ['CLOSE', 'close'], ['PENDING', 'not yet investigated']]
-                .filter(([k]) => verdicts[k]).map(([k, w]) => `${verdicts[k]} ${w}`).join(' · ')} />
-            <Step n={waitingHere} label="Cases waiting for an analyst" note={`${decided} decision${decided === 1 ? '' : 's'} made so far${autoHeld ? `, ${autoHeld} hold${autoHeld === 1 ? '' : 's'} applied automatically` : ''}`} warn />
+                .filter(([k]) => verdicts[k]).map(([k, w]) => `${verdicts[k]} ${w}`).join(' · ') || 'none yet'} />
+            <Step n={waitingHere} label="Cases waiting for an analyst" note={`${decided} decision${decided === 1 ? '' : 's'} made so far${autoHeld ? `, ${autoHeld} hold${autoHeld === 1 ? '' : 's'} placed by auto-hold` : ''}`} warn />
           </ol>
           <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
             {active.length > 0
-              ? <>Frozen now: <b style={{ color: 'var(--ink)' }}>{total(active)}</b> in {active.length} approved hold{active.length === 1 ? '' : 's'}.</>
+              ? <>Frozen now: <b style={{ color: 'var(--ink)' }}>{total(active)}</b> in {active.length} hold{active.length === 1 ? '' : 's'} in place.</>
               : proposedHolds.length > 0
                 ? <>Nothing is frozen yet: <b style={{ color: 'var(--ink)' }}>{fmtMoney(proposedHolds.reduce((t, a) => t + (a.hold_amount ?? 0), 0))}</b> across {proposedHolds.length} proposed hold{proposedHolds.length === 1 ? '' : 's'} waits for an analyst to approve.</>
                 : 'Nothing is frozen: no hold has been proposed or approved.'}
+            {' '}{holdPromise(policy)}
           </p>
         </section>
       )}
@@ -176,7 +185,7 @@ export default function Results() {
               <thead>
                 <tr className="text-left text-xs" style={{ color: 'var(--muted)' }}>
                   <th className="py-1.5 pr-4 font-medium">Account</th><th className="pr-4 font-medium">Case</th>
-                  <th className="pr-4 font-medium text-right">Frozen</th><th className="pr-4 font-medium">Approved by</th>
+                  <th className="pr-4 font-medium text-right">Frozen</th><th className="pr-4 font-medium">Held by</th>
                   <th className="pr-4 font-medium">Ends</th><th className="font-medium text-right">Time left</th>
                 </tr>
               </thead>
@@ -186,9 +195,9 @@ export default function Results() {
                     <td className="py-2 pr-4 font-mono text-xs">{a.account ? fullId(a.account) : ''}</td>
                     <td className="pr-4"><Link to={caseLink(a.case_id)} className="underline underline-offset-2">Case {caseNo(a.case_id)}</Link></td>
                     <td className="pr-4 text-right font-semibold" style={{ color: 'var(--s4)' }}>{fmtMoney(a.hold_amount ?? 0, a.currency, a.rate)}</td>
-                    <td className="pr-4">{a.decided_by}</td>
-                    <td className="pr-4" style={{ color: 'var(--ink-2)' }}>{a.expires_ts ? untilLabel(a.expires_ts) : ''}</td>
-                    <td className="text-right font-semibold">{a.expires_ts ? timeLeft(a.expires_ts, now) : ''}</td>
+                    <td className="pr-4">{a.status === 'PROVISIONAL' ? 'Agent (auto-hold), waiting for a person' : a.decided_by}</td>
+                    <td className="pr-4" style={{ color: 'var(--ink-2)' }}>{ends(a) ? untilLabel(ends(a)) : ''}</td>
+                    <td className="text-right font-semibold">{ends(a) ? timeLeft(ends(a), now) : ''}</td>
                   </tr>
                 ))}
               </tbody>
@@ -202,7 +211,7 @@ export default function Results() {
           <div>
             <h2 className="text-sm font-semibold flex items-center gap-2"><AlertTriangle size={15} style={{ color: '#94620a' }} aria-hidden />Needs review: {byCase.length} case{byCase.length === 1 ? '' : 's'}</h2>
             <p className="text-xs" style={{ color: 'var(--muted)' }}>
-              The agent never acts alone: every proposal, including closing a low-risk case, waits for an analyst to approve or reject it.
+              Every proposal, including closing a low-risk case, waits for an analyst to approve or reject it. {holdPromise(policy)}
             </p>
           </div>
           <ul className="flex flex-col">
@@ -268,7 +277,7 @@ export default function Results() {
                     <td className="pr-4"><StatusPill g={g} /></td>
                     <td className="pr-4 whitespace-nowrap tabular" style={{ color: 'var(--ink-2)' }}>{untilLabel(e.ts)}</td>
                     <td className="pr-4 whitespace-nowrap">{e.actor === 'agent' ? 'Agent' : e.actor === 'mcp' ? 'MCP client' : e.actor === 'system' ? 'System' : e.actor.includes('auto-hold') ? 'Agent (auto-hold)' : e.actor}</td>
-                    <td className="pr-4 whitespace-nowrap">{e.actor.includes('auto-hold') && e.event === 'APPROVED' ? 'Hold applied automatically' : what(e, typeOf[e.action_id])}</td>
+                    <td className="pr-4 whitespace-nowrap">{what(e, typeOf[e.action_id])}</td>
                     <td className="pr-4 whitespace-nowrap tabular"><Link to={caseLink(e.case_id)} className="underline underline-offset-2">Case {caseNo(e.case_id)}</Link></td>
                     <td className="pr-4 whitespace-nowrap font-mono text-xs">{e.account ? fullId(e.account) : ''}</td>
                     <td className="min-w-[260px]" style={{ color: 'var(--ink-2)' }}>{e.reason}</td>

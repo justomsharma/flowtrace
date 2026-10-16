@@ -286,7 +286,9 @@ export const fmtTime = (ms: number) =>
 // --- actions: the agent proposes, a person decides --------------------------------------------
 
 export type ActionType = 'HOLD' | 'RELEASE' | 'ESCALATE' | 'FILE_STR' | 'CLOSE'
-export type ActionStatus = 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'EXPIRED'
+/** PROVISIONAL: an auto-hold the agent placed; a person confirms (approve) or rejects it, or it is released when
+ *  provisional_until passes. */
+export type ActionStatus = 'PROPOSED' | 'PROVISIONAL' | 'APPROVED' | 'REJECTED' | 'EXPIRED'
 
 export interface Action {
   id: string
@@ -313,7 +315,15 @@ export interface Action {
   decided_at?: number
   reason?: string
   released_at?: number
+  /** Auto-hold: who placed it ("agent (auto-hold)"), when, until when it waits for a person, and why. */
+  held_by?: string
+  held_at?: number
+  provisional_until?: number
+  hold_reason?: string
 }
+
+/** Whether the agent may hold money provisionally on this server, and when (actions.auto_hold + APPROVER_TOKEN). */
+export interface AutoHoldPolicy { active: boolean; min_confidence: number | null; confirm_business_days: number | null }
 
 export interface HoldProposal {
   account: string
@@ -355,7 +365,7 @@ export interface AuditEntry {
   id: string
   ts: number
   actor: string
-  event: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'AUTO_RELEASED' | 'RELEASED' | 'VERDICT' | 'CASE_REUPLOADED' | 'SUPERSEDED' | 'WITHDRAWN'
+  event: 'PROPOSED' | 'PROVISIONAL' | 'APPROVED' | 'REJECTED' | 'AUTO_RELEASED' | 'RELEASED' | 'VERDICT' | 'CASE_REUPLOADED' | 'SUPERSEDED' | 'WITHDRAWN'
   /** How the approver was checked ('approver-token'); set on decisions only. */
   auth?: string
   action_id: string
@@ -401,7 +411,7 @@ export interface FlowNode {
   sent: number
   received: number
   in_case: boolean
-  hold: 'proposed' | 'approved' | null
+  hold: 'proposed' | 'provisional' | 'approved' | null
   entity_type: string | null
 }
 
@@ -417,7 +427,11 @@ export interface FlowEdge {
   last_ts: number
 }
 
-export interface Payment { tx_id: string; ts: number; src: string; dst: string; amount: number; fmt: string | null; status: PaymentStatus }
+/** amount is the USD equivalent; cur and amount_orig are the payment in its own currency. */
+export interface Payment {
+  tx_id: string; ts: number; src: string; dst: string; amount: number; fmt: string | null; status: PaymentStatus
+  cur?: string | null; amount_orig?: number | null
+}
 
 export interface Finding {
   id: string
@@ -451,7 +465,8 @@ export interface CaseOverview {
   uploaded_at: number | null
   currency: string
   rate: number
-  status: { state: OverviewState; job: JobBrief | null; risk: number | null; confidence: string | null; confidence_pct: number | null; reasons: string[] }
+  /** risk_level and confidence are High / Medium / Low at the config's thresholds; the confidence score is not a probability. */
+  status: { state: OverviewState; job: JobBrief | null; risk: number | null; risk_level: string | null; confidence: string | null; reasons: string[] }
   kpis: { amount: number; accounts: number; payments: number; connected_accounts: number; traced_accounts: number; suspicious_patterns: number | null }
   flow: { nodes: FlowNode[]; edges: FlowEdge[]; hidden_accounts: number }
   transactions: Payment[]
@@ -463,7 +478,9 @@ export interface CaseOverview {
   /** Why the case was flagged before any investigation: detectors that fired, then the model. */
   alert_reasons: string[]
   /** Likely underlying crime, guessed from the laundering shape (the data records no crime type). */
+  /** Possible predicate crimes (indicative); escalated cases only. */
   crime_guess: string[]
+  auto_hold?: AutoHoldPolicy
   /** Account id -> "Account A", the same names everywhere on the page and in the report. */
   names: Record<string, string>
   /** Two or three plain sentences: what moved, the pattern, and what the investigation concluded. */

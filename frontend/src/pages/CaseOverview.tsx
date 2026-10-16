@@ -15,6 +15,8 @@ import { NamesProvider } from '../lib/names'
 import { getJSON, type Action, type CaseOverview as Overview, type HoldPlan } from '../lib/api'
 import { useBatch } from '../lib/batch'
 import { fmtMoney } from '../lib/money'
+import { holdPromise } from '../lib/holds'
+import { untilLabel } from '../lib/time'
 import { caseNo, caseSentence, friendlyError, shortText, trickName } from '../lib/plain'
 import { caseSteps } from '../lib/stepper'
 import { useInvestigation } from '../lib/useInvestigation'
@@ -141,6 +143,9 @@ function CasePage({ caseId }: { caseId: string }) {
   const investigated = !!o.summary
   const proposed = hold.actions.filter((a) => a.type === 'HOLD' && a.status === 'PROPOSED')
   const proposedSum = proposed.reduce((s, a) => s + (a.hold_amount ?? 0), 0)
+  const provisional = hold.actions.filter((a) => a.type === 'HOLD' && a.status === 'PROVISIONAL')
+  const provisionalSum = provisional.reduce((s, a) => s + (a.hold_amount ?? 0), 0)
+  const releasedAt = Math.min(...provisional.map((a) => a.provisional_until ?? Infinity))
   const p = PRIORITY[o.priority]
   const writing = inv.live && inv.steps.length > 0 && inv.steps.every((s) => s.done)
 
@@ -194,12 +199,23 @@ function CasePage({ caseId }: { caseId: string }) {
         )}
       </header>
 
+      {provisional.length > 0 && (
+        <a href="#next-step" className="rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 text-sm"
+          style={{ background: 'var(--hold-tint)', border: '1px solid color-mix(in srgb, var(--hold) 45%, transparent)' }}>
+          <Lock size={18} style={{ color: 'var(--hold)' }} aria-hidden />
+          <span className="font-semibold">
+            {fmtMoney(provisionalSum)} held provisionally by the agent (auto-hold) in {provisional.length} account{provisional.length === 1 ? '' : 's'}.
+            {Number.isFinite(releasedAt) && ` Released ${untilLabel(releasedAt)} unless you confirm.`}
+          </span>
+          <span className="ml-auto font-semibold" style={{ color: '#94620a' }}>Confirm or release</span>
+        </a>
+      )}
       {proposed.length > 0 && (
         <a href="#next-step" className="rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 text-sm"
           style={{ background: 'var(--hold-tint)', border: '1px solid color-mix(in srgb, var(--hold) 45%, transparent)' }}>
           <Lock size={18} style={{ color: 'var(--hold)' }} aria-hidden />
           <span className="font-semibold">
-            {proposed.length} hold{proposed.length === 1 ? '' : 's'} proposed: {fmtMoney(proposedSum)}. Nothing is frozen until you approve.
+            {proposed.length} hold{proposed.length === 1 ? '' : 's'} proposed: {fmtMoney(proposedSum)}. {holdPromise(o.auto_hold)}
           </span>
           <span className="ml-auto font-semibold" style={{ color: '#94620a' }}>Review</span>
         </a>

@@ -146,7 +146,15 @@ def health() -> dict:
     except Exception:
         pass
     from flowtrace.agent.llm import available, model_name
-    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name()}
+    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name(), "auto_hold": auto_hold_policy()}
+
+
+def auto_hold_policy() -> dict:
+    """Whether the agent may hold money provisionally on this server (actions.auto_hold on AND an APPROVER_TOKEN,
+    so a person can confirm or release it), and when. The UI states it next to every "nothing is frozen" line."""
+    r = cfg()["actions"].get("auto_hold") or {}
+    return {"active": bool(r.get("enabled")) and approver_token() is not None,
+            "min_confidence": r.get("min_confidence"), "confirm_business_days": r.get("confirm_business_days")}
 
 
 @app.get("/api/overview")
@@ -360,9 +368,10 @@ def case_overview(case_id: str) -> dict:
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     c = CASES[case_id]
-    return case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
-                                    _job_brief(case_id), _failed(case_id), cfg(),
-                                    uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at"))
+    return {**case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
+                                       _job_brief(case_id), _failed(case_id), cfg(),
+                                       uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at")),
+            "auto_hold": auto_hold_policy()}
 
 
 @app.get("/api/cases/{case_id}/report.md")
@@ -417,11 +426,17 @@ def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
 
 @app.get("/api/cases/{case_id}/plan")
 def get_plan(case_id: str) -> dict:
-    """The saved plan, the case's current actions, and what the holds still open (proposed or approved) freeze,
-    plus the money on the case's routes they would also stop (an assumption). Recounted after every decision."""
+    """The saved plan, the case's current actions, and the effect of its holds: held_effect for the holds in
+    place (approved or provisional), open_effect for those plus the proposed ones (what approving them all would
+    freeze), each with the money on the case's routes they would also stop (an assumption). Recounted after
+    every decision."""
     plan, actions = store.load_plan(case_id), service.list_actions(case_id=case_id)
-    held = [a["account"] for a in actions if a["type"] == "HOLD" and a["status"] in ("PROPOSED", "APPROVED")]
-    return {"plan": plan, "actions": actions, "open_effect": planner.effect(plan, held) if plan else None}
+    holds = [a for a in actions if a["type"] == "HOLD"]
+    held = [a["account"] for a in holds if a["status"] in ("APPROVED", "PROVISIONAL")]
+    open_ = held + [a["account"] for a in holds if a["status"] == "PROPOSED"]
+    return {"plan": plan, "actions": actions, "auto_hold": auto_hold_policy(),
+            "held_effect": planner.effect(plan, held) if plan else None,
+            "open_effect": planner.effect(plan, open_) if plan else None}
 
 
 @app.get("/api/actions")

@@ -5,6 +5,9 @@ RULES = {
     "ui": {"evidence_confidence": {"high": 0.5, "medium": 0.35}, "priority": {"high": 0.95, "medium": 0.8},
            "flow_max_accounts": 16},
     "cases": {"flag_probability": 0.5},
+    "disposition": {"escalate_at": 0.55, "close_below": 0.25, "confidence_labels": {"high": 0.8, "medium": 0.6}},
+    "crime_hypotheses": {"STACK": ["smuggling"]},
+    "crime_by_indicator": {"PASS_THROUGH": ["money mule"]},
 }
 H = 3_600_000
 
@@ -301,3 +304,48 @@ def test_short_reasons_stay_short():
     c = {"detector_hits": [{"detector": "FAN-OUT", "strength": 0.9, "detail": "paid 9 distinct accounts ($12,000)"}],
          "signals": [{"signal": "model", "p": 0.82}]}
     assert alert_reasons(c) == ["Paid 9 different accounts in a short period", "The risk model scores these payments as high risk"]
+
+
+def test_risk_and_confidence_levels_follow_config_and_never_show_a_percentage():
+    r = result()
+    r["disposition"]["confidence"] = 0.85
+    st = V.build_overview(case(CHAIN), r, None, [], None, False, RULES)["status"]
+    assert (st["risk_level"], st["confidence"]) == ("High", "High") and "confidence_pct" not in st
+    stricter = {**RULES, "disposition": {"escalate_at": 0.8, "close_below": 0.25, "confidence_labels": {"high": 0.9, "medium": 0.6}}}
+    st = V.build_overview(case(CHAIN), r, None, [], None, False, stricter)["status"]
+    assert (st["risk_level"], st["confidence"]) == ("Medium", "Medium")
+
+
+def test_crime_types_only_for_escalated_cases():
+    found = [ev("E1", "support", 0.5, code="PASS_THROUGH")]
+    o = lambda action: V.build_overview(case(CHAIN), result(evidence=found, action=action), None, [], None, False, RULES)  # noqa: E731
+    assert o("ESCALATE")["crime_guess"] == ["smuggling", "money mule"]
+    assert o("REVIEW")["crime_guess"] == [] and o("CLOSE")["crime_guess"] == []
+
+
+def test_each_payment_keeps_its_own_currency_next_to_the_usd_equivalent(monkeypatch):
+    monkeypatch.setattr(V, "fx_rate", lambda cur: 0.9 if cur == "Euro" else 1.0)
+    euro = [pay("t1", "A", "B", 100, cur="Euro"), pay("t2", "B", "C", 90, ts=H, cur="US Dollar")]
+    pays = {p["tx_id"]: p for p in V.build_overview(case(euro), None, None, [], None, False, RULES)["transactions"]}
+    assert (pays["t1"]["amount"], pays["t1"]["cur"], pays["t1"]["amount_orig"]) == (100, "Euro", 90.0)
+    assert pays["t2"]["cur"] == "US Dollar"
+    md = V.str_markdown(case(euro), full_result(), None, [], RULES)
+    assert "| $100 | EUR 90 |" in md and "Amount (USD equivalent) | Paid in" in md
+
+
+def test_str_points_and_trail_cite_their_evidence_and_crimes_wait_for_escalation():
+    r = full_result()
+    r["report"]["money_trail"] = [{"text": "A paid B, B paid C.", "evidence_ids": ["E1"]}]
+    md = V.str_markdown(case(CHAIN), r, None, [], RULES)
+    assert "- A paid B, B paid C. (E1)" in md
+    assert any(line.startswith("- ") and line.endswith("(E1)") for line in md.splitlines()[:20])  # summary points
+    r["disposition"]["action"] = "REVIEW"
+    assert "smuggling" not in V.str_markdown(case(CHAIN), r, None, [], RULES)
+
+
+def test_a_provisional_auto_hold_reads_plainly_in_the_str_and_marks_the_account():
+    actions = [{"id": "A1", "type": "HOLD", "status": "PROVISIONAL", "account": "B", "hold_amount": 90.0,
+                "provisional_until": 86_400_000, "proposed_by": "agent"}]
+    md = V.str_markdown(case(CHAIN), full_result(), None, actions, RULES)
+    assert "held provisionally by the agent (auto-hold) until 1970-01-02 00:00 UTC" in md
+    assert nodes(V.flow(case(CHAIN), None, None, actions, RULES))["B"]["hold"] == "provisional"

@@ -117,7 +117,7 @@ export default function Today() {
               <CheckCircle2 size={15} aria-hidden />{(batch.rows - batch.flagged_tx).toLocaleString('en-US')} passed as normal
             </span>
             {today.length < batch.cases.length && (
-              <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{today.length} in today's queue (capacity)</span>
+              <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{today.length} in today's queue (capacity) · amounts in USD equivalent</span>
             )}
             {batch.prefetch && batch.prefetch.total > 0 && (
               <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">

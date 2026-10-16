@@ -19,7 +19,8 @@ from flowtrace.agent.report import clean
 HOUR = 3_600_000
 DAY = 24 * HOUR
 FLOW_ROLES = ("alert", "trace", "cycle")  # result graph edges that are case money; "context" is history
-OPEN_HOLD = {"PROPOSED": "proposed", "APPROVED": "approved"}
+OPEN_HOLD = {"PROPOSED": "proposed", "PROVISIONAL": "provisional", "APPROVED": "approved"}
+HOLD_RANK = {"approved": 0, "provisional": 1, "proposed": 2}  # an account shows its firmest hold
 
 
 def letters(i: int) -> str:
@@ -47,6 +48,22 @@ def fill(text: str, accounts: list[str], names: dict[str, str]) -> str:
     """Put the evidence's subject account into a short reason ("{A} sent on …")."""
     who = names.get(accounts[0], "The account") if accounts else "The account"
     return text.replace("{A}", who)
+
+
+def level(x: float, high: float, medium: float) -> str:
+    return "High" if x >= high else "Medium" if x >= medium else "Low"
+
+
+def risk_level(risk: float, rules: dict) -> str:
+    """High at the escalation threshold, Medium from the close threshold up, Low below it."""
+    d = rules["disposition"]
+    return level(risk, d["escalate_at"], d["close_below"])
+
+
+def confidence_level(conf: float, rules: dict) -> str:
+    """The disposition's confidence score is not a probability, so it is only shown as High / Medium / Low."""
+    t = rules["disposition"]["confidence_labels"]
+    return level(conf, t["high"], t["medium"])
 
 
 def confidence(weight: float, rules: dict) -> str:
@@ -80,8 +97,9 @@ def _holds(actions: list[dict]) -> dict[str, str]:
     out: dict[str, str] = {}
     for a in actions:
         if a.get("type") == "HOLD" and a.get("account") and a.get("status") in OPEN_HOLD:
-            if out.get(a["account"]) != "approved":
-                out[a["account"]] = OPEN_HOLD[a["status"]]
+            mine = OPEN_HOLD[a["status"]]
+            if HOLD_RANK[mine] < HOLD_RANK.get(out.get(a["account"]), 9):
+                out[a["account"]] = mine
     return out
 
 
@@ -93,7 +111,10 @@ def flow(case: dict, result: dict | None, plan: dict | None, actions: list[dict]
     pays: dict[str, dict] = {}
     def add(e: dict, origin: str) -> None:
         if e["tx_id"] not in pays:
-            pays[e["tx_id"]] = {k: e.get(k) for k in ("tx_id", "ts", "src", "dst", "amount", "fmt")} | {"origin": origin}
+            cur = e.get("cur")
+            # Every amount is the USD equivalent; the payment's own currency and amount ride along.
+            pays[e["tx_id"]] = {k: e.get(k) for k in ("tx_id", "ts", "src", "dst", "amount", "fmt")} | {
+                "cur": cur, "amount_orig": e["amount"] * fx_rate(cur) if cur else None, "origin": origin}
 
     for e in case.get("edges", []):
         add(e, "case")
@@ -183,7 +204,7 @@ def distribution(payments: list[dict], top: int = 6) -> list[dict]:
     return out
 
 
-def _status(result: dict | None, job: dict | None, failed: bool) -> dict:
+def _status(result: dict | None, job: dict | None, failed: bool, rules: dict) -> dict:
     if job:
         state = "investigating" if job.get("status") == "running" else "queued"
     elif result:
@@ -193,8 +214,9 @@ def _status(result: dict | None, job: dict | None, failed: bool) -> dict:
     else:
         state = "not_started"
     d = (result or {}).get("disposition") or {}
-    return {"state": state, "job": job, "risk": d.get("risk"), "confidence": d.get("confidence_label"),
-            "confidence_pct": round(d["confidence"] * 100) if d.get("confidence") is not None else None,
+    return {"state": state, "job": job, "risk": d.get("risk"),
+            "risk_level": risk_level(d["risk"], rules) if d.get("risk") is not None else None,
+            "confidence": confidence_level(d["confidence"], rules) if d.get("confidence") is not None else None,
             "reasons": d.get("reasons", [])}
 
 
@@ -229,7 +251,7 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
         "priority": priority(case.get("case_score") or case.get("ml_score") or 0.0, rules),
         "window": [case.get("t0"), case.get("t1")], "uploaded_at": uploaded_at,
         "currency": currency, "rate": rate,
-        "status": _status(result, job, failed),
+        "status": _status(result, job, failed, rules),
         "kpis": {"amount": case.get("amount", 0.0), "accounts": len(case.get("accounts", [])),
                  "payments": len(case.get("edges", [])), "connected_accounts": connected,
                  "traced_accounts": max(connected - len(case.get("accounts", [])), 0),
@@ -243,8 +265,8 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
         "indicators": [{"key": k, "value": comp[raw], "contribution": comp.get(part, 0.0)}
                        for k, raw, part in INDICATORS if raw in comp],
         "alert_reasons": alert_reasons(case),
-        # A guess at the underlying crime from the laundering shape (the data has no crime label).
-        "crime_guess": crime_guess(case, evidence, rules),
+        # A guess at the underlying crime from the laundering shape (the data has no crime label); escalated cases only.
+        "crime_guess": crime_guess(case, evidence, rules) if (result or {}).get("disposition", {}).get("action") == "ESCALATE" else [],
         "summary": {"headline": clean(rep["headline"]), "text": clean(rep["executive_summary"]["text"]),
                     "points": summary_points(rep, evidence, result, names), "by_ai": rep.get("author") not in (None, "template")}
                    if rep else None,
@@ -320,8 +342,9 @@ def verdict_basis(result: dict | None, evidence: list[dict], names: dict[str, st
 
 
 def crime_guess(case: dict, evidence: list[dict], rules: dict) -> list[str]:
-    """Likely crimes from the laundering shape, plus money-mule crimes when money passed straight through.
-    Read from config.yaml each time, so stored cases follow the current mapping."""
+    """Possible predicate crimes from the laundering shape (crime_hypotheses), plus the few indicators with a
+    well-supported link (crime_by_indicator). Indicative only: the data has no crime labels. The page shows it
+    for escalated cases only. Read from config.yaml each time, so stored cases follow the current mapping."""
     m = rules.get("crime_hypotheses", {})
     by_indicator = rules.get("crime_by_indicator", {})
     out = list(m.get((case.get("shape") or {}).get("typology"), []) or [])
@@ -337,18 +360,22 @@ DECISION_POINT = {"ESCALATE": "Recommend escalating to a senior analyst.",
                   "CLOSE": "Looks like normal activity: recommend closing."}
 
 
-def summary_points(rep: dict, evidence: list[dict], result: dict | None, names: dict[str, str] | None = None) -> list[str]:
-    """The report's bullet points; results saved before reports had them get the strongest reasons each way."""
+def summary_points(rep: dict, evidence: list[dict], result: dict | None, names: dict[str, str] | None = None,
+                   with_ids: bool = False) -> list[str]:
+    """The report's bullet points; results saved before reports had them get the strongest reasons each way.
+    with_ids (the STR draft) ends each point with the evidence it rests on, e.g. "(E1, E3)"."""
     names = names or {}
     by_id = {e["id"]: e for e in evidence}
     subject = lambda ids: next((by_id[i].get("accounts", []) for i in ids if i in by_id), [])  # noqa: E731
     # Rule-written points are rebuilt from the evidence each time, so they always use the current wording.
     by_ai = rep.get("author") not in (None, "template")
-    pts = [fill(clean(p["text"]), subject(p.get("evidence_ids", [])), names)
+    cite = lambda text, ids: f"{text} ({', '.join(ids)})" if with_ids and ids else text  # noqa: E731
+    pts = [cite(fill(clean(p["text"]), subject(p.get("evidence_ids", [])), names), p.get("evidence_ids", []))
            for p in (rep.get("summary_points") or [] if by_ai else []) if p.get("text")]
     if not pts:
         top = lambda kind, n: sorted((e for e in evidence if e["kind"] == kind), key=lambda e: -e["weight"])[:n]  # noqa: E731
-        pts = [fill(brief(e).rstrip(".…") + ".", e.get("accounts", []), names) for e in top("support", 3) + top("counter", 2)]
+        pts = [cite(fill(brief(e).rstrip(".…") + ".", e.get("accounts", []), names), [e["id"]])
+               for e in top("support", 3) + top("counter", 2)]
         action = ((result or {}).get("disposition") or {}).get("action")
         if action in DECISION_POINT:
             pts.append(DECISION_POINT[action])
@@ -365,8 +392,16 @@ ACTION_TITLE = {"HOLD": "Hold account", "RELEASE": "Release the hold on account"
 
 
 def money(usd: float, currency: str | None = "US Dollar", rate: float | None = 1.0) -> str:
-    """Amounts are stated in US dollars everywhere, as stored in the graph."""
+    """Amounts are stated as their US dollar equivalent everywhere, as stored in the graph."""
     return f"${usd:,.0f}"
+
+
+def original(amount: float | None, cur: str | None) -> str:
+    """A payment in its own currency: "EUR 1,050" (Bitcoin to 4 decimals)."""
+    if not cur or amount is None:
+        return ""
+    code = CODES.get(cur, cur)
+    return f"{code} {amount:,.4f}" if code == "BTC" else f"{code} {amount:,.0f}"
 
 
 def _utc(ms: int | None) -> str:
@@ -377,13 +412,19 @@ def _utc(ms: int | None) -> str:
 def _decision(a: dict) -> str:
     by = f" by {a['decided_by']}" if a.get("decided_by") else ""
     why = f" ({a['reason']})" if a.get("reason") else ""
-    return {"PROPOSED": "waiting for a decision", "APPROVED": f"approved{by}{why}",
+    provisional = (f"held provisionally by the agent (auto-hold) until {_utc(a.get('provisional_until'))}, "
+                   f"waiting for a person to confirm it")
+    return {"PROPOSED": "waiting for a decision", "PROVISIONAL": provisional, "APPROVED": f"approved{by}{why}",
             "REJECTED": f"rejected{by}{why}"}.get(a.get("status")) or ("released" if a.get("released_at") else "withdrawn")
 
 
-def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict]) -> str:
+def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict], rules: dict | None = None) -> str:
     """The STR draft a person reviews before filing: the report, the evidence, the agent's proposed actions
-    with what people decided, and the case payments."""
+    with what people decided, and the case payments. Every statement carries the evidence IDs it rests on
+    (E1, E2…), listed under Red flags and Legitimate explanations, so each claim traces to the payment graph."""
+    if rules is None:
+        from flowtrace.settings import cfg
+        rules = cfg()
     rep, d = result["report"], result["disposition"]
     cur = case_currency(case, plan)
     rate = case_rate(cur, plan)
@@ -395,28 +436,31 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     no = case["case_id"].rsplit("-C", 1)[-1].lstrip("0") or case["case_id"]
     out = [f"# STR draft: Case {no}", "", f"Case reference: {case['case_id']}", "",
            f"Draft for a person to review before filing. The narrative was {by}; every figure comes from the "
-           f"payment graph. Amounts in US dollars.", "",
+           f"payment graph, and the IDs in brackets (E1, E2…) point to the evidence listed below. Amounts are the "
+           f"US dollar equivalent (converted at the dataset's fixed rates); the payments table also shows each "
+           f"payment in its own currency.", "",
            "## Summary", "", f"**{clean(rep['headline'])}**", ""]
     f = flow(case, result, plan, actions, {"ui": {"flow_max_accounts": 10_000}})
     names = account_names(f["nodes"], list(case.get("accounts", [])))
-    out += [f"- {p}" for p in summary_points(rep, evidence, result, names)] + ["",
-           f"Recommendation: **{d['action'].capitalize()}** (risk {'High' if d['risk'] >= 0.55 else 'Medium' if d['risk'] >= 0.25 else 'Low'}, "
-           f"confidence {round((d.get('confidence') or 0) * 100)}%). "
+    out += [f"- {p}" for p in summary_points(rep, evidence, result, names, with_ids=True)] + ["",
+           f"Recommendation: **{d['action'].capitalize()}** (risk {risk_level(d['risk'], rules)}, "
+           f"confidence {confidence_level(d.get('confidence') or 0.0, rules)}). "
            f"Case amount {m(case.get('amount', 0.0))} across {len(case.get('accounts', []))} accounts and "
            f"{len(case.get('edges', []))} payments, {_utc(case.get('t0'))} to {_utc(case.get('t1'))}.", ""]
     if rep.get("subject_profile"):
         out += ["## Subject", "", rep["subject_profile"]["text"], ""]
+    ids = lambda item: f" ({', '.join(item['evidence_ids'])})" if item.get("evidence_ids") else ""  # noqa: E731
     if rep.get("money_trail"):
-        out += ["## Money trail", ""] + [f"- {t['text']}" for t in rep["money_trail"]] + [""]
+        out += ["## Money trail", ""] + [f"- {t['text']}{ids(t)}" for t in rep["money_trail"]] + [""]
     if rep.get("typology_assessment"):
-        out += ["## Typology", "", rep["typology_assessment"]["text"], ""]
-        if hyp := result.get("crime_hypotheses"):
+        out += ["## Typology", "", rep["typology_assessment"]["text"] + ids(rep["typology_assessment"]), ""]
+        if d["action"] == "ESCALATE" and (hyp := result.get("crime_hypotheses")):
             out += ["Possible predicate crime (a hypothesis from the shape, not a finding): "
                     + "; ".join(f"{h['crime']} ({h['basis']})" for h in hyp) + ".", ""]
     for title, kind in (("Red flags", "support"), ("Legitimate explanations", "counter")):
         items = sorted((e for e in evidence if e["kind"] == kind), key=lambda e: -e["weight"])
         out += [f"## {title}", ""]
-        out += [f"- {clean(e['claim'])}" for e in items] or ["- None found."]
+        out += [f"- {e['id']}: {clean(e['claim'])}" for e in items] or ["- None found."]
         out += [""]
     if rep.get("unknowns"):
         out += ["## Unknowns", ""] + [f"- {u}" for u in rep["unknowns"]] + [""]
@@ -434,8 +478,10 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     if rep.get("next_steps"):
         out += ["## Next steps", ""] + [f"- {s}" for s in rep["next_steps"]] + [""]
     out += ["## STR narrative", "", rep.get("str_narrative") or "Not written: the rule-based report has no narrative.", ""]
-    out += ["## Payments in the case", "", "| Time | From | To | Amount | Format |", "|---|---|---|---|---|"]
-    out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | {e.get('fmt') or ''} |"
+    out += ["## Payments in the case", "", "| Time | From | To | Amount (USD equivalent) | Paid in | Format |",
+            "|---|---|---|---|---|---|"]
+    out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | "
+            f"{original(e['amount'] * fx_rate(e['cur']), e['cur']) if e.get('cur') else ''} | {e.get('fmt') or ''} |"
             for e in sorted(case.get("edges", []), key=lambda e: e["ts"])]
     # Generated text says "1 accounts"; an STR should not.
     return re.sub(r"\b1 (account|payment|receiver|sender)s\b", r"1 \1", "\n".join(out)) + "\n"

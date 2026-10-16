@@ -28,7 +28,8 @@ prose. Rules:
   sentence of at most 12 words, most important first (what happened, why it is suspicious, why it may
   be normal). Do not state the decision: it is added after your points. headline: at most 10 words. executive_summary: one sentence, at most 20 words.
   next_steps: at most 3, each at most 12 words. All amounts in US dollars ($).
-- Never write evidence IDs (E1, E2…) in any text; put them only in evidence_ids.
+- Never write evidence IDs (E1, E2…) in any text; put them only in evidence_ids. The one exception is
+  str_narrative: end each of its sentences with the evidence IDs it rests on, in brackets, e.g. "[E1, E3]".
 - str_narrative: only when the disposition is ESCALATE, a draft STR narrative (who, what, when,
   where, why suspicious, how), otherwise an empty string."""
 
@@ -117,7 +118,7 @@ def validate(report: dict, ctx: CaseContext, disp: Disposition) -> dict:
             item["text"] = clean(item["text"])
     report["headline"] = clean(report["headline"])
     report["next_steps"] = [clean(x) for x in report["next_steps"]][:3]
-    report["str_narrative"] = clean(report["str_narrative"])
+    # str_narrative keeps its [E1] citations: the STR draft traces every sentence to the evidence.
     report["validation"] = {"statements_checked": checked, "unsupported": len(dropped),
                             "unsupported_rate": round(len(dropped) / checked, 3) if checked else 0.0,
                             "dropped": dropped}
