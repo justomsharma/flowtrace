@@ -3,10 +3,10 @@
   red    = 1 - prod(1 - w*s) over supporting evidence        (noisy-OR of red flags)
   legit  = 1 - prod(1 - w*s) over counter-evidence            (noisy-OR of legitimate explanations)
 
-  s is the indicator's measured strength (disposition.measured_weights): its laundering rate in the
-  dataset's training days relative to the average (data/processed/signal_rates.json). A sign seen in
-  45% of normal payments counts for little; funds returning to the sender (135x) counts in full.
-  Only escalators with a measured lift of 1.5x or more (or not measured) can halve the legitimate side.
+  s is the indicator's measured strength (disposition.measured_weights): its laundering rate on the dataset's
+  training days relative to the average, shrunk toward 1 and used only with enough laundering examples
+  (flowtrace.ml.signal_rates). 1.0 when it is off or the sign is unmeasured. A measured lift only scales the
+  weight: an escalator always still escalates.
   risk   = w_ml*ml + w_red*red + w_shape*shape - w_legit*legit*(0.5 if escalated else 1)
 
 ESCALATE  risk >= escalate_at
@@ -17,8 +17,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from flowtrace.agent.brief import _rates
+from typing import Callable
+
 from flowtrace.agent.evidence import Evidence, EvidenceBook
+from flowtrace.ml.signal_rates import enabled, lift
 
 
 @dataclass
@@ -43,24 +45,25 @@ def _noisy_or(ws: list[float]) -> float:
 
 def strength(e: Evidence, rules: dict) -> float:
     """Scale an evidence weight by how predictive its kind of sign measured on the data (1.0 when unmeasured)."""
-    if not rules["disposition"].get("measured_weights", False):
+    if not enabled(rules):
         return 1.0
-    r = _rates().get(e.code)
-    if not r or r.get("lift") is None or r.get("payments", 0) < 500:
+    lf = lift(e.code, rules["disposition"]["measured_weights"])
+    if lf is None:
         return 1.0
-    lift = max(r["lift"], 0.01)
+    lf = max(lf, 0.01)
     if e.kind == "support":
-        return min(1.5, max(0.15, lift / 3))
-    return min(1.5, max(0.5, 1 / (3 * lift)))
+        return min(1.5, max(0.15, lf / 3))
+    return min(1.5, max(0.5, 1 / (3 * lf)))
 
 
-def decide(book: EvidenceBook, ml_score: float, shape_conf: float, rules: dict) -> Disposition:
+def decide(book: EvidenceBook, ml_score: float, shape_conf: float, rules: dict,
+           strength: Callable[[Evidence, dict], float] = strength) -> Disposition:
     r = rules["disposition"]
     support = book.by_kind("support")
     counter = book.by_kind("counter")
     red = _noisy_or([e.weight * strength(e, rules) for e in support])
     legit = _noisy_or([e.weight * strength(e, rules) for e in counter])
-    escalated = any(e.escalator and strength(e, rules) >= 0.5 for e in support)
+    escalated = any(e.escalator for e in support)
     legit_eff = legit * (0.5 if escalated else 1.0)
 
     comps = {
@@ -83,7 +86,7 @@ def decide(book: EvidenceBook, ml_score: float, shape_conf: float, rules: dict) 
         reasons.append(f"risk {risk:.2f} sits between the close ({r['close_below']}) and escalate ({r['escalate_at']}) thresholds"
                        if risk >= r["close_below"] else "low risk, but the legitimate explanation is not strong enough to close")
     if escalated:
-        reasons.append("an escalator fired: " + ", ".join(sorted({e.code for e in support if e.escalator and strength(e, rules) >= 0.5})))
+        reasons.append("an escalator fired: " + ", ".join(sorted({e.code for e in support if e.escalator})))
 
     # Confidence: distance from the nearest decision boundary, plus how much evidence was gathered.
     margin = min(abs(risk - r["escalate_at"]), abs(risk - r["close_below"]))

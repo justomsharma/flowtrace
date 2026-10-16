@@ -33,10 +33,13 @@ from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
+from flowtrace.ml import signal_rates
 from flowtrace.settings import ROOT, cfg, settings
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if signal_rates.enabled(cfg()):
+        signal_rates.rates()  # measured weights on without their file: refuse to start, never score silently without
     if should_requeue():
         threading.Thread(target=requeue_unfinished, daemon=True).start()
     else:

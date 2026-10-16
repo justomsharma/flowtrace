@@ -6,11 +6,10 @@ with the case's readable name ("Account A"). No IDs, no scores.
 """
 from __future__ import annotations
 
-import json
 import re
-from functools import lru_cache
 
-from flowtrace.settings import settings
+from flowtrace.ml import signal_rates
+from flowtrace.settings import cfg
 
 MONEY = re.compile(r"\$[\d,]+")
 NUMS = re.compile(r"\d+(?:\.\d+)?")
@@ -82,12 +81,6 @@ def brief(e: dict) -> str:
     return line if "None" not in line else _first_words(claim)
 
 
-@lru_cache
-def _rates() -> dict:
-    p = settings().processed_dir / "signal_rates.json"
-    return json.loads(p.read_text()) if p.exists() else {}
-
-
 # Verification steps: what an analyst obtains or checks to confirm or rule out each indicator.
 VERIFY = {
     "NEW_COUNTERPARTIES": "Obtain invoices or contracts for the new counterparties.",
@@ -129,17 +122,20 @@ def assess(e: dict) -> dict:
     check  the verification step (indicators only)
     """
     code, kind = e.get("code", ""), e.get("kind")
-    r = _rates().get(code)
     tag, why = "", UNMEASURED_WHY.get(code, "")
-    if r and r.get("lift") is not None and r["payments"] >= 500:
-        lift = r["lift"]
+    try:  # display only: without the measurement file the page shows no tags (the disposition fails loudly)
+        lift = signal_rates.lift(code, cfg()["disposition"]["measured_weights"])
+        share = signal_rates.rates()["codes"][code]["share"] if lift is not None else 0.0
+    except FileNotFoundError:
+        lift = None
+    if lift is not None:
         if kind == "support":
             if lift >= 3:
-                tag, why = "Strong sign", f"{lift:g}x the average laundering rate in historical payments."
+                tag, why = "Strong sign", f"{lift:.0f}x the average laundering rate in historical payments."
             elif lift >= 1.5:
-                tag, why = "Moderate sign", f"{lift:g}x the average laundering rate in historical payments."
+                tag, why = "Moderate sign", f"{lift:.1f}x the average laundering rate in historical payments."
             else:
-                tag, why = "Common in normal accounts", f"Seen in {r['share']:.0%} of all payments; weak on its own."
+                tag, why = "Common in normal accounts", f"Seen in {share:.0%} of payments; weak on its own."
         elif lift <= 0.5:
             tag, why = "Strong sign of normal", f"{round(1 / lift):g}x below the average laundering rate."
     return {"tag": tag, "why": why, "check": VERIFY.get(code, "") if kind == "support" else ""}

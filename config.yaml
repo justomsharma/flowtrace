@@ -82,8 +82,15 @@ escalators:
 # Case-level decision. Computed in code from the evidence ledger, never by the LLM.
 disposition:
   # Weight each indicator by its measured strength (data/processed/signal_rates.json, built by
-  # python -m flowtrace.ml.signal_rates). Off = every indicator counts at its tool weight.
-  measured_weights: true
+  # python -m flowtrace.ml.signal_rates on Sep 1-6). Off = every indicator counts at its tool weight.
+  # A lift is used only with min_laundering labelled laundering payments behind it, and is shrunk toward 1
+  # by prior_laundering pseudo laundering payments at the base rate. It never switches off an escalator.
+  # Off by measurement (flowtrace.eval.variants on Sep 7-8, rule written before measuring): on, it escalated
+  # 3 more legitimate cases for the same recall bar. The case page still uses the measurement for its tags.
+  measured_weights:
+    enabled: false
+    min_laundering: 30
+    prior_laundering: 10
   # risk = w_ml * model score + w_red * red-flag strength + w_shape * shape confidence
   #        - w_legit * legitimacy strength (halved when any escalator fired), clipped to [0, 1]
   w_ml: 0.45

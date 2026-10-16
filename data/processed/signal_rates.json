@@ -1,80 +1,99 @@
 {
-  "base_rate": 0.000978,
-  "NEW_COUNTERPARTIES": {
-    "label": "first payment between the two accounts",
-    "payments": 611068,
-    "share": 0.1678,
-    "rate": 0.00445,
-    "lift": 4.6
-  },
-  "ESTABLISHED_COUNTERPARTIES": {
-    "label": "accounts that paid each other 3+ times before",
-    "payments": 2430918,
-    "share": 0.6676,
-    "rate": 0.000191,
-    "lift": 0.2
-  },
-  "PASS_THROUGH": {
-    "label": "sender paid out 80%+ of what it received that day",
-    "payments": 1655798,
-    "share": 0.4547,
-    "rate": 0.000813,
-    "lift": 0.8
-  },
-  "FAST_ONWARD_TRANSFER": {
-    "label": "receiver paid out 80%+ of what it received that day",
-    "payments": 838394,
-    "share": 0.2302,
-    "rate": 0.000767,
-    "lift": 0.8
-  },
-  "DORMANT_THEN_ACTIVE": {
-    "label": "sender had no earlier activity, then 3+ payments in a day",
-    "payments": 486439,
-    "share": 0.1336,
-    "rate": 0.000393,
-    "lift": 0.4
-  },
-  "EQUAL_SPLITS": {
-    "label": "sender's payments that day were near-identical amounts",
-    "payments": 1935,
-    "share": 0.0005,
-    "rate": 0.0,
-    "lift": 0.0
-  },
-  "CONVERGENCE": {
-    "label": "money reached one receiver through 2+ middle accounts",
-    "payments": 11,
-    "share": 0.0,
-    "rate": 0.090909,
-    "lift": 93.0
-  },
-  "ROUND_TRIP": {
-    "label": "money went back to the sender the same day",
-    "payments": 932,
-    "share": 0.0003,
-    "rate": 0.131974,
-    "lift": 135.0
-  },
-  "HIGH_RISK_RAIL": {
-    "label": "paid in cash or Bitcoin",
-    "payments": 495711,
-    "share": 0.1361,
-    "rate": 0.000272,
-    "lift": 0.3
-  },
-  "CYCLE": {
-    "label": "money went back to the sender the same day",
-    "payments": 932,
-    "share": 0.0003,
-    "rate": 0.131974,
-    "lift": 135.0
-  },
-  "CASH_OR_CRYPTO_EXIT": {
-    "label": "paid in cash or Bitcoin",
-    "payments": 495711,
-    "share": 0.1361,
-    "rate": 0.000272,
-    "lift": 0.3
+  "days": [
+    "2022-09-01",
+    "2022-09-06"
+  ],
+  "payments": 2696535,
+  "laundering": 2524,
+  "base_rate": 0.00093602,
+  "codes": {
+    "NEW_COUNTERPARTIES": {
+      "label": "first payment between the two accounts",
+      "payments": 573336,
+      "laundering": 1955,
+      "share": 0.21262,
+      "base_rate": 0.00093602,
+      "lift_raw": 3.643
+    },
+    "ESTABLISHED_COUNTERPARTIES": {
+      "label": "3+ earlier payments between the two accounts, the first 3+ days before",
+      "payments": 962159,
+      "laundering": 166,
+      "share": 0.356813,
+      "base_rate": 0.00093602,
+      "lift_raw": 0.184
+    },
+    "PASS_THROUGH": {
+      "label": "paid out within 24 h of receiving a similar amount ($1,000+) from someone else",
+      "payments": 50063,
+      "laundering": 148,
+      "share": 0.018566,
+      "base_rate": 0.00093602,
+      "lift_raw": 3.158
+    },
+    "FAST_ONWARD_TRANSFER": {
+      "label": "the receiver sent 50%+ of the payment on within 24 h",
+      "payments": 729184,
+      "laundering": 603,
+      "share": 0.270415,
+      "base_rate": 0.00093602,
+      "lift_raw": 0.883
+    },
+    "DORMANT_THEN_ACTIVE": {
+      "label": "no earlier outgoing payment, then 3+ payments in a day",
+      "payments": 44,
+      "laundering": 21,
+      "share": 3.8e-05,
+      "base_rate": 0.00122493,
+      "lift_raw": 389.633
+    },
+    "EQUAL_SPLITS": {
+      "label": "3+ receivers that day with near-identical totals",
+      "payments": 291,
+      "laundering": 0,
+      "share": 0.000108,
+      "base_rate": 0.00093602,
+      "lift_raw": 0.0
+    },
+    "CONVERGENCE": {
+      "label": "one beneficiary reached through 2+ middle accounts of one sender, the same day",
+      "payments": 14911,
+      "laundering": 27,
+      "share": 0.00553,
+      "base_rate": 0.00093602,
+      "lift_raw": 1.935
+    },
+    "ROUND_TRIP": {
+      "label": "money back to the sender within 4 hops, each within 72 h",
+      "payments": 1460,
+      "laundering": 131,
+      "share": 0.000541,
+      "base_rate": 0.00093602,
+      "lift_raw": 95.859
+    },
+    "CYCLE": {
+      "label": "a time-ordered loop back to the sender within 4 days",
+      "payments": 1661,
+      "laundering": 138,
+      "share": 0.000616,
+      "base_rate": 0.00093602,
+      "lift_raw": 88.762
+    },
+    "HIGH_RISK_RAIL": {
+      "label": "paid in cash or Bitcoin",
+      "payments": 366831,
+      "laundering": 98,
+      "share": 0.136038,
+      "base_rate": 0.00093602,
+      "lift_raw": 0.285
+    },
+    "CASH_OR_CRYPTO_EXIT": {
+      "label": "the receiver paid out in cash or Bitcoin within 72 h",
+      "payments": 465518,
+      "laundering": 295,
+      "share": 0.172636,
+      "base_rate": 0.00093602,
+      "lift_raw": 0.677
+    }
   }
 }
