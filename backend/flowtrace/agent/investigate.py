@@ -114,19 +114,26 @@ def investigate(ctx: CaseContext, policy_name: str = "llm", use_llm_report: bool
                   "llm_calls": len(llm_meta), "llm_seconds": round(sum(m.get("ms", 0) for m in llm_meta) / 1000, 2)},
     }
     if save_memory:
-        try:
-            rw(Q.SAVE_CASE, {
-                "case_id": ctx.case_id, "disposition": disp.action, "typology": (ctx.shape or {}).get("typology"),
-                "crime": ", ".join(h["crime"] for h in hyps), "score": disp.risk, "confidence": disp.confidence,
-                "created_ts": ctx.t1, "summary": report.get("headline", ""), "tx_ids": ctx.tx_ids[:50],
-                "expires_ts": ctx.t1 + rules["disposition"]["close_expiry_days"] * DAY_MS,
-                "accounts": ctx.accounts[:20],
-            })
-            case["stats"]["memory_saved"] = True
-        except Exception as e:
-            case["stats"]["memory_saved"] = f"failed: {e}"
+        save_case_memory(case, rules)
     ctx.emit({"type": "report", "case": case})
     return case
+
+
+def save_case_memory(case: dict, rules: dict) -> None:
+    """Write the finished case to the graph so later investigations can see it (sets stats.memory_saved)."""
+    d = case["disposition"]
+    try:
+        rw(Q.SAVE_CASE, {
+            "case_id": case["case_id"], "disposition": d["action"], "typology": (case["shape"] or {}).get("typology"),
+            "crime": ", ".join(h["crime"] for h in case["crime_hypotheses"]), "score": d["risk"],
+            "confidence": d["confidence"], "created_ts": case["window"][1], "summary": case["report"].get("headline", ""),
+            "tx_ids": case["alert_tx"][:50],
+            "expires_ts": case["window"][1] + rules["disposition"]["close_expiry_days"] * DAY_MS,
+            "accounts": case["accounts"][:20],
+        })
+        case["stats"]["memory_saved"] = True
+    except Exception as e:
+        case["stats"]["memory_saved"] = f"failed: {e}"
 
 
 def new_context(case: dict, rules: dict, emit: Callable[[dict], None]) -> CaseContext:

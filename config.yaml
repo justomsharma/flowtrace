@@ -10,6 +10,8 @@ agent:
   query_timeout_ms: 10000
   case_timeout_s: 120
   history_days: 8           # baseline window before the alert
+  prefetch_top: 15          # after an upload, the top cases are investigated in the background...
+  prefetch_parallel: 3      # ...this many at a time (about 1 LLM request a second: far below rate limits)
 
 # --- Money trace ---------------------------------------------------------------------------
 trace:
