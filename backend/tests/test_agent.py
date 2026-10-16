@@ -108,7 +108,8 @@ def test_stats_report_the_policy_that_actually_ran(monkeypatch):
     assert out["stats"]["policy"] == "heuristic fallback"
 
 
-def test_case_memory_never_reads_its_own_case(monkeypatch):
+def test_case_memory_ignores_its_own_and_same_batch_cases(monkeypatch):
+    """Cases of one upload are investigated in parallel: none of them is an "earlier case" for another."""
     from flowtrace.agent.tools import run_tool
     from flowtrace.graph import queries as Q
     seen = []
@@ -123,8 +124,8 @@ def test_case_memory_never_reads_its_own_case(monkeypatch):
                        "ml_score": 0.5}, cfg(), emit=lambda e: None)
     run_tool(ctx, "case_memory", {"account": "X"})
     for q in (Q.PRIOR_CASES, Q.NEAREST_ESCALATED):
-        assert "c.id <> $case_id" in q
-        assert [p["case_id"] for c, p in seen if c == q] == ["B1-C001"]
+        assert "NOT c.id STARTS WITH $batch_prefix" in q
+        assert [p["batch_prefix"] for c, p in seen if c == q] == ["B1-C"]
 
 
 def test_stats_report_llm_time_and_the_report_asks_for_low_effort(monkeypatch):

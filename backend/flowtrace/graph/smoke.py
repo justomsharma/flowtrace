@@ -34,6 +34,13 @@ def write_checks(acc: str, cp: str, t1: int) -> int:
         rw(Q.SAVE_CASE, {**case, "accounts": [acc, cp]})
         rw(Q.SAVE_CASE, {**case, "accounts": [acc]})
         links = ro("MATCH (c:Case {id: 'SMOKE-C001'})-[r:ABOUT]->() RETURN count(r) AS n", {}).rows[0]["n"]
+        # Case memory skips the whole upload: an escalated case of the same batch is not an earlier case.
+        rw(Q.SAVE_CASE, {**case, "case_id": "SMOKE-C002", "disposition": "ESCALATE", "accounts": [cp]})
+        mem = {}
+        for prefix in ("SMOKE-C", "SMOKEOTHER-C"):
+            prior = {r["case_id"] for r in ro(Q.PRIOR_CASES, {"id": cp, "batch_prefix": prefix}).rows}
+            near = {r["case_id"] for r in ro(Q.NEAREST_ESCALATED, {"id": acc, "batch_prefix": prefix}).rows}
+            mem[prefix] = ("SMOKE-C002" in prior, "SMOKE-C002" in near)
     finally:
         rw(Q.DELETE_BATCH, {"batch": "SMOKE"})
         rw(Q.DELETE_BATCH_CASES, {"prefix": "SMOKE-C"})
@@ -45,6 +52,11 @@ def write_checks(acc: str, cp: str, t1: int) -> int:
     if links != 1:
         failures += 1
         print("  FAIL re-saving a case kept its old account links")
+    print(f"  case memory, same batch:  prior/nearest see SMOKE-C002 = {mem['SMOKE-C']} (expected (False, False))")
+    print(f"  case memory, other batch: prior/nearest see SMOKE-C002 = {mem['SMOKEOTHER-C']} (expected (True, True))")
+    if mem["SMOKE-C"] != (False, False) or mem["SMOKEOTHER-C"] != (True, True):
+        failures += 1
+        print("  FAIL case memory does not separate the current upload from earlier ones")
     return failures
 
 
@@ -84,8 +96,8 @@ def main() -> int:
         "SHARED_DESTINATIONS": {"ids": [acc, cp], "t0": t0, "t1": t1},
         "SHARED_SOURCES": {"ids": [acc, cp], "t0": t0, "t1": t1},
         "CYCLES": {"id": acc, "t0": t0, "t1": t1},
-        "NEAREST_ESCALATED": {"id": acc, "case_id": "SMOKE"},
-        "PRIOR_CASES": {"id": acc, "case_id": "SMOKE"},
+        "NEAREST_ESCALATED": {"id": acc, "batch_prefix": "SMOKE-C"},
+        "PRIOR_CASES": {"id": acc, "batch_prefix": "SMOKE-C"},
     }
     detectors = {
         "FAN_OUT": {"ids": [acc], "t0": t0, "t1": t1, "min": 2},
