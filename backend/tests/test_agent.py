@@ -150,4 +150,5 @@ def test_stats_report_llm_time_and_the_report_asks_for_low_effort(monkeypatch):
     out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="llm", save_memory=False)
     steps = out["stats"]["llm_calls"] - 1
     assert out["stats"]["llm_seconds"] == round((steps * 1500 + 2500) / 1000, 2)
+    assert out["stats"]["llm_errors"] == ["x"] * steps + ["y"]
     assert efforts == ["low"]   # medium cost ~7 s per case for no gain in validity (measured 2026-10-16)

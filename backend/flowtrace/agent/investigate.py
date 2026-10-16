@@ -111,7 +111,8 @@ def investigate(ctx: CaseContext, policy_name: str = "llm", use_llm_report: bool
                   "query_ms": round(sum(q["ms"] for q in ctx.queries), 1),
                   "seconds": round(time.perf_counter() - started, 2), "stop_reason": stop_reason,
                   "policy": policy_ran(policy.name, ctx.calls),
-                  "llm_calls": len(llm_meta), "llm_seconds": round(sum(m.get("ms", 0) for m in llm_meta) / 1000, 2)},
+                  "llm_calls": len(llm_meta), "llm_seconds": round(sum(m.get("ms", 0) for m in llm_meta) / 1000, 2),
+                  "llm_errors": [m["error"] for m in llm_meta if m.get("error")]},
     }
     if save_memory:
         save_case_memory(case, rules)
