@@ -98,8 +98,8 @@ def _propose(a: ProposeArgs, plan: dict | None = None, origin: str = "agent") ->
     if a.type in ("HOLD", "RELEASE") and not a.account:
         raise ToolError(f"a {a.type} needs an account")
     current = service.list_actions(case_id=a.case_id, expire=False) if a.type in ("HOLD", "RELEASE") else []
-    if a.type == "RELEASE" and not any(x["type"] == "HOLD" and x["status"] == "APPROVED" and x.get("account") == a.account
-                                       for x in current):
+    if a.type == "RELEASE" and not any(x["type"] == "HOLD" and x["status"] in ("APPROVED", "PROVISIONAL")
+                                       and x.get("account") == a.account for x in current):
         raise ToolError(f"there is no approved hold on {a.account} in this case to release")
     numbers: dict = {}
     if a.type == "HOLD":
@@ -159,9 +159,11 @@ def call(name: str, args: dict, ctx: CaseContext | None = None, origin: str = "a
     return spec.fn(spec.args.model_validate(args))
 
 
-def act(case_id: str) -> dict:
+def act(case_id: str, auto: bool = False, approvals_on: bool = False) -> dict:
     """The agent's act step after an investigation: plan the holds, then propose them and the case-level
-    action. Proposals only; a person decides each one."""
+    action. A person decides each one. auto=True (only when an investigation has just finished, never a manual
+    re-plan) lets the auto-hold policy place the holds provisionally; approvals_on says whether the API has an
+    APPROVER_TOKEN, so a person can confirm or release them."""
     plan = call("plan_holds", {"case_id": case_id})
     store.save_plan(case_id, plan)
     actions = []
@@ -171,32 +173,36 @@ def act(case_id: str) -> dict:
     if plan["case_action"] and plan["disposition"]:
         actions.append(call("propose_action", {"case_id": case_id, "type": plan["case_action"]["type"],
                                                "reason": plan["case_action"]["why"]})["action"])
-    return {"plan": plan, "actions": actions, "auto_held": auto_hold(case_id, actions)}
+    return {"plan": plan, "actions": actions, "auto_held": auto_hold(case_id, actions, approvals_on) if auto else []}
 
 
-AUTO_BY = "FlowTrace agent (auto-hold policy)"
-
-
-def auto_hold(case_id: str, actions: list[dict]) -> list[str]:
-    """Critical cases: apply the proposed holds at once instead of waiting for an analyst, so the money cannot
-    leave while the case sits in the queue. Only after ESCALATE at actions.auto_hold.min_confidence or above.
-    The hold is the same time-limited lien on the case money (it lapses after hold_expiry_business_days), it
-    is audited like any decision, and an analyst who closes the case releases it. Filing an STR or escalating
-    is never automatic: that stays a person's decision."""
+def auto_hold(case_id: str, actions: list[dict], approvals_on: bool) -> list[str]:
+    """Place the case's proposed holds PROVISIONALLY, so the money cannot leave while the case waits for an analyst.
+    Only when every condition holds: actions.auto_hold.enabled; the server has an APPROVER_TOKEN (a person can
+    confirm or release); the investigation recommends ESCALATE with a confidence score >= min_confidence (a score
+    from the distance to the decision thresholds, not a probability); no hold of the case was ever decided
+    (approved, rejected, released or expired) and no analyst gave the case a verdict, so a release or a CLOSE is
+    never undone. A provisional hold is released after confirm_business_days unless a person confirms it. Filing
+    an STR or escalating is never automatic."""
     rule = cfg()["actions"].get("auto_hold") or {}
-    if not rule.get("enabled"):
+    if not rule.get("enabled") or not approvals_on:
         return []
     d = (store.load_result(case_id) or {}).get("disposition", {})
-    conf = d.get("confidence") or 0.0
-    if d.get("action") != "ESCALATE" or conf < rule["min_confidence"]:
+    conf = d.get("confidence")
+    if d.get("action") != "ESCALATE" or conf is None or conf < rule["min_confidence"]:
         return []
-    reason = (f"Escalated at {round(conf * 100)}% confidence (policy: {round(rule['min_confidence'] * 100)}% or more). "
-              f"Closing the case releases it.")
+    history = service.hold_history(case_id)
+    if history["verdict"] or history["decided_holds"]:
+        return []
+    days = rule["confirm_business_days"]
+    reason = (f"Escalated with a confidence score of {conf:.2f} (a score, not a probability; the policy needs "
+              f"{rule['min_confidence']:.2f} or more). Released after {days} business day{'s' if days != 1 else ''} "
+              f"unless a person confirms it.")
     held = []
     for a in actions:
         if a.get("type") == "HOLD" and a.get("status") == "PROPOSED":
             try:
-                service.decide(a["id"], True, reason, by=AUTO_BY, key=f"auto-{a['id']}", auth="auto-hold policy")
+                service.provisional_hold(a["id"], reason)
                 held.append(a["id"])
             except service.ActionError:
                 pass  # decided by a person in the meantime

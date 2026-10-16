@@ -113,9 +113,16 @@ actions:
   min_hold_usd: 1000             # never propose a hold on less (same floor as the pass-through rule)
   propose_for: [ESCALATE]        # holds only after ESCALATE (reasonable grounds to suspect); REVIEW is mixed
                                  # evidence. Decided after seeing the Sep 9 results (it was [ESCALATE, REVIEW])
-  auto_hold:                     # critical cases: hold the money at once, an analyst confirms or releases later
+  auto_hold:                     # a provisional hold, placed by the agent, that a person confirms or it is released
+    # It acts only when ALL hold: enabled here, APPROVER_TOKEN set on the API server, the investigation that
+    # just finished recommends ESCALATE with a confidence score >= min_confidence (a score, not a probability),
+    # the planner found a hold, and no hold of the case was ever decided (approved, rejected, released) and no
+    # analyst gave the case a verdict. The hold is PROVISIONAL: released at the end of confirm_business_days
+    # unless a person confirms it. Filing an STR is never automatic. On by measurement (Sep 7-8, rule written
+    # before measuring): 11 of 11 cases it would hold were laundering, $0 frozen on legitimate cases.
     enabled: true
-    min_confidence: 0.9          # only ESCALATE at this confidence or above; STR filing is never automatic
+    min_confidence: 0.9
+    confirm_business_days: 1
   min_reason_chars: 5            # an approval or rejection needs a written reason
   expiry_check_seconds: 60       # how often the API releases holds whose time is up
 

@@ -123,12 +123,22 @@ def test_a_stored_result_triggers_the_act_step_and_survives_its_failure(monkeypa
     monkeypatch.setattr(M, "save_case_memory", lambda r, rules: None)
     acted = []
 
-    def act(cid):
-        acted.append(cid)
+    def act(cid, **kw):
+        acted.append((cid, kw))
         raise RuntimeError("graph down")
     monkeypatch.setattr(registry, "act", act)
+    monkeypatch.setattr(M, "approver_token", lambda: None)
     M._store_result("BX-C001", {"case_id": "BX-C001"})
-    assert acted == ["BX-C001"] and "BX-C001" in M.RESULTS
+    # A finished investigation may auto-hold, but only says approvals are on when the server has a token.
+    assert acted == [("BX-C001", {"auto": True, "approvals_on": False})] and "BX-C001" in M.RESULTS
+
+
+def test_a_manual_replan_never_auto_holds(case, monkeypatch):
+    seen = []
+    monkeypatch.setattr(M, "RESULTS", {case: {"case_id": case}})
+    monkeypatch.setattr(registry, "act", lambda cid, **kw: seen.append(kw) or {"plan": None, "actions": [], "auto_held": []})
+    assert client.post(f"/api/cases/{case}/plan").status_code == 200
+    assert seen == [{}]
 
 
 def test_get_plan_says_what_the_open_holds_block(case, monkeypatch):

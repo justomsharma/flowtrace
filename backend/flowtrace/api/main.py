@@ -248,7 +248,7 @@ def _store_result(case_id: str, result: dict) -> None:
     RESULTS[case_id] = result
     _persist("results", case_id, result)
     try:  # the agent acts: plan the holds and propose them for a person to decide
-        registry.act(case_id)
+        registry.act(case_id, auto=True, approvals_on=approver_token() is not None)
     except Exception as e:
         log.warning("could not plan holds for %s: %s", case_id, e)
 

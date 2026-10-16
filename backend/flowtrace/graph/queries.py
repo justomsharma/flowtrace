@@ -317,7 +317,7 @@ PROPOSE_ACTION = """
 MERGE (c:Case {id: $case_id})
 WITH c
 OPTIONAL MATCH (o:Action {case_id: $case_id, type: 'HOLD'})
-WHERE $cap IS NOT NULL AND o.status IN ['PROPOSED', 'APPROVED'] AND o.retired_at IS NULL
+WHERE $cap IS NOT NULL AND o.status IN ['PROPOSED', 'PROVISIONAL', 'APPROVED'] AND o.retired_at IS NULL
 WITH c, count(o) AS open_holds
 OPTIONAL MATCH (x:Action {dedup_key: $dedup_key})
 WITH c, open_holds, x IS NULL AND ($cap IS NULL OR open_holds < $cap) AS created
@@ -339,21 +339,24 @@ MATCH (a:Action {id: $id})
 RETURN properties(a) AS action
 """
 
-# Approve or reject: only a PROPOSED action changes, so a second click finds nothing to change. Everything the
-# decision causes happens in the same query, so it all happens or none of it does:
+# Approve or reject: only a PROPOSED action (or a PROVISIONAL auto-hold, which a person confirms or rejects) changes,
+# so a second click finds nothing to change. Rejecting a PROVISIONAL hold releases it. Everything the decision
+# causes happens in the same query, so it all happens or none of it does:
 #   $verdict   (approved FILE_STR / ESCALATE / CLOSE) the person's verdict on the Case, and the case's other
 #              open case decisions are withdrawn (SUPERSEDED)
 #   CLOSE      (approved: the case is legitimate) its proposed holds and releases are withdrawn (WITHDRAWN)
-#              and its approved holds end now (RELEASED)
-#   RELEASE    (approved) the case's approved hold on that account ends now, and the release's own
+#              and its approved and provisional holds end now (RELEASED)
+#   RELEASE    (approved) the case's approved or provisional hold on that account ends now, and the release's own
 #              dedup_key is cleared so the account can be released again after a new hold
 DECIDE_ACTION = """
-MATCH (a:Action {id: $id}) WHERE a.status = 'PROPOSED'
+MATCH (a:Action {id: $id}) WHERE a.status IN ['PROPOSED', 'PROVISIONAL']
+WITH a, a.status AS was
 SET a.status = $to, a.decided_by = $by, a.decided_at = $now, a.reason = $reason, a.decision_key = $key,
     a.expires_ts = $expires_ts,
+    a.released_at = CASE WHEN was = 'PROVISIONAL' AND $to = 'REJECTED' THEN $now ELSE a.released_at END,
     a.dedup_key = CASE WHEN a.type = 'RELEASE' AND $to = 'APPROVED' THEN NULL ELSE a.dedup_key END
 CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, auth: $auth, event: $to, action_id: a.id, case_id: a.case_id,
-                account: a.account, from_status: 'PROPOSED', to_status: $to, reason: $reason})
+                account: a.account, from_status: was, to_status: $to, reason: $reason})
 WITH a
 OPTIONAL MATCH (c:Case {id: a.case_id})
 FOREACH (_ IN CASE WHEN $verdict IS NOT NULL AND c IS NOT NULL THEN [1] ELSE [] END |
@@ -364,18 +367,19 @@ FOREACH (_ IN CASE WHEN $verdict IS NOT NULL AND c IS NOT NULL THEN [1] ELSE [] 
 WITH a
 OPTIONAL MATCH (o:Action {case_id: a.case_id})
 WHERE o.id <> a.id AND o.retired_at IS NULL AND (
-      ($to = 'APPROVED' AND a.type = 'RELEASE' AND o.type = 'HOLD' AND o.status = 'APPROVED' AND o.account = a.account)
+      ($to = 'APPROVED' AND a.type = 'RELEASE' AND o.type = 'HOLD' AND o.status IN ['APPROVED', 'PROVISIONAL']
+       AND o.account = a.account)
    OR ($verdict IS NOT NULL AND o.status = 'PROPOSED' AND o.type IN ['ESCALATE', 'FILE_STR', 'CLOSE'])
    OR ($verdict = 'CLOSE' AND o.type IN ['HOLD', 'RELEASE'] AND o.status = 'PROPOSED')
-   OR ($verdict = 'CLOSE' AND o.type = 'HOLD' AND o.status = 'APPROVED'))
+   OR ($verdict = 'CLOSE' AND o.type = 'HOLD' AND o.status IN ['APPROVED', 'PROVISIONAL']))
 WITH a, collect(o) AS others
 FOREACH (o IN others |
   CREATE (:Audit {id: $audit_id + '-' + o.id, ts: $now, actor: $by, auth: $auth,
-                  event: CASE WHEN o.status = 'APPROVED' THEN 'RELEASED'
+                  event: CASE WHEN o.status IN ['APPROVED', 'PROVISIONAL'] THEN 'RELEASED'
                               WHEN o.type IN ['HOLD', 'RELEASE'] THEN 'WITHDRAWN' ELSE 'SUPERSEDED' END,
                   action_id: o.id, case_id: o.case_id, account: o.account, from_status: o.status,
                   to_status: 'EXPIRED', reason: $reason})
-  SET o.released_at = CASE WHEN o.status = 'APPROVED' THEN $now ELSE o.released_at END
+  SET o.released_at = CASE WHEN o.status IN ['APPROVED', 'PROVISIONAL'] THEN $now ELSE o.released_at END
   SET o.status = 'EXPIRED', o.dedup_key = NULL)
 RETURN properties(a) AS action
 """
@@ -388,6 +392,33 @@ CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'syste
                 action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'APPROVED',
                 to_status: 'EXPIRED', reason: 'The hold time is up'})
 RETURN count(a) AS n
+"""
+
+# Auto-hold (actions.auto_hold): the agent places a proposed hold PROVISIONALLY. A person confirms it (approve) or
+# rejects it (released); otherwise it is released at provisional_until. decided_by stays empty: no person decided.
+PROVISIONAL_HOLD = """
+MATCH (a:Action {id: $id}) WHERE a.status = 'PROPOSED' AND a.type = 'HOLD'
+SET a.status = 'PROVISIONAL', a.held_by = $actor, a.held_at = $now, a.provisional_until = $until, a.hold_reason = $reason
+CREATE (:Audit {id: $audit_id, ts: $now, actor: $actor, auth: 'auto-hold policy', event: 'PROVISIONAL', action_id: a.id,
+                case_id: a.case_id, account: a.account, from_status: 'PROPOSED', to_status: 'PROVISIONAL', reason: $reason})
+RETURN properties(a) AS action
+"""
+
+EXPIRE_PROVISIONAL = """
+MATCH (a:Action {type: 'HOLD', status: 'PROVISIONAL'}) WHERE a.provisional_until <= $now
+SET a.status = 'EXPIRED', a.dedup_key = NULL, a.released_at = $now
+CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'system', event: 'AUTO_RELEASED',
+                action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'PROVISIONAL',
+                to_status: 'EXPIRED', reason: 'The auto-hold was not confirmed by a person in time'})
+RETURN count(a) AS n
+"""
+
+# Has a person (or the clock) already acted on this case's holds, or given the case a verdict? Auto-hold then
+# never holds it again: a release, a rejection or an analyst's CLOSE stays final.
+HOLD_HISTORY = """
+OPTIONAL MATCH (c:Case {id: $case_id})
+OPTIONAL MATCH (a:Action {case_id: $case_id, type: 'HOLD'}) WHERE a.status <> 'PROPOSED' AND a.retired_at IS NULL
+RETURN c.verdict AS verdict, count(a) AS decided_holds
 """
 
 # A re-uploaded batch renumbers its cases, so case B-C001 may now be a different case. Proposals nobody decided
