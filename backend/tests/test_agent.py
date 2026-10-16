@@ -126,6 +126,10 @@ def test_case_memory_ignores_its_own_and_same_batch_cases(monkeypatch):
     for q in (Q.PRIOR_CASES, Q.NEAREST_ESCALATED):
         assert "NOT c.id STARTS WITH $batch_prefix" in q
         assert [p["batch_prefix"] for c, p in seen if c == q] == ["B1-C"]
+        # Only cases closed before this case's window starts are history: a same-day case from another
+        # upload is not an earlier case (it leaked into the eval as a prior escalation).
+        assert "c.created_ts < $t0" in q
+        assert [p["t0"] for c, p in seen if c == q] == [T0]
 
 
 def test_stats_report_llm_time_and_the_report_asks_for_low_effort(monkeypatch):

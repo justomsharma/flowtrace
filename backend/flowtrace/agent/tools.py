@@ -375,7 +375,7 @@ def batch_prefix(case_id: str) -> str:
 
 def case_memory(ctx: CaseContext, a: AccountArgs) -> dict:
     """Prior cases on this account, and distance to accounts already escalated."""
-    skip = {"id": a.account, "batch_prefix": batch_prefix(ctx.case_id)}
+    skip = {"id": a.account, "batch_prefix": batch_prefix(ctx.case_id), "t0": ctx.t0}
     prior = ctx.q("prior cases", Q.PRIOR_CASES, skip).rows
     near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, skip).rows
     if any(p["disposition"] == "ESCALATE" for p in prior):

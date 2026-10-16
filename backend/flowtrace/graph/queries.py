@@ -192,7 +192,7 @@ LIMIT 10
 # How close is this account to accounts already escalated by earlier cases? (never the case itself)
 NEAREST_ESCALATED = """
 MATCH (a:Account {id: $id}), (c:Case {disposition: 'ESCALATE'})-[:ABOUT]->(x:Account)
-WHERE x.id <> a.id AND NOT c.id STARTS WITH $batch_prefix
+WHERE x.id <> a.id AND NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
 WITH a, c, x, shortestPath((a)-[:TRANSFER*1..3]-(x)) AS p
 WHERE p IS NOT NULL
 RETURN x.id AS account, c.id AS case_id, length(p) AS hops
@@ -201,12 +201,13 @@ LIMIT 5
 """
 
 # --- Case memory --------------------------------------------------------------------------
-# $batch_prefix ("<batch>-C") covers the case under investigation and every case of the same upload:
-# those are investigated in parallel, so none of them is an earlier case for another.
+# Only earlier cases count: $batch_prefix ("<batch>-C") excludes the case itself and every case of the
+# same upload (investigated in parallel), and c.created_ts < $t0 excludes any case whose window ends after
+# this one starts (a same-day case from another upload is not history).
 
 PRIOR_CASES = """
 MATCH (a:Account {id: $id})<-[:ABOUT]-(c:Case)
-WHERE NOT c.id STARTS WITH $batch_prefix
+WHERE NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
 RETURN c.id AS case_id, c.disposition AS disposition, c.typology AS typology,
        c.score AS score, c.created_ts AS created_ts, c.summary AS summary
 ORDER BY c.created_ts DESC
