@@ -1,9 +1,9 @@
 """Senior-analyst report.
 
-Claude turns the validated evidence ledger into a narrative. It cannot change the disposition,
+The LLM turns the validated evidence ledger into a narrative. It cannot change the disposition,
 the risk score or the typology (computed in code). Every statement must cite evidence IDs; the
 validator drops statements whose IDs do not exist or whose numbers do not appear in the cited
-evidence, and reports the unsupported-claim rate. Without Claude, a template report is built.
+evidence, and reports the unsupported-claim rate. Without the LLM, a template report is built.
 """
 from __future__ import annotations
 
@@ -137,9 +137,9 @@ def write_report(ctx: CaseContext, disp: Disposition, use_llm: bool = True) -> d
             "decision_reasons": disp.reasons, "typology": ctx.shape,
             "model_score": round(ctx.ml_score, 3), "evidence": evidence,
         }, default=str)
-        out, meta = structured(SYSTEM, user, SCHEMA, effort="high", max_tokens=16000)
+        out, meta = structured(SYSTEM, user, SCHEMA, effort="low", max_tokens=16000)
         if out is not None:
-            out["author"] = meta.get("served_by", "claude")
+            out["author"] = meta.get("served_by", "llm")
             out["llm"] = meta
             return validate(out, ctx, disp)
         rep = template_report(ctx, disp)

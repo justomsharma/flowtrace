@@ -4,7 +4,8 @@ import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Loader2, Upload } f
 import LiveGraph3D, { type MapLink } from '../components/LiveGraph3D'
 import { ActionBadge } from '../components/badges'
 import {
-  fmtInt, fmtUsd, getJSON, postJSON, streamJob, type BatchSummary, type CaseBrief, type CaseResult, type JobEvent,
+  fmtInt, fmtUsd, getJSON, postJSON, streamJob, type BatchSummary, type CaseBrief, type CaseResult, type JobBrief,
+  type JobEvent,
 } from '../lib/api'
 import { STAGE_PLAIN, STEP_PLAIN, caseReason, pct, shortAcct, trickName } from '../lib/plain'
 
@@ -49,6 +50,11 @@ export default function Workspace() {
   const [steps, setSteps] = useState<LiveStep[]>([])
   const [result, setResult] = useState<CaseResult | null>(null)
   const [investigating, setInvestigating] = useState(false)
+  const [jobStatus, setJobStatus] = useState<JobBrief['status'] | null>(null)
+  const stopStream = useRef<(() => void) | null>(null)
+  const following = useRef<string | null>(null)  // the job the panel is streaming, so it is never followed twice
+  const caseRef = useRef(caseId)
+  caseRef.current = caseId
   // Live build animation while a file is being processed.
   const [live, setLive] = useState<MapLink[]>([])
   const [liveKind, setLiveKind] = useState<Record<string, MapLink['kind']>>({})
@@ -70,16 +76,43 @@ export default function Workspace() {
     else { setBatch(null); setBase([]) }
   }, [batchId, loadBatch])
 
+  // While the top cases are being investigated in the background, keep the list and progress fresh.
+  const pf = batch?.prefetch
+  const working = !!batch && ((!!pf && pf.done + pf.failed < pf.total) || batch.cases.some((c) => c.job))
+  useEffect(() => {
+    if (!working || !batchId) return
+    let live = true  // a reply that lands after the batch changed (or a new upload started) is dropped
+    // An interval, not a timeout chained on each reply: a failed fetch must not stop the polling.
+    const t = setInterval(() => getJSON<BatchSummary>(`/api/batches/${batchId}`).then((b) => { if (live) setBatch(b) }).catch(() => undefined), 3000)
+    return () => { live = false; clearInterval(t) }
+  }, [working, batchId])
+
   const current = batch?.cases.find((c) => c.case_id === caseId) ?? null
   // Cases arrive ranked; the top `capacity` are today's work, the rest stay listed (folded) below.
   const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
   const lower = useMemo(() => batch?.cases.filter((c, i) => !inToday(c, i, batch.capacity)) ?? [], [batch])
   const [showLower, setShowLower] = useState(false)
 
+  // Opening a case shows its finished result, or joins its background investigation (replayed, then live).
   useEffect(() => {
-    setTraced([]); setSteps([]); setResult(null); setPulse(new Set())
-    if (caseId) getJSON<{ result: CaseResult | null }>(`/api/cases/${caseId}`).then((r) => setResult(r.result)).catch(() => undefined)
+    let stale = false
+    stopStream.current?.(); stopStream.current = null; following.current = null
+    setTraced([]); setSteps([]); setResult(null); setPulse(new Set()); setInvestigating(false); setJobStatus(null); setError(null)
+    if (caseId) {
+      getJSON<{ result: CaseResult | null; job: JobBrief | null }>(`/api/cases/${caseId}`).then((r) => {
+        if (stale) return
+        if (r.result) setResult(r.result)
+        else if (r.job) { setJobStatus(r.job.status); follow(r.job.id) }
+      }).catch(() => undefined)
+    }
+    return () => { stale = true; stopStream.current?.(); stopStream.current = null; following.current = null }
   }, [caseId])
+
+  // A case opened before its background job existed (or whose run was replaced): join the job once the list shows it.
+  const currentJob = current?.job?.id
+  useEffect(() => {
+    if (current?.job && !result && !investigating) { setJobStatus(current.job.status); follow(current.job.id) }
+  }, [currentJob])
 
   async function upload(opts: { sample?: string; file?: File }) {
     setError(null); setStages({}); setBusy(true)
@@ -145,12 +178,30 @@ export default function Workspace() {
   }
 
   async function investigate() {
-    if (!caseId) return
-    setInvestigating(true); setSteps([]); setTraced([]); setResult(null)
+    const id = caseId
+    if (!id) return
     try {
-      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${caseId}/investigate?policy=claude`)
-      streamJob(job_id, (e: JobEvent) => {
-        if (e.type === 'step_start') setSteps((s) => [...s, { step: e.step, tool: e.tool, reason: e.reason, done: false, found: [] }])
+      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${id}/investigate?policy=llm`)
+      if (caseRef.current === id) follow(job_id)  // the analyst may have opened another case meanwhile
+    } catch (err) { setError(String(err)) }
+  }
+
+  const refreshBatch = () => {
+    const id = batchId
+    if (id) getJSON<BatchSummary>(`/api/batches/${id}`).then((b) => { if (b.batch_id === id) setBatch(b) }).catch(() => undefined)
+  }
+
+  /** Stream a case job into the panel. Events are replayed from the start, so joining late loses nothing. */
+  function follow(jobId: string) {
+    if (following.current === jobId) return  // already streaming it (the case-open fetch and the list can both see it)
+    stopStream.current?.()
+    following.current = jobId
+    setInvestigating(true); setSteps([]); setTraced([]); setResult(null); setError(null)
+    stopStream.current = streamJob(jobId, (e: JobEvent) => {
+        if (e.type === 'step_start') {
+          setJobStatus('running')
+          setSteps((s) => [...s, { step: e.step, tool: e.tool, reason: e.reason, done: false, found: [] }])
+        }
         if (e.type === 'step_done') setSteps((s) => s.map((x) => x.step === e.step
           ? { ...x, done: true, found: (e.evidence ?? []).filter((v: { kind: string }) => v.kind !== 'context').map((v: { claim: string }) => v.claim) } : x))
         if (e.type === 'trace_wave' || e.type === 'graph') {
@@ -163,8 +214,13 @@ export default function Workspace() {
         }
         if (e.type === 'report') setResult(e.case)
         if (e.type === 'error') setError(e.error)
-      }, () => setInvestigating(false))
-    } catch (err) { setError(String(err)); setInvestigating(false) }
+        if (e.type === 'cancelled') {
+          setResult(null)  // a report from a stopped run is not this case's result
+          setError(e.reason === 'shutdown'
+            ? 'The server stopped, so this run was stopped. It is investigated again when the server restarts.'
+            : 'This file was uploaded again, so this run was stopped.')
+        }
+      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch() })
   }
 
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.
@@ -227,6 +283,15 @@ export default function Workspace() {
                 [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'],
                 [today.length, 'for today'],
               ]} />
+              {batch.prefetch && batch.prefetch.total > 0 && (
+                <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">
+                  {batch.prefetch.done + batch.prefetch.failed < batch.prefetch.total
+                    ? <Loader2 size={14} className="animate-spin" style={{ color: 'var(--s1)' }} aria-hidden />
+                    : <CheckCircle2 size={14} style={{ color: 'var(--good)' }} aria-hidden />}
+                  {batch.prefetch.done} of {batch.prefetch.total} investigated
+                  {batch.prefetch.failed > 0 && <span style={{ color: 'var(--critical)' }}>· {batch.prefetch.failed} failed</span>}
+                </span>
+              )}
               <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
                 New file
                 <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }) }} />
@@ -300,6 +365,9 @@ export default function Workspace() {
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>Looks like: {trickName(current.shape.typology)}</div>
               </div>
 
+              {!result && !investigating && current.failed && (
+                <p className="text-xs" style={{ color: 'var(--critical)' }}>The background investigation failed. Try again:</p>
+              )}
               {!result && !investigating && (
                 <button onClick={investigate} className="px-4 py-2.5 rounded-lg text-sm font-medium" style={{ background: 'var(--s1)', color: '#fff' }}>
                   Investigate this case
@@ -308,6 +376,12 @@ export default function Workspace() {
 
               {investigating && (
                 <ol className="flex flex-col gap-3">
+                  {steps.length === 0 && (
+                    <li className="text-sm flex items-center gap-2" style={{ color: 'var(--ink-2)' }}>
+                      <Loader2 size={14} className="animate-spin" />
+                      {jobStatus === 'queued' ? 'Queued: the investigation starts in a moment' : 'Starting the investigation…'}
+                    </li>
+                  )}
                   {steps.map((s) => (
                     <li key={s.step} className="text-sm">
                       <div className="flex items-center gap-2">
@@ -383,6 +457,13 @@ function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: numbe
           <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals ?? [])}</span>
         </span>
         {c.result ? <ActionBadge action={c.result.action} />
+          : c.failed ? <span className="text-xs" style={{ color: 'var(--critical)' }}>Failed</span>
+          : c.job ? (
+            <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ink-2)' }}>
+              {c.job.status === 'running' && <Loader2 size={12} className="animate-spin" aria-hidden />}
+              {c.job.status === 'running' ? 'Investigating' : 'Queued'}
+            </span>
+          )
           : <span className="text-sm font-semibold tabular"
               title="Chance that at least one signal is right (model and detectors treated as independent)"
               style={{ color: quiet ? 'var(--ink-2)' : 'var(--ink)' }}>{pct(c.case_score ?? c.ml_score)}</span>}

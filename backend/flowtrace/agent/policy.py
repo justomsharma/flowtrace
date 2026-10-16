@@ -1,7 +1,7 @@
 """Policies that choose the next investigation step.
 
-  LLMPolicy        Claude picks the next approved tool from the case state (the adaptive agent).
-  HeuristicPolicy  rule-based adaptive policy, used when Claude is unavailable.
+  LLMPolicy        the LLM picks the next approved tool from the case state (the adaptive agent).
+  HeuristicPolicy  rule-based adaptive policy, used when the LLM is unavailable.
   FixedPolicy      the baseline: the same tools in the same order for every case.
 """
 from __future__ import annotations
@@ -114,7 +114,7 @@ def _schema() -> dict:
 
 
 class LLMPolicy:
-    name = "claude"
+    name = "llm"
 
     def __init__(self) -> None:
         self.fallback = HeuristicPolicy()
@@ -131,7 +131,7 @@ class LLMPolicy:
             "steps_left": ctx.rules["agent"]["max_steps"] - len(ctx.calls),
         }
         user = f"Approved tools:\n{tools}\n\nCase state:\n{json.dumps(state, default=str)}\n\nChoose the next step."
-        out, meta = structured(SYSTEM, user, _schema(), effort="medium", max_tokens=4000)
+        out, meta = structured(SYSTEM, user, _schema(), effort="low", max_tokens=4000)
         self.meta.append(meta)
         if out is None:
             step = self.fallback.next(ctx)
@@ -143,4 +143,4 @@ class LLMPolicy:
             return None
         args = {k: out[k] for k in ("account", "accounts", "direction", "max_hops") if out.get(k) is not None}
         return {"action": out["action"], "args": args, "reason": out["reason"], "hypothesis": out["hypothesis"],
-                "policy": "claude"}
+                "policy": "llm"}

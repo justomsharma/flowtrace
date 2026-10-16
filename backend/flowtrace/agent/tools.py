@@ -16,6 +16,7 @@ from flowtrace.behaviour.recurring import detect_recurrence, infer_purpose
 from flowtrace.detectors.alerts import passthrough_pairs
 from flowtrace.graph import queries as Q
 from flowtrace.graph.trace import Trace, expand
+from flowtrace.pipeline.cases import batch_of
 
 
 # --- argument models ------------------------------------------------------------------------
@@ -366,10 +367,17 @@ def owner_network(ctx: CaseContext, a: AccountArgs) -> dict:
     return {"sibling_accounts": len(sib), "internal_transfers": len(out_rows)}
 
 
+def batch_prefix(case_id: str) -> str:
+    """"B12AB-C007" -> "B12AB-C": the id prefix shared by every case of one upload."""
+    b = batch_of(case_id)
+    return f"{b}-C" if b else case_id
+
+
 def case_memory(ctx: CaseContext, a: AccountArgs) -> dict:
     """Prior cases on this account, and distance to accounts already escalated."""
-    prior = ctx.q("prior cases", Q.PRIOR_CASES, {"id": a.account, "case_id": ctx.case_id}).rows
-    near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, {"id": a.account, "case_id": ctx.case_id}).rows
+    skip = {"id": a.account, "batch_prefix": batch_prefix(ctx.case_id), "t0": ctx.t0}
+    prior = ctx.q("prior cases", Q.PRIOR_CASES, skip).rows
+    near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, skip).rows
     if any(p["disposition"] == "ESCALATE" for p in prior):
         ctx.book.add(kind="support", code="PRIOR_ESCALATION", tool="case_memory", step=ctx.step, accounts=[a.account],
                      claim=f"{_a(a.account).capitalize()} was already escalated in an earlier case.", weight=0.5, escalator=True)

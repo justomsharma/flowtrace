@@ -109,7 +109,13 @@ export interface CaseBrief {
   ground_truth: number | null
   n_tx: number
   result?: { action: string; risk: number; confidence: string } | null
+  /** The case's background investigation while it is queued or running. */
+  job?: JobBrief | null
+  /** Its background investigation ended in an error; it can be run again. */
+  failed?: boolean
 }
+
+export interface JobBrief { id: string; status: 'queued' | 'running' }
 
 export interface BatchSummary {
   batch_id: string
@@ -128,6 +134,8 @@ export interface BatchSummary {
   has_labels: boolean
   labelled_laundering: number | null
   cases: CaseBrief[]
+  /** Top cases investigated in the background after the upload. */
+  prefetch?: { total: number; done: number; failed: number }
 }
 
 export interface Edge {
@@ -255,7 +263,7 @@ export function streamJob(jobId: string, onEvent: (e: JobEvent) => void, onEnd?:
   es.onmessage = (m) => {
     const e = JSON.parse(m.data) as JobEvent
     onEvent(e)
-    if (e.type === 'done' || e.type === 'error') {
+    if (e.type === 'done' || e.type === 'error' || e.type === 'cancelled') {
       es.close()
       onEnd?.()
     }

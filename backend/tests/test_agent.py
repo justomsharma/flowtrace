@@ -103,12 +103,13 @@ def test_stats_report_the_policy_that_actually_ran(monkeypatch):
     alert = [e for e in w.edges if e["src"] == "X" and e["ts"] >= T0]
     case = {"case_id": "MULE", "primary": "X", "accounts": ["X"], "tx_ids": [e["tx_id"] for e in alert], "edges": alert,
             "t0": T0, "t1": T0 + DAY, "ml_score": 0.81, "shape": {"typology": "FAN-OUT", "confidence": 0.9}}
-    out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="claude", use_llm_report=False,
+    out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="llm", use_llm_report=False,
                       save_memory=False)
     assert out["stats"]["policy"] == "heuristic fallback"
 
 
-def test_case_memory_never_reads_its_own_case(monkeypatch):
+def test_case_memory_ignores_its_own_and_same_batch_cases(monkeypatch):
+    """Cases of one upload are investigated in parallel: none of them is an "earlier case" for another."""
     from flowtrace.agent.tools import run_tool
     from flowtrace.graph import queries as Q
     seen = []
@@ -123,5 +124,31 @@ def test_case_memory_never_reads_its_own_case(monkeypatch):
                        "ml_score": 0.5}, cfg(), emit=lambda e: None)
     run_tool(ctx, "case_memory", {"account": "X"})
     for q in (Q.PRIOR_CASES, Q.NEAREST_ESCALATED):
-        assert "c.id <> $case_id" in q
-        assert [p["case_id"] for c, p in seen if c == q] == ["B1-C001"]
+        assert "NOT c.id STARTS WITH $batch_prefix" in q
+        assert [p["batch_prefix"] for c, p in seen if c == q] == ["B1-C"]
+        # Only cases closed before this case's window starts are history: a same-day case from another
+        # upload is not an earlier case (it leaked into the eval as a prior escalation).
+        assert "c.created_ts < $t0" in q
+        assert [p["t0"] for c, p in seen if c == q] == [T0]
+
+
+def test_stats_report_llm_time_and_the_report_asks_for_low_effort(monkeypatch):
+    from flowtrace.agent import policy as policy_mod, report as report_mod
+    monkeypatch.setattr(policy_mod, "structured", lambda *a, **k: (None, {"error": "x", "ms": 1500}))
+    efforts = []
+
+    def report_llm(system, user, schema, **k):
+        efforts.append(k.get("effort"))
+        return None, {"error": "y", "ms": 2500}
+    monkeypatch.setattr(report_mod, "structured", report_llm)
+    w = mule_world()
+    monkeypatch.setattr(ctx_mod, "ro", w.ro)
+    monkeypatch.setattr(trace_mod, "ro", w.ro)
+    alert = [e for e in w.edges if e["src"] == "X" and e["ts"] >= T0]
+    case = {"case_id": "MULE", "primary": "X", "accounts": ["X"], "tx_ids": [e["tx_id"] for e in alert], "edges": alert,
+            "t0": T0, "t1": T0 + DAY, "ml_score": 0.81, "shape": {"typology": "FAN-OUT", "confidence": 0.9}}
+    out = investigate(new_context(case, cfg(), emit=lambda e: None), policy_name="llm", save_memory=False)
+    steps = out["stats"]["llm_calls"] - 1
+    assert out["stats"]["llm_seconds"] == round((steps * 1500 + 2500) / 1000, 2)
+    assert out["stats"]["llm_errors"] == ["x"] * steps + ["y"]
+    assert efforts == ["low"]   # medium cost ~7 s per case for no gain in validity (measured 2026-10-16)

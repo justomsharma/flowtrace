@@ -6,6 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import multiprocessing
+import os
+import threading
+import time
+from contextlib import asynccontextmanager
+from functools import partial
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -13,13 +20,40 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
+from flowtrace.agent.investigate import save_case_memory
 from flowtrace.api import jobs
 from flowtrace.api.overview import build_overview
+from flowtrace.api.runner import CaseRunner
+from flowtrace.pipeline.cases import batch_of
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
 from flowtrace.settings import cfg, settings
 
-app = FastAPI(title="FlowTrace", version="0.2.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if should_requeue():
+        threading.Thread(target=requeue_unfinished, daemon=True).start()
+    else:
+        log.info("not re-queuing unfinished cases in this process (set FLOWTRACE_REQUEUE=1 to force)")
+    yield
+    RUNNER.shutdown()  # cancel queued work instead of finishing it (and paying for it) on the way out
+
+
+app = FastAPI(title="FlowTrace", version="0.2.0", lifespan=lifespan)
+log = logging.getLogger("uvicorn.error")  # shown in the server console
+_UNSET = object()
+
+
+def should_requeue(parent=_UNSET) -> bool:
+    """Re-queue unfinished top cases on startup only in a server started directly. Under `uvicorn --reload`
+    (or --workers) the app runs in a child process that restarts on every code change; re-queuing there
+    would pay for the same investigations again and again. FLOWTRACE_REQUEUE=1/0 overrides."""
+    env = os.environ.get("FLOWTRACE_REQUEUE")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no", "")
+    if parent is _UNSET:
+        parent = multiprocessing.parent_process()
+    return parent is None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -32,6 +66,7 @@ RUNS = settings().raw_dir.parent / "runs"
 BATCHES: dict[str, dict] = {}   # batch_id -> summary
 CASES: dict[str, dict] = {}     # case_id -> case input (from the batch pipeline)
 RESULTS: dict[str, dict] = {}   # case_id -> investigation result
+RUNNER = CaseRunner(parallel=cfg()["agent"]["prefetch_parallel"])
 
 
 def _persist(kind: str, key: str, obj: dict) -> None:
@@ -44,6 +79,8 @@ def _restore() -> None:
     for kind, store in (("batches", BATCHES), ("cases", CASES), ("results", RESULTS)):
         for f in (RUNS / kind).glob("*.json") if (RUNS / kind).exists() else []:
             store[f.stem] = json.loads(f.read_text())
+            if kind == "batches":
+                store[f.stem].setdefault("uploaded_at", f.stat().st_mtime)  # stored before uploads were timed
 
 
 _restore()
@@ -81,8 +118,8 @@ def health() -> dict:
         graph_ok = True
     except Exception:
         pass
-    from flowtrace.agent.llm import available
-    return {"api": True, "graph": graph_ok, "llm": available(), "model": settings().agent_model}
+    from flowtrace.agent.llm import available, model_name
+    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name()}
 
 
 @app.get("/api/overview")
@@ -136,19 +173,80 @@ async def create_batch(file: UploadFile | None = File(None), sample: str | None 
 
     from flowtrace.pipeline.batch import process_batch
 
-    def done(result: dict) -> None:
-        s = result["summary"]
+    job = jobs.start("batch", lambda emit: process_batch(data, name, emit), lambda result: accept_batch(result, name))
+    return {"job_id": job.id}
+
+
+def accept_batch(result: dict, name: str) -> None:
+    """Store a processed upload, then investigate its top cases in the background."""
+    s = result["summary"]
+    # A result from the previous run of this file is either stored before this, or dropped. The queued
+    # jobs exist before the upload's "done" event, so the UI can join them as soon as it opens a case.
+    with RUNNER.batch_lock(s["batch_id"]):
+        RUNNER.new_run(s["batch_id"])
         forget_batch(s["batch_id"])
         s["curated"] = is_curated_sample(name)
+        s["uploaded_at"] = time.time()
         BATCHES[s["batch_id"]] = s
         CASES.update(result["cases"])
         _persist("batches", s["batch_id"], s)
         _persist("graphs", s["batch_id"], {"links": result["graph"]})
         for cid, c in result["cases"].items():
             _persist("cases", cid, c)
+        prefetch(s["batch_id"])
 
-    job = jobs.start("batch", lambda emit: process_batch(data, name, emit), done)
-    return {"job_id": job.id}
+
+# --- background investigations -----------------------------------------------------------------
+
+def top_cases(batch_id: str) -> list[str]:
+    return [c["case_id"] for c in BATCHES[batch_id]["cases"][: cfg()["agent"]["prefetch_top"]]]
+
+
+def _investigation(case_id: str, policy: str):
+    """The work for one case. policy "auto" is decided when the job starts: the LLM if its key works,
+    the rules otherwise (so creating the job never waits for the key check)."""
+    case = CASES[case_id]
+
+    def run(emit):
+        from flowtrace.agent.investigate import investigate, new_context
+        from flowtrace.agent.llm import available
+        p = ("llm" if available() else "heuristic") if policy == "auto" else policy
+        # Case memory is written only once the result is accepted for the current upload (_store_result).
+        return investigate(new_context(case, cfg(), emit), policy_name=p, save_memory=False)
+    return run
+
+
+def _store_result(case_id: str, result: dict) -> None:
+    save_case_memory(result, cfg())
+    RESULTS[case_id] = result
+    _persist("results", case_id, result)
+
+
+def prefetch(batch_id: str) -> list[str]:
+    """Queue the top cases that have no result and no job yet."""
+    started = []
+    with RUNNER.batch_lock(batch_id):  # same lock as accept_batch: never reads a case being renumbered
+        for cid in top_cases(batch_id):
+            if cid in RESULTS or cid not in CASES or RUNNER.active(cid):
+                continue
+            RUNNER.start(cid, _investigation(cid, "auto"), partial(_store_result, cid), queued=True)
+            started.append(cid)
+    return started
+
+
+def requeue_unfinished() -> list[str]:
+    """After a restart: the top cases of every stored batch that never got a finished result, newest upload first."""
+    newest = sorted(list(BATCHES.items()), key=lambda kv: -kv[1].get("uploaded_at", 0))
+    return [cid for bid, _ in newest for cid in prefetch(bid)]
+
+
+def _failed(case_id: str) -> bool:
+    return case_id not in RESULTS and RUNNER.failed(case_id)
+
+
+def _job_brief(case_id: str) -> dict | None:
+    j = RUNNER.active(case_id)
+    return {"id": j.id, "status": j.status} if j else None
 
 
 @app.get("/api/batches")
@@ -162,7 +260,10 @@ def get_batch(batch_id: str) -> dict:
     if batch_id not in BATCHES:
         raise HTTPException(404, "no such batch")
     b = dict(BATCHES[batch_id])
-    b["cases"] = [c | {"result": _result_brief(c["case_id"])} for c in b["cases"]]
+    b["cases"] = [c | {"result": _result_brief(c["case_id"]), "job": _job_brief(c["case_id"]),
+                       "failed": _failed(c["case_id"])} for c in b["cases"]]
+    top = top_cases(batch_id)
+    b["prefetch"] = {"total": len(top), "done": sum(cid in RESULTS for cid in top), "failed": sum(map(_failed, top))}
     return b
 
 
@@ -185,21 +286,13 @@ def _result_brief(case_id: str) -> dict | None:
 # --- cases -----------------------------------------------------------------------------------
 
 @app.post("/api/cases/{case_id}/investigate")
-def investigate_case(case_id: str, policy: Literal["claude", "heuristic", "fixed"] = "claude") -> dict:
-    if case_id not in CASES:
-        raise HTTPException(404, "no such case")
-    from flowtrace.agent.investigate import investigate, new_context
-
-    case = CASES[case_id]
-
-    def run(emit):
-        return investigate(new_context(case, cfg(), emit), policy_name=policy)
-
-    def done(result: dict) -> None:
-        RESULTS[case_id] = result
-        _persist("results", case_id, result)
-
-    job = jobs.start("case", run, done)
+def investigate_case(case_id: str, policy: Literal["llm", "heuristic", "fixed"] = "llm") -> dict:
+    # Under the batch lock: a re-upload cannot renumber the case between reading it and starting its job.
+    with RUNNER.batch_lock(batch_of(case_id) or case_id):
+        if case_id not in CASES:
+            raise HTTPException(404, "no such case")
+        # Joins the case's queued or running investigation if there is one; otherwise starts now.
+        job = RUNNER.start(case_id, _investigation(case_id, policy), partial(_store_result, case_id))
     return {"job_id": job.id}
 
 
@@ -208,7 +301,7 @@ def get_case(case_id: str) -> dict:
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     c = CASES[case_id]
-    return {"case": c, "result": RESULTS.get(case_id)}
+    return {"case": c, "result": RESULTS.get(case_id), "job": _job_brief(case_id)}
 
 
 # --- job events (SSE) ------------------------------------------------------------------------
@@ -233,7 +326,7 @@ async def job_events(job_id: str, since: int = 0):
             while i < len(j.events):
                 yield {"event": "message", "data": json.dumps(j.events[i], default=str)}
                 i += 1
-            if j.status != "running" and i >= len(j.events):
+            if j.status in jobs.TERMINAL and i >= len(j.events):
                 break
             await asyncio.sleep(0.08)
 

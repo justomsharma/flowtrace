@@ -18,7 +18,7 @@ from flowtrace.agent.tools import ToolError, run_tool
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
 
-POLICIES = {"claude": LLMPolicy, "heuristic": HeuristicPolicy, "fixed": FixedPolicy}
+POLICIES = {"llm": LLMPolicy, "heuristic": HeuristicPolicy, "fixed": FixedPolicy}
 
 
 def crime_hypotheses(ctx: CaseContext, rules: dict) -> list[dict]:
@@ -39,7 +39,7 @@ def crime_hypotheses(ctx: CaseContext, rules: dict) -> list[dict]:
 
 
 def policy_ran(chosen: str, calls: list[dict]) -> str:
-    """The policy that actually picked the steps: Claude falls back to rules when it has no key or fails."""
+    """The policy that actually picked the steps: the LLM falls back to rules when it has no key or fails."""
     used = {c.get("policy", chosen) for c in calls}
     if not used or used == {chosen}:
         return chosen
@@ -48,7 +48,7 @@ def policy_ran(chosen: str, calls: list[dict]) -> str:
     return " + ".join([chosen] + sorted(used - {chosen})) + " fallback"
 
 
-def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: bool = True,
+def investigate(ctx: CaseContext, policy_name: str = "llm", use_llm_report: bool = True,
                 save_memory: bool = True) -> dict:
     rules = ctx.rules
     policy = POLICIES[policy_name]()
@@ -97,8 +97,9 @@ def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: b
     disp = decide(ctx.book, ctx.ml_score, shape_conf, rules)
     ctx.emit({"type": "decision", **disp.as_dict(), "stop_reason": stop_reason})
     ctx.emit({"type": "report_start"})
-    report = write_report(ctx, disp, use_llm=use_llm_report and policy_name == "claude")
+    report = write_report(ctx, disp, use_llm=use_llm_report and policy_name == "llm")
     hyps = crime_hypotheses(ctx, rules)
+    llm_meta = getattr(policy, "meta", []) + ([report["llm"]] if report.get("llm") else [])
 
     case = {
         "case_id": ctx.case_id, "primary": ctx.primary, "accounts": ctx.accounts, "alert_tx": ctx.tx_ids,
@@ -110,22 +111,30 @@ def investigate(ctx: CaseContext, policy_name: str = "claude", use_llm_report: b
                   "query_ms": round(sum(q["ms"] for q in ctx.queries), 1),
                   "seconds": round(time.perf_counter() - started, 2), "stop_reason": stop_reason,
                   "policy": policy_ran(policy.name, ctx.calls),
-                  "llm_calls": len(getattr(policy, "meta", [])) + (1 if report.get("llm") else 0)},
+                  "llm_calls": len(llm_meta), "llm_seconds": round(sum(m.get("ms", 0) for m in llm_meta) / 1000, 2),
+                  "llm_errors": [m["error"] for m in llm_meta if m.get("error")]},
     }
     if save_memory:
-        try:
-            rw(Q.SAVE_CASE, {
-                "case_id": ctx.case_id, "disposition": disp.action, "typology": (ctx.shape or {}).get("typology"),
-                "crime": ", ".join(h["crime"] for h in hyps), "score": disp.risk, "confidence": disp.confidence,
-                "created_ts": ctx.t1, "summary": report.get("headline", ""), "tx_ids": ctx.tx_ids[:50],
-                "expires_ts": ctx.t1 + rules["disposition"]["close_expiry_days"] * DAY_MS,
-                "accounts": ctx.accounts[:20],
-            })
-            case["stats"]["memory_saved"] = True
-        except Exception as e:
-            case["stats"]["memory_saved"] = f"failed: {e}"
+        save_case_memory(case, rules)
     ctx.emit({"type": "report", "case": case})
     return case
+
+
+def save_case_memory(case: dict, rules: dict) -> None:
+    """Write the finished case to the graph so later investigations can see it (sets stats.memory_saved)."""
+    d = case["disposition"]
+    try:
+        rw(Q.SAVE_CASE, {
+            "case_id": case["case_id"], "disposition": d["action"], "typology": (case["shape"] or {}).get("typology"),
+            "crime": ", ".join(h["crime"] for h in case["crime_hypotheses"]), "score": d["risk"],
+            "confidence": d["confidence"], "created_ts": case["window"][1], "summary": case["report"].get("headline", ""),
+            "tx_ids": case["alert_tx"][:50],
+            "expires_ts": case["window"][1] + rules["disposition"]["close_expiry_days"] * DAY_MS,
+            "accounts": case["accounts"][:20],
+        })
+        case["stats"]["memory_saved"] = True
+    except Exception as e:
+        case["stats"]["memory_saved"] = f"failed: {e}"
 
 
 def new_context(case: dict, rules: dict, emit: Callable[[dict], None]) -> CaseContext:

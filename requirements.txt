@@ -20,7 +20,8 @@ lightgbm>=4.3
 shap>=0.45
 networkx>=3.2
 
-# Agent
+# Agent (LLM_PROVIDER=openai by default; anthropic is optional)
+openai>=3.0
 anthropic>=0.40
 
 # Config / utils
