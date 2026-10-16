@@ -107,9 +107,12 @@ def decide(action_id: str, approve: bool, reason: str, by: str = "analyst", key:
     a = get(action_id)
     if a is None:
         raise ActionError(404, "no such action")
+    now = now or now_ms()
+    if a["status"] == "PROVISIONAL" and a.get("provisional_until", now + 1) <= now:
+        expire_due(now)  # its time is up: it is released, not confirmed late
+        a = get(action_id)
     if a["status"] not in DECIDABLE:
         return _already(a, key)
-    now = now or now_ms()
     to = "APPROVED" if approve else "REJECTED"
     expires = add_business_days(now, a["expiry_days"]) if approve and a["type"] == "HOLD" else None
     # One query: the decision, its audit entry, the verdict, the release and withdrawn alternatives.
@@ -129,7 +132,9 @@ def _already(a: dict, key: str | None) -> dict:
 
 def provisional_hold(action_id: str, reason: str, now: int | None = None) -> dict:
     """The auto-hold policy places a proposed HOLD provisionally. Only the API's act step calls this, after
-    checking the policy (agent.registry.auto_hold); a person still confirms or rejects it."""
+    checking the policy (agent.registry.auto_hold); a person still confirms or rejects it. Refused (409) when the
+    case has an analyst verdict or a hold that already left PROPOSED (other than one placed with the same now),
+    checked inside the write."""
     now = now or now_ms()
     until = add_business_days(now, cfg()["actions"]["auto_hold"]["confirm_business_days"])
     rows = rw(Q.PROVISIONAL_HOLD, {"id": action_id, "now": now, "until": until, "reason": reason,
@@ -139,7 +144,9 @@ def provisional_hold(action_id: str, reason: str, now: int | None = None) -> dic
     a = get(action_id)
     if a is None:
         raise ActionError(404, "no such action")
-    raise ActionError(409, f"only a proposed hold can be auto-held; this one is {a['status'].lower()}")
+    if a["status"] != "PROPOSED":
+        raise ActionError(409, f"only a proposed hold can be auto-held; this one is {a['status'].lower()}")
+    raise ActionError(409, "a person already decided on this case's holds or the case itself: no auto-hold")
 
 
 def hold_history(case_id: str) -> dict:

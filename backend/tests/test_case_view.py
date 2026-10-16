@@ -324,7 +324,7 @@ def test_crime_types_only_for_escalated_cases():
 
 
 def test_each_payment_keeps_its_own_currency_next_to_the_usd_equivalent(monkeypatch):
-    monkeypatch.setattr(V, "fx_rate", lambda cur: 0.9 if cur == "Euro" else 1.0)
+    monkeypatch.setattr(V, "orig_rate", lambda cur: 0.9 if cur == "Euro" else 1.0)
     euro = [pay("t1", "A", "B", 100, cur="Euro"), pay("t2", "B", "C", 90, ts=H, cur="US Dollar")]
     pays = {p["tx_id"]: p for p in V.build_overview(case(euro), None, None, [], None, False, RULES)["transactions"]}
     assert (pays["t1"]["amount"], pays["t1"]["cur"], pays["t1"]["amount_orig"]) == (100, "Euro", 90.0)
@@ -349,3 +349,9 @@ def test_a_provisional_auto_hold_reads_plainly_in_the_str_and_marks_the_account(
     md = V.str_markdown(case(CHAIN), full_result(), None, actions, RULES)
     assert "held provisionally by the agent (auto-hold) until 1970-01-02 00:00 UTC" in md
     assert nodes(V.flow(case(CHAIN), None, None, actions, RULES))["B"]["hold"] == "provisional"
+
+
+def test_an_unknown_currency_rate_leaves_the_original_amount_out(monkeypatch):
+    monkeypatch.setattr(V, "orig_rate", lambda cur: None)
+    p = V.build_overview(case([pay("t1", "A", "B", 100, cur="Yen")]), None, None, [], None, False, RULES)["transactions"][0]
+    assert (p["cur"], p["amount_orig"]) == ("Yen", None)

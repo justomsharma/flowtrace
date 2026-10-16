@@ -365,3 +365,41 @@ def test_the_case_history_says_whether_a_person_or_the_clock_already_acted(g):
     c, _ = S.propose("ZZ-C001", "CLOSE", why="Legitimate explanations", now=LIVE + 1)
     S.decide(c["id"], True, "Supplier invoices verified", now=LIVE + 2)
     assert S.hold_history("ZZ-C001")["verdict"] == "CLOSE"
+
+
+def test_a_person_deciding_a_hold_stops_any_later_auto_hold_inside_the_write(g):
+    """The race: the policy read the history, then a person rejected one hold before the next was auto-held."""
+    a, _ = hold(now=LIVE)
+    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", hold_amount=2000.0, now=LIVE)
+    S.decide(a["id"], False, "Known payroll agent", now=LIVE + 1)
+    with pytest.raises(ActionError, match="already decided"):
+        S.provisional_hold(b["id"], "Escalated with a high confidence score", now=LIVE + 2)
+    assert S.get(b["id"])["status"] == "PROPOSED"
+
+
+def test_one_auto_hold_run_places_all_its_holds_but_an_analyst_verdict_stops_it(g):
+    a, _ = hold(now=LIVE)
+    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", hold_amount=2000.0, now=LIVE)
+    S.provisional_hold(a["id"], "r", now=LIVE + 5)
+    assert S.provisional_hold(b["id"], "r", now=LIVE + 5)["status"] == "PROVISIONAL"   # same run, same now
+    c, _ = S.propose("ZZ-C002", "HOLD", account="ACC3", hold_amount=2000.0, now=LIVE)
+    v, _ = S.propose("ZZ-C002", "FILE_STR", why="The evidence points to laundering", now=LIVE)
+    S.decide(v["id"], True, "Confirmed mule chain", now=LIVE + 1)
+    with pytest.raises(ActionError):
+        S.provisional_hold(c["id"], "r", now=LIVE + 6)
+
+
+def test_a_lapsed_auto_hold_cannot_be_confirmed_late(g):
+    a, _ = hold(now=LIVE)
+    p = S.provisional_hold(a["id"], "r", now=LIVE)
+    with pytest.raises(ActionError) as err:
+        S.decide(a["id"], True, "Confirming after the deadline", now=p["provisional_until"] + 1)
+    assert err.value.status == 409 and S.get(a["id"])["status"] == "EXPIRED"
+
+
+def test_a_reupload_releases_provisional_holds(g):
+    a, _ = hold(now=LIVE)
+    S.provisional_hold(a["id"], "r", now=LIVE)
+    assert S.retire_batch("ZZ-C", "The file was uploaded again", now=LIVE + 1)["withdrawn"] == 1
+    x = S.get(a["id"])
+    assert (x["status"], x["released_at"]) == ("EXPIRED", LIVE + 1)

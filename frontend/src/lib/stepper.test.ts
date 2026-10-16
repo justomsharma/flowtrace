@@ -36,6 +36,11 @@ describe('caseSteps', () => {
     expect(s[4].note).toBe('2 waiting for a decision')
   })
 
+  it('a provisional auto-hold still waits for a person', () => {
+    const s = caseSteps({ status: 'escalate', hasResult: true, actions: [{ status: 'PROVISIONAL' }, { status: 'APPROVED' }], liveSteps: 0 })
+    expect(s[4]).toMatchObject({ state: 'active', note: '1 waiting for a decision' })
+  })
+
   it('everything decided completes the review', () => {
     const s = caseSteps({ status: 'escalate', hasResult: true, actions: [{ status: 'APPROVED' }, { status: 'REJECTED' }], liveSteps: 0 })
     expect(s[4]).toMatchObject({ state: 'done', note: 'Decided' })

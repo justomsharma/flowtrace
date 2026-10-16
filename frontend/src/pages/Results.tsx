@@ -100,7 +100,7 @@ export default function Results() {
   const ends = (a: Action) => (a.status === 'PROVISIONAL' ? a.provisional_until : a.expires_ts) ?? 0
   const active = useMemo(() => (actions ?? []).filter((a) => a.type === 'HOLD' && (a.status === 'APPROVED' || a.status === 'PROVISIONAL'))
     .sort((a, b) => ends(a) - ends(b)), [actions])
-  const today = active.filter((a) => a.decided_at && sameDay(a.decided_at, now))
+  const today = active.filter((a) => { const t = a.decided_at ?? a.held_at; return !!t && sameDay(t, now) })
   const waiting = (actions ?? []).filter((a) => a.status === 'PROPOSED' || a.status === 'PROVISIONAL')
   const { batch } = useBatch()
   const inBatch = (a: Action) => !!batch && a.case_id.startsWith(`${batch.batch_id}-`)
@@ -139,7 +139,7 @@ export default function Results() {
         </div>
         <div className="flex flex-wrap gap-x-14 gap-y-4">
         <Figure label="Frozen today" value={today.length ? total(today) : '$0'}
-          note={today.length ? `${today.length} hold${today.length === 1 ? '' : 's'} approved today`
+          note={today.length ? `${today.length} hold${today.length === 1 ? '' : 's'} placed today`
             : waiting.some((a) => a.type === 'HOLD') ? 'holds are proposed, none approved yet' : 'no hold approved today'} accent />
         <Figure label="Holds in place" value={String(active.length)} note={active.length
           ? `${total(active)} frozen${active.some((a) => a.status === 'PROVISIONAL') ? `, ${active.filter((a) => a.status === 'PROVISIONAL').length} provisional (auto-hold)` : ''}`

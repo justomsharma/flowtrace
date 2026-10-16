@@ -8,7 +8,7 @@ export interface CaseStep { key: string; label: string; state: StepState; note: 
 export function caseSteps(i: { status: CaseState; hasResult: boolean; actions: { status: string }[]; liveSteps: number }): CaseStep[] {
   const running = i.status === 'queued' || i.status === 'investigating'
   const finished = i.hasResult && !running
-  const open = i.actions.filter((a) => a.status === 'PROPOSED').length
+  const open = i.actions.filter((a) => a.status === 'PROPOSED' || a.status === 'PROVISIONAL').length
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 
   const graph: Pick<CaseStep, 'state' | 'note'> =

@@ -202,12 +202,12 @@ def auto_hold(case_id: str, actions: list[dict], approvals_on: bool) -> list[str
     reason = (f"Escalated with a confidence score of {conf:.2f} (a score, not a probability; the policy needs "
               f"{rule['min_confidence']:.2f} or more). Released after {days} business day{'s' if days != 1 else ''} "
               f"unless a person confirms it.")
-    held = []
+    held, now = [], service.now_ms()  # one now for the run: its own holds do not stop each other
     for a in actions:
         if a.get("type") == "HOLD" and a.get("status") == "PROPOSED":
             try:
-                service.provisional_hold(a["id"], reason)
+                service.provisional_hold(a["id"], reason, now=now)
                 held.append(a["id"])
             except service.ActionError:
-                pass  # decided by a person in the meantime
+                pass  # a person decided in the meantime (checked inside the write)
     return held

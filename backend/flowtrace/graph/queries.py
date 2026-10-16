@@ -396,8 +396,16 @@ RETURN count(a) AS n
 
 # Auto-hold (actions.auto_hold): the agent places a proposed hold PROVISIONALLY. A person confirms it (approve) or
 # rejects it (released); otherwise it is released at provisional_until. decided_by stays empty: no person decided.
+# The never-undo rule is checked in the same write: no analyst verdict on the case, and no other hold of the case
+# that left PROPOSED, except those this same auto-hold run placed (held_at = $now). A person deciding a hold a
+# moment before therefore stops every later auto-hold of the case.
 PROVISIONAL_HOLD = """
 MATCH (a:Action {id: $id}) WHERE a.status = 'PROPOSED' AND a.type = 'HOLD'
+OPTIONAL MATCH (c:Case {id: a.case_id})
+OPTIONAL MATCH (o:Action {case_id: a.case_id, type: 'HOLD'})
+WHERE o.retired_at IS NULL AND o.status <> 'PROPOSED' AND NOT (o.status = 'PROVISIONAL' AND o.held_at = $now)
+WITH a, c, count(o) AS decided
+WHERE c.verdict IS NULL AND decided = 0
 SET a.status = 'PROVISIONAL', a.held_by = $actor, a.held_at = $now, a.provisional_until = $until, a.hold_reason = $reason
 CREATE (:Audit {id: $audit_id, ts: $now, actor: $actor, auth: 'auto-hold policy', event: 'PROVISIONAL', action_id: a.id,
                 case_id: a.case_id, account: a.account, from_status: 'PROPOSED', to_status: 'PROVISIONAL', reason: $reason})
@@ -422,13 +430,15 @@ RETURN c.verdict AS verdict, count(a) AS decided_holds
 """
 
 # A re-uploaded batch renumbers its cases, so case B-C001 may now be a different case. Proposals nobody decided
-# on are withdrawn. Decided actions are retired: their dedup_key is cleared and the case's panel no longer lists
+# on are withdrawn, and provisional auto-holds are released (nobody could confirm them on the renumbered case). Decided actions are retired: their dedup_key is cleared and the case's panel no longer lists
 # them, so nothing merges onto them; an approved hold keeps its status (that money is really held).
 EXPIRE_PROPOSALS = """
-MATCH (a:Action {status: 'PROPOSED'}) WHERE a.case_id STARTS WITH $prefix AND a.retired_at IS NULL
-SET a.status = 'EXPIRED', a.dedup_key = NULL, a.retired_at = $now
+MATCH (a:Action) WHERE a.status IN ['PROPOSED', 'PROVISIONAL'] AND a.case_id STARTS WITH $prefix AND a.retired_at IS NULL
+WITH a, a.status AS was
+SET a.status = 'EXPIRED', a.dedup_key = NULL, a.retired_at = $now,
+    a.released_at = CASE WHEN was = 'PROVISIONAL' THEN $now ELSE a.released_at END
 CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'system', event: 'CASE_REUPLOADED',
-                action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'PROPOSED',
+                action_id: a.id, case_id: a.case_id, account: a.account, from_status: was,
                 to_status: 'EXPIRED', reason: $reason})
 RETURN count(a) AS n
 """

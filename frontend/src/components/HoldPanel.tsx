@@ -77,7 +77,14 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan, briefs =
   const decisions = actions.filter((a) => a.type !== 'HOLD' && a.type !== 'RELEASE')
   const evidence = Object.fromEntries(result.evidence.map((e) => [e.id, briefs[e.id] ?? e.claim]))
   const payments = Object.fromEntries((plan?.network.edges ?? []).map((e) => [e.tx_id, e]))
-  const toggle = (id: string) => setPicked((u) => { const n = new Set(u); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  // Holds can be ticked together; the case decision is one choice (approving one withdraws the others).
+  const toggle = (id: string) => setPicked((u) => {
+    const n = new Set(u)
+    if (n.has(id)) { n.delete(id); return n }
+    if (decisions.some((d) => d.id === id)) decisions.forEach((d) => n.delete(d.id))
+    n.add(id)
+    return n
+  })
   const bar = (list: Action[], what: 'hold' | 'decision') => list.some((a) => DECIDABLE.has(a.status)) && (
     <DecisionBar what={what} selected={list.filter((a) => DECIDABLE.has(a.status) && picked.has(a.id))}
       name={name} onName={saveName} onDone={load} />
@@ -146,6 +153,7 @@ function Effect({ plan, held, all, holds, policy }: {
   const total = plan.in_motion + plan.already_out
   const parts: string[] = []
   if (nHeld > 0) parts.push(`${nHeld} hold${nHeld === 1 ? '' : 's'} in place freeze${nHeld === 1 ? 's' : ''} ${m(frozen)} of case money now.`)
+  else if (holds.some((a) => a.type === 'HOLD' && a.released_at)) parts.push('Nothing is frozen now: the holds were released.')
   else if (plan.holds.length > 0 || nProposed > 0) parts.push('Nothing is frozen yet.')
   if (nProposed > 0) parts.push(`Approving the ${nProposed} proposed hold${nProposed === 1 ? '' : 's'} would freeze ${m(more)}${nHeld ? ' more' : ''}.`)
   if (!parts.length) parts.push(plan.in_motion <= 0 ? 'The case money has already moved on, so there is nothing to hold.'

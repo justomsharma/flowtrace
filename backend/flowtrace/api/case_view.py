@@ -88,6 +88,17 @@ def fx_rate(currency: str) -> float:
     return 1.0 if currency == "US Dollar" else fx_rates().get(currency, 1.0)
 
 
+def orig_rate(currency: str | None) -> float | None:
+    """Units of the currency per US dollar, or None when it is unknown (the payment's own amount is then left out
+    rather than shown wrong)."""
+    if not currency:
+        return None
+    if currency == "US Dollar":
+        return 1.0
+    from flowtrace.actions.planner import fx_rates
+    return fx_rates().get(currency)
+
+
 def case_rate(currency: str, plan: dict | None) -> float:
     """Amounts are shown in US dollars as stored, so the rate is always 1."""
     return 1.0
@@ -111,10 +122,10 @@ def flow(case: dict, result: dict | None, plan: dict | None, actions: list[dict]
     pays: dict[str, dict] = {}
     def add(e: dict, origin: str) -> None:
         if e["tx_id"] not in pays:
-            cur = e.get("cur")
+            cur, r = e.get("cur"), orig_rate(e.get("cur"))
             # Every amount is the USD equivalent; the payment's own currency and amount ride along.
             pays[e["tx_id"]] = {k: e.get(k) for k in ("tx_id", "ts", "src", "dst", "amount", "fmt")} | {
-                "cur": cur, "amount_orig": e["amount"] * fx_rate(cur) if cur else None, "origin": origin}
+                "cur": cur, "amount_orig": e["amount"] * r if r is not None else None, "origin": origin}
 
     for e in case.get("edges", []):
         add(e, "case")
@@ -396,6 +407,11 @@ def money(usd: float, currency: str | None = "US Dollar", rate: float | None = 1
     return f"${usd:,.0f}"
 
 
+def _paid_in(e: dict) -> str:
+    r = orig_rate(e.get("cur"))
+    return original(e["amount"] * r, e["cur"]) if r is not None else (e.get("cur") or "")
+
+
 def original(amount: float | None, cur: str | None) -> str:
     """A payment in its own currency: "EUR 1,050" (Bitcoin to 4 decimals)."""
     if not cur or amount is None:
@@ -481,7 +497,7 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     out += ["## Payments in the case", "", "| Time | From | To | Amount (USD equivalent) | Paid in | Format |",
             "|---|---|---|---|---|---|"]
     out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | "
-            f"{original(e['amount'] * fx_rate(e['cur']), e['cur']) if e.get('cur') else ''} | {e.get('fmt') or ''} |"
+            f"{_paid_in(e)} | {e.get('fmt') or ''} |"
             for e in sorted(case.get("edges", []), key=lambda e: e["ts"])]
     # Generated text says "1 accounts"; an STR should not.
     return re.sub(r"\b1 (account|payment|receiver|sender)s\b", r"1 \1", "\n".join(out)) + "\n"

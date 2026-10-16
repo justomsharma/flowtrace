@@ -17,7 +17,10 @@ are left out, so the scoring variants can be compared on them honestly.
   HIGH_RISK_RAIL              paid in cash or Bitcoin
   CASH_OR_CRYPTO_EXIT         the receiver pays cash or Bitcoin out within 72 h
 
-Loops, convergence and onward sums skip hub accounts (more payments than hub_degree), as the tracer does.
+Loops, onward sums and pass-through skip hub accounts (more payments than trace.hub_degree over the measured days),
+as the tracer does; the evidence itself is only gathered on case accounts, which are never hubs. Convergence skips
+middle accounts with more than 50 payments that day (the features' 2-hop cap). EQUAL_SPLITS is measured on outgoing
+payments only, the common direction of the evidence.
 
 The file keeps raw counts. The disposition reads them through lift(): used only with
 disposition.measured_weights.min_laundering labelled laundering payments or more, and shrunk toward 1 with
@@ -118,8 +121,9 @@ def _asof(left: pl.DataFrame, right: pl.DataFrame, **kw) -> pl.DataFrame:
 
 def _sent_by(t: pl.DataFrame) -> pl.DataFrame:
     """Each account's outgoing payments in time order with the running total, for window sums by as-of joins."""
-    return (t.select(pl.col("src").alias("acct"), "ts", "amount_usd").sort("acct", "ts")
-            .with_columns(pl.col("amount_usd").cum_sum().over("acct").alias("cum")).drop("amount_usd").sort("ts"))
+    per_ts = t.group_by(pl.col("src").alias("acct"), "ts").agg(pl.col("amount_usd").sum())  # one row per instant
+    return (per_ts.sort("acct", "ts").with_columns(pl.col("amount_usd").cum_sum().over("acct").alias("cum"))
+            .drop("amount_usd").sort("ts"))
 
 
 def fast_onward(t: pl.DataFrame, hours: float | None = None, share: float | None = None,

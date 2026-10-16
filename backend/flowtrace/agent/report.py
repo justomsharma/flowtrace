@@ -61,6 +61,21 @@ NUM = re.compile(r"\d[\d,]*\.?\d*")
 IDS = re.compile(r"\s*[\(\[]\s*E\d+(?:\s*,\s*E\d+)*\s*[\)\]]|\bE\d+\b")
 
 
+CITE = re.compile(r"\[\s*(E\d+(?:\s*,\s*E\d+)*)\s*\]")
+
+
+def known_citations(text: str, known: set[str]) -> tuple[str, list[str]]:
+    """Keep only bracketed evidence IDs that exist ("[E1, E9]" -> "[E1]" when E9 is unknown); returns the dropped IDs."""
+    bad: list[str] = []
+
+    def keep(m: re.Match) -> str:
+        ids = [i.strip() for i in m.group(1).split(",")]
+        bad.extend(i for i in ids if i not in known)
+        ok = [i for i in ids if i in known]
+        return f"[{', '.join(ok)}]" if ok else ""
+    return re.sub(r"\s+([.,;])", r"\1", CITE.sub(keep, text or "")).strip(), bad
+
+
 def clean(text: str) -> str:
     return re.sub(r"\s{2,}", " ", IDS.sub("", text or "")).replace(" .", ".").replace(" ,", ",").strip()
 
@@ -118,7 +133,11 @@ def validate(report: dict, ctx: CaseContext, disp: Disposition) -> dict:
             item["text"] = clean(item["text"])
     report["headline"] = clean(report["headline"])
     report["next_steps"] = [clean(x) for x in report["next_steps"]][:3]
-    # str_narrative keeps its [E1] citations: the STR draft traces every sentence to the evidence.
+    # str_narrative keeps its [E1] citations, so the STR draft traces every sentence to the evidence; a cited ID
+    # that is not in the ledger is dropped, so no claim points at evidence that does not exist.
+    report["str_narrative"], bad = known_citations(report["str_narrative"], {e.id for e in ctx.book.items})
+    if bad:
+        dropped.append({"section": "str_narrative", "text": ", ".join(bad), "why": "cited evidence IDs not in the ledger"})
     report["validation"] = {"statements_checked": checked, "unsupported": len(dropped),
                             "unsupported_rate": round(len(dropped) / checked, 3) if checked else 0.0,
                             "dropped": dropped}

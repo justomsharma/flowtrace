@@ -130,9 +130,11 @@ def test_a_stored_result_triggers_the_act_step_and_survives_its_failure(monkeypa
         raise RuntimeError("graph down")
     monkeypatch.setattr(registry, "act", act)
     monkeypatch.setattr(M, "approver_token", lambda: None)
-    M._store_result("BX-C001", {"case_id": "BX-C001"})
-    # A finished investigation may auto-hold, but only says approvals are on when the server has a token.
-    assert acted == [("BX-C001", {"auto": True, "approvals_on": False})] and "BX-C001" in M.RESULTS
+    M._store_result("BX-C001", {"case_id": "BX-C001"})                          # a background run
+    M._store_result("BX-C001", {"case_id": "BX-C001"}, started_by_person=True)   # a person clicked Investigate
+    # Only the person-started run may auto-hold, and approvals are on only when the server has a token.
+    assert acted == [("BX-C001", {"auto": False, "approvals_on": False}), ("BX-C001", {"auto": True, "approvals_on": False})]
+    assert "BX-C001" in M.RESULTS
 
 
 def test_a_manual_replan_never_auto_holds(case, monkeypatch):
@@ -166,3 +168,16 @@ def test_the_ui_is_told_exactly_when_auto_hold_can_act(monkeypatch, enabled, tok
     monkeypatch.setattr(M, "cfg", lambda: rules)
     monkeypatch.setattr(M, "approver_token", lambda: token)
     assert M.auto_hold_policy() == {"active": active, "min_confidence": 0.9, "confirm_business_days": 1}
+
+
+def test_only_an_investigation_a_person_started_may_auto_hold(monkeypatch):
+    starts = []
+    monkeypatch.setattr(M, "CASES", {"BX-C001": {"case_id": "BX-C001"}})
+    monkeypatch.setattr(M.RUNNER, "start", lambda cid, work, done, queued=False: starts.append(done) or type("J", (), {"id": "J1"})())
+    client.post("/api/cases/BX-C001/investigate")
+    assert starts[0].keywords == {"started_by_person": True}
+    monkeypatch.setattr(M, "BATCHES", {"BX": {"cases": [{"case_id": "BX-C001"}]}})
+    monkeypatch.setattr(M, "RESULTS", {})
+    monkeypatch.setattr(M.RUNNER, "active", lambda cid: False)
+    M.prefetch("BX")
+    assert starts[1].keywords == {}                 # background prefetch only proposes

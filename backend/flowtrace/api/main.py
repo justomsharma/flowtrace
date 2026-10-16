@@ -251,12 +251,14 @@ def _investigation(case_id: str, policy: str):
     return run
 
 
-def _store_result(case_id: str, result: dict) -> None:
+def _store_result(case_id: str, result: dict, started_by_person: bool = False) -> None:
+    """Accept a finished investigation, then act. Only an investigation a person started (POST .../investigate)
+    may auto-hold; background runs (prefetch after an upload, re-queue after a restart) only propose."""
     save_case_memory(result, cfg())
     RESULTS[case_id] = result
     _persist("results", case_id, result)
     try:  # the agent acts: plan the holds and propose them for a person to decide
-        registry.act(case_id, auto=True, approvals_on=approver_token() is not None)
+        registry.act(case_id, auto=started_by_person, approvals_on=approver_token() is not None)
     except Exception as e:
         log.warning("could not plan holds for %s: %s", case_id, e)
 
@@ -339,7 +341,7 @@ def investigate_case(case_id: str, policy: Literal["llm", "heuristic", "fixed"] 
         if case_id not in CASES:
             raise HTTPException(404, "no such case")
         # Joins the case's queued or running investigation if there is one; otherwise starts now.
-        job = RUNNER.start(case_id, _investigation(case_id, policy), partial(_store_result, case_id))
+        job = RUNNER.start(case_id, _investigation(case_id, policy), partial(_store_result, case_id, started_by_person=True))
     return {"job_id": job.id}
 
 
