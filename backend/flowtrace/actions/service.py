@@ -125,12 +125,11 @@ def expire_proposals(case_prefix: str, reason: str, now: int | None = None) -> i
     return rw(Q.EXPIRE_PROPOSALS, {"prefix": case_prefix, "reason": reason, "now": now or now_ms()}).rows[0]["n"]
 
 
-def open_holds(case_id: str) -> int:
-    return ro(Q.OPEN_HOLDS, {"case_id": case_id}).rows[0]["n"]
-
-
-def list_actions(case_id: str | None = None, status: str | None = None) -> list[dict]:
-    expire_due()
+def list_actions(case_id: str | None = None, status: str | None = None, expire: bool = True) -> list[dict]:
+    """expire=False keeps it read-only (MCP tools): a hold past its time then still reads APPROVED until
+    the API's expiry timer or the next read here releases it."""
+    if expire:
+        expire_due()
     return [dict(r["action"]) for r in ro(Q.LIST_ACTIONS, {"case_id": case_id, "status": status}).rows]
 
 

@@ -366,11 +366,6 @@ CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, event: 'VERDICT', action_id
 RETURN c.id AS case_id
 """
 
-OPEN_HOLDS = """
-MATCH (a:Action {case_id: $case_id, type: 'HOLD'}) WHERE a.status IN ['PROPOSED', 'APPROVED']
-RETURN count(a) AS n
-"""
-
 LIST_ACTIONS = """
 MATCH (a:Action) WHERE ($case_id IS NULL OR a.case_id = $case_id) AND ($status IS NULL OR a.status = $status)
 RETURN properties(a) AS action

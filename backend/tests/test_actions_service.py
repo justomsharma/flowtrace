@@ -142,13 +142,6 @@ def test_reupload_expires_open_proposals_but_keeps_approved_holds(g):
     assert "CASE_REUPLOADED" in [e["event"] for e in S.audit()]
 
 
-def test_open_holds_counts_proposed_and_approved(g):
-    a, _ = hold(now=LIVE)
-    S.propose("ZZ-C001", "HOLD", account="ACC2", now=LIVE)
-    S.decide(a["id"], True, "Money is still moving to cash", now=LIVE)
-    assert S.open_holds("ZZ-C001") == 2
-
-
 # --- verdicts and case memory -----------------------------------------------------------------------
 
 def seed_cases(*cases):

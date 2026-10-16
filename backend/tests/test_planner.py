@@ -60,7 +60,7 @@ def mule_world(cur: str = "Euro", mixed: bool = False) -> World:
     return World(edges, {})
 
 
-CASE = {"case_id": "BX-C001", "primary": "X", "accounts": ["X"], "t0": T0, "t1": T0 + DAY, "tx_ids": ["S0", "S1", "S2"],
+CASE = {"case_id": "BX-C001", "primary": "X", "accounts": ["X"], "t0": T0, "t1": T0 + DAY, "tx_ids": ["S0", "S1", "S2"], "ml_score": 0.9,
         "edges": [{"tx_id": f"S{i}", "src": "X", "dst": f"M{i}", "ts": T0 + 2 * H, "amount": 20000.0, "fmt": "ACH"} for i in range(3)]}
 
 
