@@ -171,4 +171,33 @@ def act(case_id: str) -> dict:
     if plan["case_action"] and plan["disposition"]:
         actions.append(call("propose_action", {"case_id": case_id, "type": plan["case_action"]["type"],
                                                "reason": plan["case_action"]["why"]})["action"])
-    return {"plan": plan, "actions": actions}
+    return {"plan": plan, "actions": actions, "auto_held": auto_hold(case_id, actions)}
+
+
+AUTO_BY = "FlowTrace agent (auto-hold policy)"
+
+
+def auto_hold(case_id: str, actions: list[dict]) -> list[str]:
+    """Critical cases: apply the proposed holds at once instead of waiting for an analyst, so the money cannot
+    leave while the case sits in the queue. Only after ESCALATE at actions.auto_hold.min_confidence or above.
+    The hold is the same time-limited lien on the case money (it lapses after hold_expiry_business_days), it
+    is audited like any decision, and an analyst who closes the case releases it. Filing an STR or escalating
+    is never automatic: that stays a person's decision."""
+    rule = cfg()["actions"].get("auto_hold") or {}
+    if not rule.get("enabled"):
+        return []
+    d = (store.load_result(case_id) or {}).get("disposition", {})
+    conf = d.get("confidence") or 0.0
+    if d.get("action") != "ESCALATE" or conf < rule["min_confidence"]:
+        return []
+    reason = (f"Automatic hold: escalated at {round(conf * 100)}% confidence (policy: {round(rule['min_confidence'] * 100)}% "
+              f"or more). An analyst confirms by filing, or releases it by closing the case.")
+    held = []
+    for a in actions:
+        if a.get("type") == "HOLD" and a.get("status") == "PROPOSED":
+            try:
+                service.decide(a["id"], True, reason, by=AUTO_BY, key=f"auto-{a['id']}", auth="auto-hold policy")
+                held.append(a["id"])
+            except service.ActionError:
+                pass  # decided by a person in the meantime
+    return held

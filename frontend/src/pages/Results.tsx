@@ -60,6 +60,9 @@ function StatusPill({ g }: { g: Group }) {
   )
 }
 
+/** Holds the agent applied itself under the auto-hold policy (critical cases only). */
+const isAuto = (a: Action) => (a.decided_by ?? '').includes('auto-hold')
+
 const caseLink = (caseId: string) => {
   const i = caseId.lastIndexOf('-C')
   return i > 0 ? `/case?batch=${caseId.slice(0, i)}&case=${caseId}` : '/'
@@ -101,7 +104,9 @@ export default function Results() {
     return { ...c, [k]: (c[k] ?? 0) + 1 }
   }, {} as Record<string, number>)
   const proposedHolds = mine.filter((a) => a.type === 'HOLD' && a.status === 'PROPOSED')
-  const decided = mine.filter((a) => a.status === 'APPROVED' || a.status === 'REJECTED').length
+  const decided = mine.filter((a) => (a.status === 'APPROVED' || a.status === 'REJECTED') && !isAuto(a)).length
+  const autoHeld = mine.filter((a) => a.type === 'HOLD' && isAuto(a)).length
+  const waitingHere = new Set(mine.filter((a) => a.status === 'PROPOSED').map((a) => a.case_id)).size
   // One row per case in "Needs review": a case usually carries several proposals (an STR plus holds).
   const byCase = useMemo(() => {
     const m = new Map<string, Action[]>()
@@ -130,7 +135,7 @@ export default function Results() {
           note={today.length ? `${today.length} hold${today.length === 1 ? '' : 's'} approved today`
             : waiting.some((a) => a.type === 'HOLD') ? 'holds are proposed, none approved yet' : 'no hold approved today'} accent />
         <Figure label="Holds in place" value={String(active.length)} note={active.length ? `${total(active)} frozen` : 'none right now'} />
-        <Figure label="Needs review" value={String(byCase.length)} note={`case${byCase.length === 1 ? '' : 's'} with ${waiting.length} proposal${waiting.length === 1 ? '' : 's'} awaiting an analyst`} />
+        <Figure label="Needs review" value={String(byCase.length)} note={`case${byCase.length === 1 ? '' : 's'} across all uploads, ${waiting.length} proposal${waiting.length === 1 ? '' : 's'} in total`} />
         </div>
       </header>
       {error && <p className="text-sm" style={{ color: 'var(--critical)' }}>{error}</p>}
@@ -147,7 +152,7 @@ export default function Results() {
             <Step n={batch.cases.length} label="Cases investigated by the agent"
               note={[['ESCALATE', 'escalate'], ['REVIEW', 'review'], ['CLOSE', 'close'], ['PENDING', 'not yet investigated']]
                 .filter(([k]) => verdicts[k]).map(([k, w]) => `${verdicts[k]} ${w}`).join(' · ')} />
-            <Step n={byCase.length} label="Waiting for an analyst" note={`${decided} decision${decided === 1 ? '' : 's'} made so far`} warn />
+            <Step n={waitingHere} label="Cases waiting for an analyst" note={`${decided} decision${decided === 1 ? '' : 's'} made so far${autoHeld ? `, ${autoHeld} hold${autoHeld === 1 ? '' : 's'} applied automatically` : ''}`} warn />
           </ol>
           <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
             {active.length > 0
