@@ -26,12 +26,13 @@ All screenshots are from the real app on the curated sample day (`demo_mixed_202
 - **Four figures:** the amount involved, accounts connected, red flags found, and the investigation status (Queued, Investigating, Escalate, Review or Close).
 - **Transaction flow**, left to right. Each account's role comes from the flow itself: no money in = sender, no money out = destination, otherwise intermediary. Red arrows are suspicious payments, amber arrows carried case money into a proposed hold, and the amber ring marks the hold (dashed = proposed, solid = approved).
 - **Key findings:** one row per red flag, with a confidence badge from the evidence weight (thresholds in `config.yaml`, `ui.evidence_confidence`). Under them, the legitimate explanations the agent found.
+- **Verdict card:** risk and confidence as High / Medium / Low, at the thresholds in `config.yaml` (`disposition.escalate_at`, `close_below`, `confidence_labels`). The confidence score measures distance from a decision line; it is not a probability, so no percentage is shown. Escalated cases also show a *possible crime type (indicative, not a finding)*.
 
-Amounts are in the data's own currency ($, €, SAR, R$…).
+Every amount is the **USD equivalent** (the dataset's payments in other currencies are converted at its fixed rates), and each payment row also shows the payment in its own currency (EUR, SAR, BRL…).
 
 ![Case overview](docs/screenshots/case-overview.png)
 
-**4. The agent acts: recommended next step.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Every hold, and the case decision (here: file an STR), waits for a person.
+**4. The agent acts: recommended next step.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Every hold, and the case decision (here: file an STR), waits for a person. Nothing starts ticked, and holds and the case decision are approved or rejected separately. A proposed hold shows when it would end before anyone approves it.
 
 ![Proposed holds on a case](docs/screenshots/holds.png)
 
@@ -43,7 +44,7 @@ Amounts are in the data's own currency ($, €, SAR, R$…).
 
 ![Investigation streaming live](docs/screenshots/investigation.png)
 
-**7. Holds & audit.** Money frozen today, holds in place with live countdowns, proposals waiting for a decision, and the append-only audit log. Each amount is in the currency of its money trail.
+**7. Holds & audit.** Money frozen today, holds in place with live countdowns, proposals waiting for a decision, and the append-only audit log, filtered by what needs you. Amounts are the USD equivalent.
 
 ![Holds and audit log](docs/screenshots/results.png)
 
@@ -68,7 +69,7 @@ Amounts are in the data's own currency ($, €, SAR, R$…).
 | Case funnel, **full test day** (Sep 9, 654,467 payments, 0.08% laundering) | **280 flagged → 186 cases**, largest 9 accounts; **15 of the top 15 cases are laundering**; of 121 schemes active that day, 18 are in the top 15, 49 in the top 50, 93 in some case | `python -m flowtrace.eval.fullday --day 2022-09-09`: offline, every payment, no graph upload, detectors not run (see *How flagging works*). Validation days: 168 and 176 cases, 22 of 117 and 22 of 116 schemes in the top 15 |
 | Case funnel, **full test day** (Sep 10, 208,325 payments, 0.21% laundering) | **262 flagged → 180 cases**, largest 7 accounts; **15 of the top 15 cases are laundering**; of 124 schemes active that day, 18 are in the top 15, 51 in the top 50, 86 in some case | `python -m flowtrace.eval.fullday --day 2022-09-10`: same offline method as Sep 9 |
 | Case funnel, **curated demo sample** (Sep 9, 2,271 payments, 2.3% laundering, ~29× a real day) | 40 flagged → 17 cases, largest 6 accounts; 14 of the top 15 cases are laundering; 18 of 26 schemes in the top 15 | `python -m flowtrace.eval.funnel ../data/samples/demo_mixed_2022-09-09.csv`. The sample is hand-picked around known schemes for the demo, so it reads far better than a real day |
-| Adaptive agent vs fixed workflow | `python -m flowtrace.eval.compare` writes `data/models/agent_eval.json` | Same alerts, same query budget; see *Evaluation* |
+| Adaptive agent vs fixed workflow, **Sep 9 eval slice** (40 cases: 21 laundering, 19 legitimate) | Escalate recall **1.00 / 1.00 / 0.67** and precision **0.58 / 0.57 / 0.74** (fixed / heuristic / llm); legitimate cases escalated 15 / 16 / 5 of 19; no laundering case closed; 0.5% of the LLM report's claims unsupported | Same alerts, same query budget, final test after the scoring was chosen on Sep 7–8; see *Evaluation* |
 | Hold planner, **Sep 9 eval slice** (top 40 ranked cases), laundering cases (21) | Holds **freeze $5.59M** of the $5.67M of case money still in the trail; 61% of the 41 holds are on accounts that really launder, against a **64% base rate**; on legitimate cases the proposals would wrongly freeze $98.3M if approved | `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40`, with dispositions from the rule-based investigation. Full table and caveats in *Acting on a case* |
 
 For comparison, published results on HI-Small are 62.9 F1 for GFP+LightGBM and 68.2 for Multi-PNA, on a different split that includes the Sep 11–18 tail. We exclude that tail (see *Data*).
@@ -181,13 +182,20 @@ The trail is small (a few hundred accounts at most), so the planner reads it wit
 
 All thresholds and weights live in [`config.yaml`](config.yaml).
 
-**Crime type.** The dataset labels laundering yes/no only. The "possible predicate crime" shown in reports maps the observed shape to the crimes the data generator models (extortion, loan sharking, gambling, prostitution, kidnapping, robbery, embezzlement, drugs, smuggling). It is a **hypothesis**, labelled as such, and is not a measured prediction.
+**Crime type.** The dataset labels laundering yes/no only. The "possible predicate crime" maps the observed shape to the crimes the data generator models (extortion, loan sharking, gambling, prostitution, kidnapping, robbery, embezzlement, drugs, smuggling), plus the few indicators with a well-supported link (`crime_by_indicator`: money returning to its sender -> embezzlement, money forwarded straight on -> money mule). Splits, cash or crypto, many sources and convergence are left out: they are common in normal accounts. It is a **hypothesis**, labelled *indicative*, shown for escalated cases only, and is not a measured prediction.
 
 ---
 
 ## Acting on a case: holds a person approves
 
-An investigation ends with a recommendation. Then the agent acts: it plans which accounts to hold and proposes those holds, along with the case decision. **The agent can only propose. Only a person can approve or reject, and they must give a reason.**
+An investigation ends with a recommendation. Then the agent acts: it plans which accounts to hold and proposes those holds, along with the case decision. **The agent proposes. Only a person can approve or reject, and they must give a reason. Nothing is frozen until a person approves, with one exception, the auto-hold below.**
+
+**Auto-hold** (`actions.auto_hold`, on by default; decided by measurement, see *Measurement*). It acts only when **all** of these hold:
+- `actions.auto_hold.enabled` is on **and** the API server has an `APPROVER_TOKEN` (so a person can confirm or release);
+- an investigation **a person started** has just finished (never a background prefetch or re-queue, never a manual re-plan, never MCP) and recommends **ESCALATE with a confidence score of 0.9 or more** (`min_confidence`; a score, not a probability);
+- the planner found a hold, no hold of the case was ever decided (approved, rejected, released or expired), and no analyst gave the case a verdict, so a release or a CLOSE is never undone.
+
+The hold is **PROVISIONAL**, audited as `agent (auto-hold)`. A person confirms it (it then runs its normal term) or rejects it (released now). If nobody confirms it within **1 business day** (`confirm_business_days`) it is released automatically. It never files an STR or escalates. The UI states this exception wherever it says "Nothing is frozen until you approve", and only when it is active on the server.
 
 How FlowTrace holds money, and what it is based on:
 - **A hold freezes an amount, never a whole account.** It is a lien on the case money traced into an account. This follows the RBI [draft KYC Amendment Directions, Sep 2026](https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=63587), which allow a debit hold on the suspected amount for at most 60 days. Indian High Courts have also limited liens to the disputed amount.
@@ -285,7 +293,7 @@ How the measurement works:
 - **Fixed in advance.** The config values (cap, minimum, expiry) were set before the first run. The two later method changes were decided after seeing Sep 9:
   - holds only after ESCALATE;
   - a lien on the traced amount instead of the account's balance.
-- **Currency.** Amounts are in US dollars.
+- **Currency.** Amounts are the US dollar equivalent.
 
 | | Sep 9 slice: 21 laundering cases | Curated sample: 17 cases (16 laundering) |
 |---|---|---|
@@ -307,6 +315,17 @@ To reproduce, run `python -m flowtrace.eval.holds --sample eval/day_slice_2022-0
 - Each run writes `data/models/holds_eval_*.json`.
 - The planner only reads.
 - The slice batch is uploaded and then deleted. The demo batch is left alone if the UI already uploaded it.
+
+**Auto-hold, measured** (`flowtrace.eval.variants`, heuristic dispositions, the rule written before measuring: default on only with precision ≥ 90% on Sep 7–8 and no legitimate case with more than $1M frozen):
+
+| | Validation, Sep 7–8 (80 cases) | Final test, Sep 9 (40 cases) |
+|---|---|---|
+| Cases it would auto-hold | 11, all laundering (100%) | 6, all laundering (100%) |
+| Of their holds, on accounts that really launder | 60% | 69% |
+| Money it would freeze | $1,078,269 | $4,958,624 |
+| **Money wrongly frozen** (legitimate cases) | **$0** | **$0** |
+
+So auto-hold is on by default. Read it with care: 11 of 11 still leaves a 95% lower bound of about 72% precision, and the scoring first pushed (variant B below) would have auto-frozen **$77.3M** on one legitimate Sep 9 case (C024).
 
 What the numbers say:
 - **The holds freeze most of the case money still in the trail** (98.6% and 86.6%), with at most 3 holds per case.
@@ -362,9 +381,8 @@ python -m flowtrace.graph.smoke --write      # also checks upload idempotency an
 python -m flowtrace.eval.tune                # calibration, detector precision, hub degree from Sep 7-8 (paste into config.yaml)
 python -m flowtrace.eval.fullday --day 2022-09-09   # honest full-day funnel, offline (a full day is ~61 MB, over the 50 MB upload limit)
 
-# 4. Agent evaluation (optional, uses the LLM). It uploads the sample batch into the graph;
-#    afterwards delete that batch or reload with: python -m flowtrace.graph.load --replace
-python -m flowtrace.eval.compare --cases 25
+# 4. Agent evaluation (optional, uses the LLM). It uploads the sample batch and deletes it afterwards
+python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 40
 
 # 5. Hold planner measurement (no LLM; uploads the slice and deletes it afterwards)
 python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40
@@ -433,7 +451,47 @@ Read the results with care:
 python -m flowtrace.eval.slice --day 2022-09-09 --pos 20 --neg 20      # writes data/samples/eval/day_slice_2022-09-09.csv
 python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 40
 ```
-`compare` uploads the slice into the graph; delete its batch afterwards (see `DELETE_BATCH` in `graph/queries.py`).
+
+**Sep 9 eval slice, top 40 cases (21 laundering, 19 legitimate), dev scoring (variant A below), gpt-6-luna:**
+
+| | fixed | heuristic | llm |
+|---|---|---|---|
+| Escalate recall (laundering escalated) | 1.00 (21/21) | 1.00 (21/21) | 0.67 (14/21) |
+| Laundering kept open (escalate or review) | 1.00 | 1.00 | 1.00 |
+| Escalate precision | 0.58 | 0.57 | 0.74 |
+| Legitimate cases escalated | 15 of 19 | 16 of 19 | 5 of 19 |
+| Legitimate cases auto-closed | 0 | 0 | 0 |
+| Evidence coverage | 0.22 | 0.30 | 0.30 |
+| Unsupported-claim rate | 0 | 0 | 0.005 |
+| Cypher queries / seconds per case | 14.7 / 0.02 | 15.2 / 0.02 | 17.2 / 30.2 |
+
+The LLM sends the 7 laundering cases it does not escalate to REVIEW, so a person still sees them; it escalates far fewer legitimate cases. No LLM step fell back to the rules and no report fell back to the template.
+
+**Scoring variants.** A teammate proposed weighting each indicator by its measured laundering lift. The variants were compared by a rule written down before measuring ([decision rules](docs/superpowers/specs/2026-10-16-simple-report-review-design.md)): keep escalate recall within 0.02 of A for both free policies, then escalate the fewest legitimate cases, then freeze the least money on them. Validation is Sep 7 and Sep 8 slices built the same way (80 cases), each replayed on a scratch graph holding history up to that day only; the same investigations are re-scored under each variant (`flowtrace.eval.variants`).
+- **A**: dev scoring, every indicator at its tool weight.
+- **B**: as first pushed: payment-level lift from Sep 1–8 (overlapping the validation days), CYCLE and CASH_OR_CRYPTO_EXIT borrowing other codes' lifts, a "≥ 500 payments" rule, and an escalator switched off when its lift was weak.
+- **C**: B fixed: each code measured on its own definition on Sep 1–6 (`flowtrace.ml.signal_rates`), used only with 30+ laundering examples, shrunk toward 1 (10 pseudo-examples), never switching off an escalator.
+
+| Variant | Sep 7–8 recall, fixed / heuristic | Sep 7–8 legitimate escalated (of 38 + 38) | Sep 9 recall, fixed / heuristic / llm | Sep 9 legitimate escalated (of 19), fixed / heuristic / llm |
+|---|---|---|---|---|
+| **A (winner)** | 0.83 / 0.88 | **62** | 1.00 / 1.00 / 0.67 | 15 / 16 / 5 |
+| B | 1.00 / 1.00 | 76 | 1.00 / 0.95 / 0.81 | 19 / 19 / 9 |
+| C | 0.98 / 1.00 | 65 | 1.00 / 0.95 / 0.67 | 18 / 18 / 6 |
+
+All three keep recall, and A escalates the fewest legitimate cases, so `disposition.measured_weights.enabled` stays off. The fixed measurement still drives the case page's *Strong sign* / *Common in normal accounts* tags. Sep 9 was run once, after the choice, and nothing was changed after seeing it; B and C on Sep 9 are for comparison only. On every variant the planned holds on the validation days' legitimate cases come to about $1.31B if a person approved them all, mostly a few very large flagged payments; that is why every hold except the provisional auto-hold waits for a person.
+
+```bash
+# validation days: a scratch graph with history up to the day, so the main graph is never touched
+GRAPH_NAME=flowtrace_val python -m flowtrace.graph.load --until 2022-09-07 --replace
+GRAPH_NAME=flowtrace_val python -m flowtrace.eval.variants --sample eval/day_slice_2022-09-07.csv --cases 40
+GRAPH_NAME=flowtrace_val python -m flowtrace.graph.load --until 2022-09-08 --replace
+GRAPH_NAME=flowtrace_val python -m flowtrace.eval.variants --sample eval/day_slice_2022-09-08.csv --cases 40
+python -m flowtrace.eval.variants --decide variants_eval_day_slice_2022-09-07.json variants_eval_day_slice_2022-09-08.json
+# final test, once, on the main graph (uploads the slice and deletes it afterwards)
+python -m flowtrace.eval.variants --sample eval/day_slice_2022-09-09.csv --cases 40 --policies fixed,heuristic,llm
+```
+Then delete the scratch graph (`GRAPH.DELETE flowtrace_val` in redis-cli).
+`compare` uploads the slice into the graph and deletes its batch afterwards (unless the UI had already uploaded it).
 
 ## Tests
 
@@ -463,8 +521,10 @@ Action-layer tests:
 - **API**:
   - plan, approve/reject, error codes and audit;
   - a decision without the right approver token, or with no approver name, is refused.
-- **Case page** (`tests/test_case_view.py`): account roles from the flow (a pure loop is all intermediaries), history payments left out, flagged vs followed payments, a hold account downstream of the case drawn amber, the account cap, confidence and priority thresholds from config, hourly vs daily timeline, an uninvestigated case, currency fallback, the STR draft and its endpoints.
-- **Frontend** (`frontend/src/lib/*.test.ts`, vitest): the layered flow layout (chains, loops, fan-out, crossings), the case stepper from real states, and the STR Markdown reader.
+- **Case page** (`tests/test_case_view.py`): account roles from the flow (a pure loop is all intermediaries), history payments left out, flagged vs followed payments, a hold account downstream of the case drawn amber, the account cap, confidence and priority thresholds from config, risk and confidence as High/Medium/Low from config (never a percentage), crime types only on escalated cases, each payment's own currency next to the USD equivalent, hourly vs daily timeline, an uninvestigated case, the STR draft (evidence IDs on every point, provisional holds) and its endpoints.
+- **Auto-hold** (`test_actions_service.py`, `test_registry.py`, `test_api_actions.py`): a provisional hold is audited as the agent and counts toward the cap; a person confirms it (normal term) or rejects it (released); unconfirmed, it is released after 1 business day; CLOSE and RELEASE end it; it never fires when switched off, without an approver token, on a manual re-plan, below the confidence bar, after a decided hold or after an analyst verdict; the UI is told exactly when it can act.
+- **Signal measurement and scoring variants** (`test_signal_rates.py`, `test_variants.py`): each evidence code measured by its own definition (pass-through pairs, fast onward, loops with their own time rules, equal splits, convergence, cash exit), the 30-example rule and shrinkage, an escalator never switched off, a missing rates file failing loudly, variant B reproduced as first pushed, and the pre-written decision rule.
+- **Frontend** (`frontend/src/lib/*.test.ts`, vitest): the layered flow layout (chains, loops, fan-out, crossings), the case stepper from real states, the STR Markdown reader, the hold promise text, business-day hold ends and payments in their own currency.
 
 ## AI assistance
 

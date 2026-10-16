@@ -5,7 +5,7 @@ import type { AutoHoldPolicy } from './api'
 export function holdPromise(p?: AutoHoldPolicy | null): string {
   if (!p?.active) return 'Nothing is frozen until you approve.'
   const days = p.confirm_business_days ?? 1
-  return `Nothing is frozen until you approve, with one exception: when an investigation escalates with a confidence `
+  return `Nothing is frozen until you approve, with one exception: when an investigation you start escalates with a confidence `
     + `score of ${(p.min_confidence ?? 0).toFixed(2)} or more, the agent holds the case money provisionally for `
     + `${days} business day${days === 1 ? '' : 's'}. You confirm or reject it; unconfirmed, it is released.`
 }

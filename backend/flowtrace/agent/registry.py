@@ -4,8 +4,8 @@
   read tools     get_case, list_cases, plan_holds: read-only (GRAPH.RO_QUERY and saved files).
   propose_action the only write tool: creates PROPOSED actions. Nothing here can approve; only a person can,
                  through the API the UI calls.
-  auto_hold      not a tool (the MCP server never reaches it): after an investigation finishes, the API's act
-                 step may place proposed holds PROVISIONALLY (actions.auto_hold, needs APPROVER_TOKEN). A person
+  auto_hold      not a tool (the MCP server never reaches it): after an investigation a person started, the API's
+                 act step may place proposed holds PROVISIONALLY (actions.auto_hold, needs APPROVER_TOKEN). A person
                  confirms or rejects each one; unconfirmed, it is released after 1 business day. So nothing is
                  frozen until a person approves, except that provisional hold.
 
@@ -165,8 +165,8 @@ def call(name: str, args: dict, ctx: CaseContext | None = None, origin: str = "a
 
 def act(case_id: str, auto: bool = False, approvals_on: bool = False) -> dict:
     """The agent's act step after an investigation: plan the holds, then propose them and the case-level
-    action. A person decides each one. auto=True (only when an investigation has just finished, never a manual
-    re-plan) lets the auto-hold policy place the holds provisionally; approvals_on says whether the API has an
+    action. A person decides each one. auto=True (only when an investigation a person started has just finished,
+    never a background run or a manual re-plan) lets the auto-hold policy place the holds provisionally; approvals_on says whether the API has an
     APPROVER_TOKEN, so a person can confirm or release them."""
     plan = call("plan_holds", {"case_id": case_id})
     store.save_plan(case_id, plan)

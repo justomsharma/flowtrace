@@ -10,7 +10,7 @@ describe('holdPromise', () => {
   })
   it('states exactly when auto-hold acts', () => {
     const s = holdPromise({ active: true, min_confidence: 0.9, confirm_business_days: 1 })
-    expect(s).toContain('confidence score of 0.90 or more')
+    expect(s).toContain('an investigation you start escalates with a confidence score of 0.90 or more')
     expect(s).toContain('provisionally for 1 business day.')
     expect(s).toContain('unconfirmed, it is released')
   })
