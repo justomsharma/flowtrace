@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BarChart3, ChevronRight, Download, GitBranch, Lock, Maximize2, PieChart, ReceiptText, ShieldCheck } from 'lucide-react'
 import HoldPanel from '../components/HoldPanel'
@@ -54,6 +54,35 @@ function CasePage({ caseId }: { caseId: string }) {
   const [o, setO] = useState<Overview | null>(null)
   const [missing, setMissing] = useState(false)
   const [view, setView] = useState<'graph' | 'list'>('graph')
+  // Two columns end level. The left column takes the right column's height, but never less than the flow
+  // graph plus a 260px payments box. The graph takes spare room (centred); the payments table gives room
+  // back by scrolling inside. Natural single-column layout below 1180px.
+  const [leftH, setLeftH] = useState<number | null>(null)
+  // When the graph is short, the charts move up into the left column instead of leaving it empty.
+  const [chartsLeft, setChartsLeft] = useState(false)
+  const right = useRef<HTMLDivElement | null>(null)
+  const graphBox = useRef<HTMLDivElement | null>(null)
+  const measure = useCallback(() => {
+    const r = right.current, box = graphBox.current, g = box?.firstElementChild as HTMLElement | null
+    const panel = box?.closest('section')
+    if (!r || !box || !g || !panel || window.innerWidth < 1180) { setLeftH(null); setChartsLeft(false); return }
+    const flowNatural = panel.offsetHeight - box.offsetHeight + g.offsetHeight
+    const CHARTS = 380
+    const up = r.offsetHeight >= flowNatural + 20 + CHARTS + 20 + 260
+    setChartsLeft(up)
+    setLeftH(Math.max(r.offsetHeight, flowNatural + 20 + 260 + (up ? CHARTS + 20 : 0)))
+  }, [])
+  const watch = useRef<ResizeObserver | null>(null)
+  const observe = useCallback(() => {
+    watch.current?.disconnect()
+    watch.current = new ResizeObserver(measure)
+    if (right.current) watch.current.observe(right.current)
+    const g = graphBox.current?.firstElementChild
+    if (g) watch.current.observe(g)
+    measure()
+  }, [measure])
+  const rightCol = useCallback((el: HTMLDivElement | null) => { right.current = el; observe() }, [observe])
+  const graphCol = useCallback((el: HTMLDivElement | null) => { graphBox.current = el; observe() }, [observe])
   const [hold, setHold] = useState<{ plan: HoldPlan | null; actions: Action[] }>({ plan: null, actions: [] })
   const [planVersion, setPlanVersion] = useState(0)
 
@@ -115,6 +144,17 @@ function CasePage({ caseId }: { caseId: string }) {
   const p = PRIORITY[o.priority]
   const writing = inv.live && inv.steps.length > 0 && inv.steps.every((s) => s.done)
 
+  const charts = (
+        <div className="grid gap-5 shrink-0 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+          <Panel title="When the money moved" icon={BarChart3}>
+            <TimelineChart o={o} />
+          </Panel>
+          <Panel title="Who received it" icon={PieChart}>
+            <DistributionBars o={o} />
+          </Panel>
+        </div>
+  )
+
   return (
     <NamesProvider names={o.names ?? {}}>
     <div className="px-6 py-5 flex flex-col gap-5 max-w-[1560px]">
@@ -169,8 +209,8 @@ function CasePage({ caseId }: { caseId: string }) {
       <KpiCards o={o} />
 
       <div className="grid gap-5 min-[1180px]:grid-cols-[minmax(0,1fr)_420px] items-start">
-        <div className="flex flex-col gap-5 min-w-0">
-          <Panel title="Money flow" icon={GitBranch}
+        <div className="flex flex-col gap-5 min-w-0" style={leftH ? { height: leftH } : undefined}>
+          <Panel title="Money flow" icon={GitBranch} className="grow shrink-0"
             sub={view === 'graph' ? 'Who paid whom, left to right. Point at anything for details.' : 'Every payment, in time order'}
             right={
               <div className="flex items-center gap-2">
@@ -192,7 +232,9 @@ function CasePage({ caseId }: { caseId: string }) {
             }>
             {view === 'graph' ? (
               <>
-                <FlowGraph nodes={o.flow.nodes} edges={o.flow.edges} currency="US Dollar" rate={1} />
+                <div ref={graphCol} className="flex-1 flex items-center">
+                  <FlowGraph nodes={o.flow.nodes} edges={o.flow.edges} currency="US Dollar" rate={1} />
+                </div>
                 <FlowLegend />
                 {o.flow.hidden_accounts > 0 && (
                   <p className="text-xs" style={{ color: 'var(--muted)' }}>
@@ -202,58 +244,49 @@ function CasePage({ caseId }: { caseId: string }) {
               </>
             ) : <PaymentSequence payments={o.transactions} currency="US Dollar" rate={1} />}
           </Panel>
-
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
-            <Panel title="When the money moved" icon={BarChart3}>
-              <TimelineChart o={o} />
-            </Panel>
-            <Panel title="Who received it" icon={PieChart}>
-              <DistributionBars o={o} />
-            </Panel>
-          </div>
-
-          <Panel title="Payments" icon={ReceiptText} sub="Newest first">
-            <PaymentsTable payments={o.transactions} currency="US Dollar" rate={1} />
+          {chartsLeft && charts}
+          <Panel title="Payments" icon={ReceiptText} sub={`${o.transactions.length} payments, newest first`} className="min-h-[260px] shrink">
+            <PaymentsTable payments={o.transactions} currency="US Dollar" rate={1} fill />
           </Panel>
-
+        </div>
+        <div ref={rightCol} className="flex flex-col gap-5 min-w-0">
+          <KeyFindings o={o} />
+          <AiSummary summary={o.summary} live={inv.live} />
           <InvestigationProgress live={inv.live} liveSteps={inv.steps} stored={o.steps} result={inv.result} error={inv.error} writing={writing}
             briefs={Object.fromEntries([...o.findings, ...o.explanations].map((f) => [f.claim, f.brief]))} />
         </div>
-
-        <div className="flex flex-col gap-5 min-w-0">
-          <KeyFindings o={o} />
-          <AiSummary summary={o.summary} live={inv.live} />
-
-          <section id="next-step" aria-labelledby="next-step-title" className="card p-5 flex flex-col gap-4 scroll-mt-4"
-            style={{ borderColor: 'color-mix(in srgb, var(--hold) 55%, var(--border))', boxShadow: 'inset 0 4px 0 var(--hold)' }}>
-            <header className="flex items-start gap-3">
-              <span className="w-9 h-9 rounded-lg grid place-items-center shrink-0" style={{ background: 'var(--hold-tint)' }}>
-                <ShieldCheck size={18} style={{ color: 'var(--hold)' }} aria-hidden />
-              </span>
-              <div>
-                <h2 id="next-step-title" className="text-[17px] font-semibold leading-tight">Next step</h2>
-                <p className="text-sm mt-0.5" style={{ color: 'var(--ink-2)' }}>The agent proposes. You approve or reject.</p>
-              </div>
-            </header>
-            {inv.result ? (
-              <HoldPanel key={inv.result.case_id} caseId={inv.result.case_id} result={inv.result} refreshKey={planVersion} onPlan={onPlan}
-                briefs={Object.fromEntries([...o.findings, ...o.explanations].map((f) => [f.id, f.brief]))} />
-            ) : (
-              <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
-                {inv.live ? 'Proposals appear when the investigation ends.' : 'Investigate the case first.'}
-              </p>
-            )}
-            {o.next_steps.length > 0 && (
-              <div>
-                <h3 className="text-sm font-semibold mb-1">Also suggested</h3>
-                <ul className="list-disc pl-5 flex flex-col gap-1 text-sm" style={{ color: 'var(--ink-2)' }}>
-                  {o.next_steps.slice(0, 3).map((s, i) => <li key={i}>{shortText(s)}</li>)}
-                </ul>
-              </div>
-            )}
-          </section>
-        </div>
       </div>
+
+      {!chartsLeft && charts}
+
+      <section id="next-step" aria-labelledby="next-step-title" className="card p-5 flex flex-col gap-4 scroll-mt-4"
+        style={{ borderColor: 'color-mix(in srgb, var(--hold) 55%, var(--border))', boxShadow: 'inset 0 4px 0 var(--hold)' }}>
+        <header className="flex items-start gap-3">
+          <span className="w-9 h-9 rounded-lg grid place-items-center shrink-0" style={{ background: 'var(--hold-tint)' }}>
+            <ShieldCheck size={18} style={{ color: 'var(--hold)' }} aria-hidden />
+          </span>
+          <div>
+            <h2 id="next-step-title" className="text-[17px] font-semibold leading-tight">Next step</h2>
+            <p className="text-sm mt-0.5" style={{ color: 'var(--ink-2)' }}>The agent proposes. You approve or reject.</p>
+          </div>
+        </header>
+        {inv.result ? (
+          <HoldPanel key={inv.result.case_id} caseId={inv.result.case_id} result={inv.result} refreshKey={planVersion} onPlan={onPlan}
+            briefs={Object.fromEntries([...o.findings, ...o.explanations].map((f) => [f.id, f.brief]))} />
+        ) : (
+          <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
+            {inv.live ? 'Proposals appear when the investigation ends.' : 'Investigate the case first.'}
+          </p>
+        )}
+        {o.next_steps.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold mb-1">Also suggested</h3>
+            <ul className="list-disc pl-5 flex flex-col gap-1 text-sm" style={{ color: 'var(--ink-2)' }}>
+              {o.next_steps.slice(0, 3).map((s, i) => <li key={i}>{shortText(s)}</li>)}
+            </ul>
+          </div>
+        )}
+      </section>
 
       <Stepper steps={steps} />
     </div>

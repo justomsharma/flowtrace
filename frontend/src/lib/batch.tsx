@@ -20,19 +20,21 @@ export function BatchProvider({ children }: { children: ReactNode }) {
   const [params] = useSearchParams()
   const urlBatch = params.get('batch')
   const caseId = params.get('case')
+  // "?fresh=1": a clean screen with no upload selected (nothing is deleted; past uploads stay saved).
+  const fresh = params.get('fresh') === '1'
   const [newest, setNewest] = useState<string | null>(null)
   const [listed, setListed] = useState(false)
   const [batch, setBatch] = useState<BatchSummary | null>(null)
   const [loadedId, setLoadedId] = useState<string | null>(null)
-  const batchId = urlBatch ?? newest
+  const batchId = fresh ? null : urlBatch ?? newest
 
   useEffect(() => {
-    if (urlBatch) return
+    if (urlBatch || fresh) return
     getJSON<{ batch_id: string; uploaded_at?: number }[]>('/api/batches')
       .then((bs) => setNewest([...bs].sort((a, b) => (b.uploaded_at ?? 0) - (a.uploaded_at ?? 0))[0]?.batch_id ?? null))
       .catch(() => setNewest(null))
       .finally(() => setListed(true))
-  }, [urlBatch])
+  }, [urlBatch, fresh])
 
   const current = useRef(batchId)
   current.current = batchId
@@ -66,7 +68,7 @@ export function BatchProvider({ children }: { children: ReactNode }) {
     return s ? `?${s}` : ''
   }, [batchId, caseId])
 
-  const ready = urlBatch ? loadedId === urlBatch : listed && (!newest || loadedId === newest)
+  const ready = fresh || (urlBatch ? loadedId === urlBatch : listed && (!newest || loadedId === newest))
   const value = useMemo(() => ({ batchId, caseId, batch, ready, refresh, query }), [batchId, caseId, batch, ready, refresh, query])
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

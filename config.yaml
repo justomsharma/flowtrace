@@ -127,3 +127,15 @@ crime_hypotheses:
   STACK: [smuggling, drugs]
   BIPARTITE: [embezzlement, extortion]
   PASS-THROUGH: ["money mule (cyber fraud or ransom)"]
+  RANDOM: []              # a chain with no regular shape points to no single crime on its own
+
+# What the investigation found also points to likely crimes (indicative), used with the shape above.
+crime_by_indicator:
+  CYCLE: [embezzlement]
+  ROUND_TRIP: [embezzlement]
+  MANY_SOURCES: [loan sharking, gambling]
+  CONVERGENCE: [drugs, smuggling]
+  CASH_OR_CRYPTO_EXIT: [drugs, smuggling]
+  PASS_THROUGH: ["money mule (cyber fraud or ransom)"]
+  FAST_ONWARD_TRANSFER: ["money mule (cyber fraud or ransom)"]
+  EQUAL_SPLITS: [extortion]

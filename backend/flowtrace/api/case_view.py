@@ -321,10 +321,13 @@ def crime_guess(case: dict, evidence: list[dict], rules: dict) -> list[str]:
     """Likely crimes from the laundering shape, plus money-mule crimes when money passed straight through.
     Read from config.yaml each time, so stored cases follow the current mapping."""
     m = rules.get("crime_hypotheses", {})
-    out = list(m.get((case.get("shape") or {}).get("typology"), []))
-    if {"PASS_THROUGH", "FAST_ONWARD_TRANSFER"} & {e.get("code") for e in evidence}:
-        out += m.get("PASS-THROUGH", [])
-    return list(dict.fromkeys(out))
+    by_indicator = rules.get("crime_by_indicator", {})
+    out = list(m.get((case.get("shape") or {}).get("typology"), []) or [])
+    # Strongest indicators first, so the most telling crime leads the list.
+    found = sorted((e for e in evidence if e.get("kind") == "support"), key=lambda e: -e.get("weight", 0))
+    for e in found:
+        out += by_indicator.get(e.get("code"), [])
+    return list(dict.fromkeys(out))[:3]
 
 
 DECISION_POINT = {"ESCALATE": "Recommend escalating to a senior analyst.",

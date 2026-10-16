@@ -111,7 +111,14 @@ export default function Today() {
       {batch && (
         <>
           <section aria-label="How the day narrowed down" className="card px-5 py-4 flex flex-wrap items-center gap-x-8 gap-y-3">
-            <Funnel steps={[[batch.rows, 'payments'], [batch.flagged_tx, 'flagged'], [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'], [today.length, 'for today']]} />
+            <Funnel steps={[[batch.rows, 'payments checked'], [batch.flagged_tx, `flagged (${batch.rows ? Math.round((100 * batch.flagged_tx) / batch.rows) : 0}%)`],
+              [batch.cases.length, batch.cases.length === 1 ? 'case for analysts' : 'cases for analysts']]} />
+            <span className="flex items-center gap-1.5 text-sm tabular font-medium" style={{ color: 'var(--good)' }}>
+              <CheckCircle2 size={15} aria-hidden />{(batch.rows - batch.flagged_tx).toLocaleString('en-US')} passed as normal
+            </span>
+            {today.length < batch.cases.length && (
+              <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{today.length} in today's queue (capacity)</span>
+            )}
             {batch.prefetch && batch.prefetch.total > 0 && (
               <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">
                 {batch.prefetch.done + batch.prefetch.failed < batch.prefetch.total
@@ -124,11 +131,6 @@ export default function Today() {
             <Link to={{ pathname: '/', search: query(null) }} className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium" style={{ color: 'var(--brand)' }}>
               <Orbit size={16} aria-hidden /> See the day on the Live Network
             </Link>
-            {batch.curated && (
-              <p className="basis-full text-xs" style={{ color: 'var(--muted)' }}>
-                Curated demo sample: picked around known schemes, so it holds about 29 times more laundering than a real day.
-              </p>
-            )}
           </section>
 
           {batch.cases.length === 0 ? (

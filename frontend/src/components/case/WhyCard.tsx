@@ -74,7 +74,14 @@ export default function WhyCard({ o, onInvestigate }: { o: CaseOverview; onInves
               </span>
             ))}
           </span>
-        ) : <span className="text-lg font-semibold">–</span>}
+        ) : (
+          <>
+            <span className="text-base font-semibold">Not determined</span>
+            <span className="text-xs" style={{ color: 'var(--muted)' }}>
+              {o.summary ? 'The pattern does not point to one crime.' : 'Shown after the investigation.'}
+            </span>
+          </>
+        )}
       </Cell>
     </section>
   )

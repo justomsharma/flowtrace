@@ -43,16 +43,17 @@ export function PaymentSequence({ payments, currency, rate }: { payments: Paymen
   )
 }
 
-export function PaymentsTable({ payments, currency, rate }: { payments: Payment[]; currency: string; rate: number }) {
+/** `fill`: every payment, scrolling inside the panel when the column has less room than the table needs. */
+export function PaymentsTable({ payments, currency, rate, fill = false }: { payments: Payment[]; currency: string; rate: number; fill?: boolean }) {
   const name = useName()
   const [all, setAll] = useState(false)
-  const shown = all ? payments : payments.slice(0, 8)
+  const shown = all || fill ? payments : payments.slice(0, 8)
   return (
-    <div className="flex flex-col gap-3">
-      <div className="overflow-x-auto -mx-1">
+    <div className={`flex flex-col gap-3 ${fill ? 'flex-1 min-h-0' : ''}`}>
+      <div className={fill ? 'flex-1 min-h-0 overflow-auto' : 'overflow-x-auto -mx-1'}>
         <table className="w-full text-sm tabular whitespace-nowrap">
           <thead>
-            <tr className="text-left text-xs" style={{ color: 'var(--muted)', background: 'var(--surface-2)' }}>
+            <tr className="text-left text-xs sticky top-0 z-10" style={{ color: 'var(--muted)', background: 'var(--surface-2)' }}>
               <th className="py-2 px-3 font-medium rounded-l-lg">Time (UTC)</th>
               <th className="px-3 font-medium">From</th>
               <th className="px-3 font-medium">To</th>
@@ -77,7 +78,7 @@ export function PaymentsTable({ payments, currency, rate }: { payments: Payment[
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--muted)' }}>
         <span>Followed: money the investigation traced onward.</span>
-        {payments.length > 8 && (
+        {!fill && payments.length > 8 && (
           <button onClick={() => setAll((v) => !v)} className="ml-auto text-sm font-medium" style={{ color: 'var(--brand)' }}>
             {all ? 'Show the latest 8' : `Show all ${payments.length} payments`}
           </button>

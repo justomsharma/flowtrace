@@ -35,7 +35,8 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
     const el = host.current
     const c = (v: string) => css(v, el)
     const col = { normal: c('--axis'), flagged: c('--s2'), focus: c('--s2'), traced: c('--s1'), concern: c('--s8'), hold: c('--s4'), node: c('--ink-2') }
-    const graph = (ForceGraph3D as any)()(el)
+    // Orbit controls: drag turns the whole map, scroll zooms, right-drag pans.
+    const graph = (ForceGraph3D as any)({ controlType: 'orbit' })(el)
       .backgroundColor(c('--page'))
       .showNavInfo(false)
       .width(el.clientWidth).height(el.clientHeight)
@@ -117,7 +118,9 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
     graph.linkDirectionalParticles((l: any) => (pulse.has(l.tx_id) ? 3 : 0))
   }, [links, focus, pulse, marked])
 
-  // Fly to the focused accounts.
+  // Fly to the focused accounts only when they really change: a batch refresh hands over a new array with
+  // the same accounts, and that must not pull the camera away from where the analyst dragged it.
+  const focusKey = focus.join('|')
   useEffect(() => {
     const graph = g.current
     flyTo.current = () => {
@@ -131,7 +134,8 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
     moved.current = false
     const t = window.setTimeout(() => flyTo.current(), 600)
     return () => window.clearTimeout(t)
-  }, [focus])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey])
 
   return <div ref={host} className="absolute inset-0" role="img" aria-label="3D map of the uploaded payments" />
 }

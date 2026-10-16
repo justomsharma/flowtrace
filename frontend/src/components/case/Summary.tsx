@@ -3,9 +3,9 @@ import type { CaseOverview } from '../../lib/api'
 import { Panel, Pill } from './Panel'
 
 /** The investigator's summary: a few short points, never a paragraph. */
-export function AiSummary({ summary, live }: { summary: CaseOverview['summary']; live: boolean }) {
+export function AiSummary({ summary, live, className = '' }: { summary: CaseOverview['summary']; live: boolean; className?: string }) {
   return (
-    <Panel title="Summary" icon={ListChecks}
+    <Panel title="Summary" icon={ListChecks} className={className}
       right={summary ? (summary.by_ai
         ? <Pill bg="var(--good-tint)" fg="var(--good)">AI</Pill>
         : <Pill bg="var(--surface-2)" fg="var(--ink-2)">Rules</Pill>) : undefined}>

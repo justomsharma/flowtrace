@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Loader2, Upload } from 'lucide-react'
 import LiveGraph3D, { type MapLink } from '../components/LiveGraph3D'
 import { ActionBadge } from '../components/badges'
+import CaseGlance from '../components/CaseGlance'
 import {
   fmtInt, fmtUsd, getJSON, postJSON, streamJob, type Action, type BatchSummary, type CaseBrief, type CaseResult,
   type HoldPlan, type JobBrief, type JobEvent,
@@ -282,11 +283,16 @@ export default function Workspace() {
           {batch ? (
             <>
               <Funnel steps={[
-                [batch.rows, 'payments'],
-                [batch.flagged_tx, 'flagged'],
-                [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'],
-                [today.length, 'for today'],
+                [batch.rows, 'payments checked'],
+                [batch.flagged_tx, `flagged (${batch.rows ? Math.round((100 * batch.flagged_tx) / batch.rows) : 0}%)`],
+                [batch.cases.length, batch.cases.length === 1 ? 'case for analysts' : 'cases for analysts'],
               ]} />
+              <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--good)' }}>
+                <CheckCircle2 size={14} aria-hidden />{fmtInt(batch.rows - batch.flagged_tx)} passed as normal
+              </span>
+              {today.length < batch.cases.length && (
+                <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{today.length} in today's queue (capacity)</span>
+              )}
               {batch.prefetch && batch.prefetch.total > 0 && (
                 <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">
                   {batch.prefetch.done + batch.prefetch.failed < batch.prefetch.total
@@ -296,15 +302,14 @@ export default function Workspace() {
                   {batch.prefetch.failed > 0 && <span style={{ color: 'var(--critical)' }}>· {batch.prefetch.failed} failed</span>}
                 </span>
               )}
+              <button onClick={() => navigate('/?fresh=1')} className="text-xs underline underline-offset-2" style={{ color: 'var(--ink-2)' }}
+                title="Clear the screen and start with a new upload. Past uploads stay saved in Today's work.">
+                Start fresh
+              </button>
               <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
                 New file
                 <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }) }} />
               </label>
-              {batch.curated && (
-                <p className="basis-full text-xs" style={{ color: 'var(--muted)' }}>
-                  Curated demo sample: picked around known schemes, so it holds about 29 times more laundering than a real day.
-                </p>
-              )}
             </>
           ) : (
             <span className="text-sm">Checking payments…</span>
@@ -332,6 +337,9 @@ export default function Workspace() {
             <div className="flex-1 overflow-y-auto pb-2">
               <div className="px-4 pt-4 pb-1">
                 <h2 className="text-sm font-semibold">Today's work</h2>
+                <p className="text-xs mt-1 flex items-center gap-1.5 tabular" style={{ color: 'var(--good)' }}>
+                  <CheckCircle2 size={13} aria-hidden />{fmtInt(batch.rows - batch.flagged_tx)} of {fmtInt(batch.rows)} payments passed as normal: no action needed
+                </p>
                 <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
                   {batch.cases.length === 0
                     ? 'No payment in this file reached the review bar.'
@@ -369,6 +377,7 @@ export default function Workspace() {
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>Looks like: {trickName(current.shape.typology)}</div>
               </div>
               {current.result && <ActionBadge action={current.result.action} />}
+              {current.result && <CaseGlance caseId={current.case_id} version={current.result.action} />}
               <button onClick={() => openCase(batch!.batch_id, current.case_id)} className="px-4 py-2.5 rounded-lg text-sm font-medium"
                 style={{ background: 'var(--s1)', color: '#fff' }}>
                 Open the case report
