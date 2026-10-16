@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from functools import lru_cache
 
@@ -80,14 +81,26 @@ def available() -> bool:
     return ok
 
 
+_ACCOUNT_IDS = re.compile(r"\b(?:org|proj|user)[-_][A-Za-z0-9]+")
+
+
+def _scrub(text: str) -> str:
+    """Provider error messages can name the organisation / project / user; keep those out of meta and logs."""
+    return _ACCOUNT_IDS.sub("[id]", text)
+
+
 def _describe(e: Exception) -> str:
     """Error text for meta/logs. Auth errors are summarised: their message echoes the key's tail."""
     status = getattr(e, "status_code", None)
     if status == 401:
         return "API error 401: invalid API key"
+    if status == 429:
+        return f"rate limited: {_scrub(str(getattr(e, 'message', e)))}"
     if status is not None:
-        return f"API error {status}: {getattr(e, 'message', e)}"
-    return f"connection error: {e}"
+        return f"API error {status}: {_scrub(str(getattr(e, 'message', e)))}"
+    if type(e).__name__ in ("APIConnectionError", "APITimeoutError"):  # same names in both SDKs
+        return f"connection error: {_scrub(str(e))}"
+    return f"{'OpenAI' if isinstance(e, openai.OpenAIError) else 'LLM'} error: {_scrub(str(e))}"
 
 
 def structured(system: str, user: str, schema: dict, effort: str = "medium", max_tokens: int = 16000) -> tuple[dict | None, dict]:
@@ -122,11 +135,9 @@ def _openai_structured(system, user, schema, effort, max_tokens, meta):
             text={"format": {"type": "json_schema", "name": "output", "schema": schema, "strict": True}},
             reasoning={"effort": effort},
             max_output_tokens=max_tokens,  # includes reasoning tokens
+            store=False,                   # account data must not be kept on OpenAI's side
         )
-    except openai.RateLimitError as e:
-        meta["error"] = f"rate limited: {e.message}"
-        return None, meta
-    except (openai.APIStatusError, openai.APIConnectionError) as e:  # connection errors include timeouts
+    except openai.OpenAIError as e:        # status, rate limit, connection/timeout, and anything else from the SDK
         meta["error"] = _describe(e)
         return None, meta
 
@@ -167,10 +178,7 @@ def _anthropic_structured(system, user, schema, effort, max_tokens, meta):
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-    except anthropic.RateLimitError as e:
-        meta["error"] = f"rate limited: {e.message}"
-        return None, meta
-    except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
+    except anthropic.AnthropicError as e:
         meta["error"] = _describe(e)
         return None, meta
 

@@ -88,6 +88,7 @@ def test_request_uses_strict_json_schema_effort_and_token_cap(use):
     assert kw["text"]["format"] == {"type": "json_schema", "name": "output", "schema": SCHEMA, "strict": True}
     assert kw["reasoning"] == {"effort": "low"}
     assert kw["max_output_tokens"] == 500
+    assert kw["store"] is False          # AML account data must not be kept by OpenAI
 
 
 def test_agent_model_overrides_the_default(use):
@@ -252,3 +253,20 @@ def test_model_name_resolves_per_provider(use):
     assert llm.model_name() == "gpt-6-luna"
     use(None, llm_provider="anthropic")
     assert llm.model_name() == "claude-sonnet-5-5"
+
+
+def test_any_other_openai_error_returns_none(use):
+    use(openai.OpenAIError("client misconfigured"))
+    out, meta = llm.structured("s", "u", SCHEMA)
+    assert out is None and meta["error"].startswith("OpenAI error")
+
+
+def test_org_and_project_ids_never_reach_meta(use):
+    msg = "You exceeded your quota for org-AbC123xyz in project proj_9fK2LmN0 (req_77aa)"
+    use(openai.PermissionDeniedError(msg, response=httpx.Response(403, request=REQ), body=None))
+    _, meta = llm.structured("s", "u", SCHEMA)
+    assert "org-AbC123xyz" not in meta["error"] and "proj_9fK2LmN0" not in meta["error"]
+    assert meta["error"].startswith("API error 403")
+    use(openai.RateLimitError(msg, response=httpx.Response(429, request=REQ), body=None))
+    _, meta = llm.structured("s", "u", SCHEMA)
+    assert "org-AbC123xyz" not in meta["error"] and meta["error"].startswith("rate limited")
