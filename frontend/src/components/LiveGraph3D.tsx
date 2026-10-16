@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import ForceGraph3D from '3d-force-graph'
+import { fullId } from '../lib/names'
 
 /** A payment on the map. `kind` decides the colour. */
 export interface MapLink {
@@ -34,10 +35,10 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
     if (!host.current) return
     const el = host.current
     const c = (v: string) => css(v, el)
-    const col = { normal: c('--axis'), flagged: c('--s2'), focus: c('--s2'), traced: c('--s1'), concern: c('--s8'), hold: c('--s4'), node: c('--ink-2') }
+    const col = { normal: c('--axis'), flagged: c('--s2'), focus: c('--s2'), traced: c('--s1'), concern: c('--s8'), hold: c('--s4'), node: c('--muted') }
     // Orbit controls: drag turns the whole map, scroll zooms, right-drag pans.
     const graph = (ForceGraph3D as any)({ controlType: 'orbit' })(el)
-      .backgroundColor(c('--page'))
+      .backgroundColor(c('--surface'))  // the map sits in a white card, like every other panel
       .showNavInfo(false)
       .width(el.clientWidth).height(el.clientHeight)
       .nodeRelSize(2.6).nodeOpacity(0.95).linkOpacity(0.6)
@@ -47,7 +48,7 @@ export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
       .linkWidth((l: any) => (l.kind === 'normal' ? 0 : l.kind === 'flagged' ? 0.6 : 1.6))
       .linkDirectionalParticleWidth(2.4).linkDirectionalParticleSpeed(0.014)
       .linkDirectionalParticleColor((l: any) => col[l.kind as keyof typeof col] ?? col.flagged)
-      .nodeLabel((n: any) => `<div style="font:12px system-ui;padding:3px 6px;background:${c('--surface-2')};color:${c('--ink')};border-radius:6px">account …${n.id.split(':')[1]?.slice(-5) ?? n.id}</div>`)
+      .nodeLabel((n: any) => `<div style="font:12px system-ui;padding:3px 6px;background:${c('--surface')};color:${c('--ink')};border:1px solid ${c('--border')};border-radius:6px;box-shadow:0 2px 6px rgba(15,29,51,.12)">${fullId(n.id)}</div>`)
       .graphData({ nodes: [], links: [] })
     graph.d3Force('charge').strength(-14)
     el.addEventListener('pointerdown', () => { orbit.current = false; moved.current = true })

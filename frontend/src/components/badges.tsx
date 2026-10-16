@@ -10,7 +10,7 @@ export function ActionBadge({ action, large = false }: { action: string; large?:
   const m = map[action] ?? map.REVIEW
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full font-medium ${large ? 'px-3 py-1 text-sm' : 'px-2 py-0.5 text-xs'}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-full font-medium whitespace-nowrap ${large ? 'px-3 py-1 text-sm min-w-[112px]' : 'px-2 py-0.5 text-xs min-w-[88px]'}`}
       style={{ border: `1px solid ${m.color}`, color: 'var(--ink)' }}
     >
       <m.Icon size={large ? 16 : 12} style={{ color: m.color }} aria-hidden />

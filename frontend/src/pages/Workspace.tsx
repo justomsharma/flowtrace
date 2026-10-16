@@ -15,7 +15,7 @@ interface LiveStep { step: number; tool: string; reason: string; done: boolean; 
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-const panel = { background: 'color-mix(in srgb, var(--surface) 88%, transparent)', border: '1px solid var(--border)', backdropFilter: 'blur(6px)' }
+const panel = { background: 'var(--surface-2)', border: '1px solid var(--border)', boxShadow: '0 1px 3px rgba(15, 29, 51, 0.08)' }
 
 /** Today's work = within the team's daily capacity. Batches saved before tiers existed fall back to rank. */
 const inToday = (c: CaseBrief, i: number, capacity?: number) => (c.tier ? c.tier === 'today' : i < (capacity ?? 15))
@@ -127,7 +127,7 @@ export default function Workspace() {
     setError(null); setStages({}); setBusy(true)
     setLive([]); setLiveKind({}); setBase([]); setBatch(null); setCaption('Reading the file…')
     queue.current = Promise.resolve()
-    setParams({}, { replace: true })
+    setParams({ fresh: '1' }, { replace: true })  // no batch selected while this one runs: the sidebar must not list the previous upload
     const fd = new FormData()
     if (opts.sample) fd.append('sample', opts.sample)
     if (opts.file) fd.append('file', opts.file)
@@ -248,7 +248,7 @@ export default function Workspace() {
 
 
   return (
-    <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 24px)', border: '1px solid var(--border)' }}>
+    <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 24px)', border: '1px solid var(--border)', background: 'var(--surface)' }}>
       <LiveGraph3D links={links} focus={focus} pulse={pulse} marked={marked} />
 
       {/* Empty state: just the upload */}
@@ -319,7 +319,7 @@ export default function Workspace() {
 
       {/* Right panel */}
       {(batch || busy) && (
-        <aside className={`absolute top-3 right-3 w-[380px] max-w-[calc(100%-24px)] rounded-xl flex flex-col overflow-hidden ${busy ? 'max-h-[calc(100%-24px)]' : 'bottom-3'}`} style={panel}>
+        <aside className={`absolute top-3 right-3 w-[380px] max-w-[calc(100%-24px)] rounded-xl flex flex-col overflow-hidden ${busy || current ? 'max-h-[calc(100%-24px)]' : 'bottom-3'}`} style={panel}>
           {busy && (
             <ol className="p-4 flex flex-col gap-2.5">
               {Object.keys(STAGE_PLAIN).map((k) => (
@@ -376,7 +376,7 @@ export default function Workspace() {
                 <div className="text-base font-semibold">{caseLine(current)}</div>
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>Looks like: {trickName(current.shape.typology)}</div>
               </div>
-              {current.result && <ActionBadge action={current.result.action} />}
+              {current.result && <span className="self-start"><ActionBadge action={current.result.action} large /></span>}
               {current.result && <CaseGlance caseId={current.case_id} version={current.result.action} />}
               <button onClick={() => openCase(batch!.batch_id, current.case_id)} className="px-4 py-2.5 rounded-lg text-sm font-medium"
                 style={{ background: 'var(--s1)', color: '#fff' }}>
@@ -408,7 +408,7 @@ function Funnel({ steps }: { steps: [number, string][] }) {
 function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: number; quiet?: boolean; onOpen: () => void }) {
   return (
     <li>
-      <button onClick={onOpen} className="w-full text-left px-2 py-2.5 rounded-lg flex items-center gap-3 hover:brightness-125"
+      <button onClick={onOpen} className="w-full text-left px-2 py-2.5 rounded-lg flex items-center gap-3 hover:bg-[var(--surface)]"
         style={{ borderBottom: '1px solid var(--border)', opacity: quiet ? 0.75 : 1 }}>
         <span className="text-xs tabular w-6 self-stretch flex items-center pl-1.5"
           style={{ color: 'var(--muted)', borderLeft: quiet ? '2px solid transparent' : '2px solid var(--s2)' }}>{rank}</span>
