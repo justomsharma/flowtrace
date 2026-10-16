@@ -1,3 +1,5 @@
+import type { ActionType } from './api'
+
 /** Plain-language names for everything the system shows, written for a junior analyst or a non-technical reader. */
 
 export interface TrickInfo {
@@ -121,4 +123,13 @@ export const STAGE_PLAIN: Record<string, string> = {
 export const shortAcct = (id: string) => {
   const acct = id.split(':')[1] ?? id
   return `…${acct.slice(-4)}`
+}
+
+/** What each action does, and the words on its approve button. */
+export const ACTION_PLAIN: Record<ActionType, { title: string; approve: string }> = {
+  HOLD: { title: 'Hold', approve: 'Approve hold' },
+  RELEASE: { title: 'Release the hold', approve: 'Approve release' },
+  ESCALATE: { title: 'Send to a senior analyst', approve: 'Approve escalation' },
+  FILE_STR: { title: 'File an STR with FIU-IND', approve: 'Approve filing' },
+  CLOSE: { title: 'Close as normal activity', approve: 'Approve closing' },
 }

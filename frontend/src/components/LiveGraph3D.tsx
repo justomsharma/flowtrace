@@ -7,34 +7,39 @@ export interface MapLink {
   source: string
   target: string
   amount: number
-  kind: 'normal' | 'flagged' | 'focus' | 'traced' | 'concern'
+  kind: 'normal' | 'flagged' | 'focus' | 'traced' | 'concern' | 'hold'
 }
+
+const EMPTY: string[] = []
 
 const css = (v: string) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || '#888'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export default function LiveGraph3D({ links, focus, pulse }: {
+export default function LiveGraph3D({ links, focus, pulse, marked = EMPTY }: {
   links: MapLink[]
   focus: string[]       // accounts to fly the camera to
   pulse: Set<string>    // tx_ids that should show moving particles (the latest step)
+  marked?: string[]     // accounts proposed for a hold or held (amber, larger)
 }) {
   const host = useRef<HTMLDivElement>(null)
   const g = useRef<any>(null)
   const nodes = useRef(new Map<string, any>())
   const linkMap = useRef(new Map<string, any>())
   const orbit = useRef(true)
+  const moved = useRef(false)          // the viewer moved the camera: stop flying it for them
+  const flyTo = useRef<() => void>(() => undefined)
 
   useEffect(() => {
     if (!host.current) return
     const el = host.current
-    const col = { normal: css('--axis'), flagged: css('--s2'), focus: css('--s2'), traced: css('--s1'), concern: css('--s8'), node: css('--ink-2') }
+    const col = { normal: css('--axis'), flagged: css('--s2'), focus: css('--s2'), traced: css('--s1'), concern: css('--s8'), hold: css('--s4'), node: css('--ink-2') }
     const graph = (ForceGraph3D as any)()(el)
       .backgroundColor(css('--page'))
       .showNavInfo(false)
       .width(el.clientWidth).height(el.clientHeight)
       .nodeRelSize(2.6).nodeOpacity(0.95).linkOpacity(0.6)
-      .nodeColor((n: any) => n.hot ? col.focus : n.flag ? col.flagged : col.node)
-      .nodeVal((n: any) => (n.hot ? 4 : n.flag ? 1.6 : 0.6))
+      .nodeColor((n: any) => n.held ? col.hold : n.hot ? col.focus : n.flag ? col.flagged : col.node)
+      .nodeVal((n: any) => (n.held ? 7 : n.hot ? 4 : n.flag ? 1.6 : 0.6))
       .linkColor((l: any) => col[l.kind as keyof typeof col] ?? col.normal)
       .linkWidth((l: any) => (l.kind === 'normal' ? 0 : l.kind === 'flagged' ? 0.6 : 1.6))
       .linkDirectionalParticleWidth(2.4).linkDirectionalParticleSpeed(0.014)
@@ -42,7 +47,9 @@ export default function LiveGraph3D({ links, focus, pulse }: {
       .nodeLabel((n: any) => `<div style="font:12px system-ui;padding:3px 6px;background:${css('--surface-2')};color:${css('--ink')};border-radius:6px">account …${n.id.split(':')[1]?.slice(-5) ?? n.id}</div>`)
       .graphData({ nodes: [], links: [] })
     graph.d3Force('charge').strength(-14)
-    el.addEventListener('pointerdown', () => { orbit.current = false })
+    el.addEventListener('pointerdown', () => { orbit.current = false; moved.current = true })
+    // New payments re-heat the layout and move the accounts: once it settles, fly to them again.
+    graph.onEngineStop(() => { if (!moved.current) flyTo.current() })
     g.current = graph
 
     let raf = 0
@@ -90,9 +97,10 @@ export default function LiveGraph3D({ links, focus, pulse }: {
     }
     for (const [id] of linkMap.current) if (!seen.has(id)) { linkMap.current.delete(id); changed = true }
     const hot = new Set(focus)
+    const held = new Set(marked)
     const flagged = new Set<string>()
     for (const l of links) if (l.kind !== 'normal') { flagged.add(l.source); flagged.add(l.target) }
-    for (const n of nodes.current.values()) { n.hot = hot.has(n.id); n.flag = flagged.has(n.id) }
+    for (const n of nodes.current.values()) { n.hot = hot.has(n.id); n.flag = flagged.has(n.id); n.held = held.has(n.id) }
     if (changed) {
       const used = new Set<string>()
       for (const l of linkMap.current.values()) {
@@ -105,19 +113,21 @@ export default function LiveGraph3D({ links, focus, pulse }: {
       graph.nodeColor(graph.nodeColor()).linkColor(graph.linkColor()).linkWidth(graph.linkWidth()).nodeVal(graph.nodeVal())
     }
     graph.linkDirectionalParticles((l: any) => (pulse.has(l.tx_id) ? 3 : 0))
-  }, [links, focus, pulse])
+  }, [links, focus, pulse, marked])
 
   // Fly to the focused accounts.
   useEffect(() => {
     const graph = g.current
-    if (!graph || !focus.length) return
-    const t = window.setTimeout(() => {
+    flyTo.current = () => {
       const pts = focus.map((id) => nodes.current.get(id)).filter((n) => n && n.x !== undefined)
-      if (!pts.length) return
+      if (!graph || !pts.length) return
       orbit.current = false
       const c = pts.reduce((a, n) => ({ x: a.x + n.x / pts.length, y: a.y + n.y / pts.length, z: a.z + n.z / pts.length }), { x: 0, y: 0, z: 0 })
       graph.cameraPosition({ x: c.x + 120, y: c.y + 60, z: c.z + 160 }, c, 1200)
-    }, 600)
+    }
+    if (!graph || !focus.length) return
+    moved.current = false
+    const t = window.setTimeout(() => flyTo.current(), 600)
     return () => window.clearTimeout(t)
   }, [focus])
 

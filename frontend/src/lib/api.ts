@@ -279,3 +279,91 @@ export const fmtUsd = (n: number) =>
   n >= 1e6 ? `$${fmtCompact(n)}` : `$${Math.round(n).toLocaleString('en-US')}`
 export const fmtTime = (ms: number) =>
   new Date(ms).toISOString().slice(5, 16).replace('T', ' ')
+
+// --- actions: the agent proposes, a person decides --------------------------------------------
+
+export type ActionType = 'HOLD' | 'RELEASE' | 'ESCALATE' | 'FILE_STR' | 'CLOSE'
+export type ActionStatus = 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'EXPIRED'
+
+export interface Action {
+  id: string
+  type: ActionType
+  status: ActionStatus
+  case_id: string
+  account?: string
+  amount_blocked?: number
+  frozen_now?: number
+  /** Currency of the case's money trail, and its units per US dollar (graph amounts are in US dollars). */
+  currency?: string
+  rate?: number
+  why?: string
+  evidence_ids?: string[]
+  tx_ids?: string[]
+  expiry_days?: number
+  expires_ts?: number
+  proposed_by: 'agent'
+  proposed_at: number
+  decided_by?: string
+  decided_at?: number
+  reason?: string
+  released_at?: number
+}
+
+export interface HoldProposal {
+  account: string
+  amount_blocked: number
+  frozen_now: number
+  why: string
+  evidence_ids: string[]
+  tx_ids: string[]
+  expiry_days: number
+}
+
+export interface HoldPlan {
+  case_id: string
+  decided_at: number
+  disposition: string | null
+  in_motion: number
+  already_out: number
+  blocked: number
+  frozen_now: number
+  method: 'min-cut' | 'greedy' | 'none'
+  min_cut_size: number
+  holds: HoldProposal[]
+  case_action: { type: ActionType; why: string } | null
+  skipped_hubs: string[]
+  currency: string
+  rate: number
+  note: string
+  network: {
+    nodes: { id: string; at_rest: number; held: boolean; exit: boolean; hub: boolean }[]
+    edges: { tx_id: string; src: string; dst: string; amount: number; ts: number; kind: 'trail' | 'exit' | 'hub' }[]
+  }
+}
+
+export interface AuditEntry {
+  id: string
+  ts: number
+  actor: string
+  event: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'AUTO_RELEASED' | 'RELEASED' | 'VERDICT' | 'CASE_REUPLOADED'
+  action_id: string
+  case_id: string
+  account?: string
+  from_status: string
+  to_status: string
+  reason?: string
+}
+
+/** POST a JSON body. The idempotency key makes a repeated click return the first answer instead of acting twice. */
+export async function sendJSON<T>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
+  const r = await fetch(path, { method: 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) })
+  if (!r.ok) {
+    const text = await r.text()
+    let msg = text
+    try { msg = (JSON.parse(text) as { detail?: string }).detail ?? text } catch { /* not JSON */ }
+    throw new Error(typeof msg === 'string' ? msg : `${r.status}`)
+  }
+  return r.json() as Promise<T>
+}
