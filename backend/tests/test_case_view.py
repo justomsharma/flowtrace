@@ -163,3 +163,70 @@ def test_distribution_by_receiving_account():
     o = V.build_overview(case(CHAIN), None, None, [], None, False, RULES)
     assert o["distribution"] == [{"account": "B", "amount": 100, "share": 100 / 190},
                                  {"account": "C", "amount": 90, "share": 90 / 190}]
+
+
+# --- STR draft and endpoints -----------------------------------------------------------------
+
+def full_result():
+    r = result(evidence=[ev("E1", "support", 0.55, claim="Passed on within 2 hours."),
+                         ev("E2", "counter", 0.3, claim="Known counterparty for 6 days.")])
+    r["report"] |= {"subject_profile": {"text": "Account A, a corporation.", "evidence_ids": []},
+                    "money_trail": [{"text": "A paid B, B paid C.", "evidence_ids": []}],
+                    "typology_assessment": {"text": "Layered relay.", "evidence_ids": []},
+                    "red_flags": [], "mitigating_factors": [], "unknowns": ["KYC not available."]}
+    r["crime_hypotheses"] = [{"crime": "smuggling", "basis": "STACK shape"}]
+    return r
+
+
+def test_report_md_has_sections():
+    actions = [{"id": "A1", "type": "HOLD", "status": "PROPOSED", "account": "B", "hold_amount": 90.0,
+                "currency": "Euro", "rate": 0.5, "proposed_by": "agent"},
+               {"id": "A2", "type": "FILE_STR", "status": "APPROVED", "decided_by": "Asha", "reason": "Clear layering",
+                "proposed_by": "agent"}]
+    md = V.str_markdown(case(CHAIN), full_result(), None, actions)
+    for part in ("# STR draft: BX-C001", "Money passed through three accounts", "## Red flags",
+                 "Passed on within 2 hours.", "## Legitimate explanations", "Known counterparty for 6 days.",
+                 "## Proposed actions", "Hold account B: EUR 45 (waiting for a decision)",
+                 "File an STR: approved by Asha (Clear layering)", "## STR narrative", "STR text.",
+                 "smuggling", "KYC not available.", "| From | To |"):
+        assert part in md, part
+    assert "₹" not in md
+
+
+def test_report_md_marks_rules_reports():
+    r = full_result()
+    r["report"]["author"] = "template"
+    assert "written by the rule-based fallback" in V.str_markdown(case(CHAIN), r, None, [])
+
+
+def test_overview_and_report_endpoints(monkeypatch):
+    from fastapi.testclient import TestClient
+    from flowtrace.api import main as M
+    client = TestClient(M.app)
+    monkeypatch.setattr(M, "CASES", {"BX-C001": case(CHAIN)})
+    monkeypatch.setattr(M, "RESULTS", {})
+    monkeypatch.setattr(M, "BATCHES", {})
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: None)
+    monkeypatch.setattr(M.service, "list_actions", lambda **kw: [])
+    assert client.get("/api/cases/BX-C999/overview").status_code == 404
+    o = client.get("/api/cases/BX-C001/overview").json()
+    assert o["status"]["state"] == "not_started" and len(o["flow"]["nodes"]) == 3
+    assert client.get("/api/cases/BX-C001/report.md").status_code == 409
+
+    M.RESULTS["BX-C001"] = full_result()
+    r = client.get("/api/cases/BX-C001/report.md")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/markdown")
+    assert 'filename="BX-C001-STR-draft.md"' in r.headers["content-disposition"]
+    assert client.get("/api/cases/BX-C001/overview").json()["status"]["state"] == "escalate"
+
+
+def test_overview_survives_the_graph_being_down(monkeypatch):
+    from fastapi.testclient import TestClient
+    from flowtrace.api import main as M
+    monkeypatch.setattr(M, "CASES", {"BX-C001": case(CHAIN)})
+    monkeypatch.setattr(M, "RESULTS", {})
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: None)
+    def down(**kw):
+        raise ConnectionError("graph down")
+    monkeypatch.setattr(M.service, "list_actions", down)
+    assert TestClient(M.app).get("/api/cases/BX-C001/overview").status_code == 200

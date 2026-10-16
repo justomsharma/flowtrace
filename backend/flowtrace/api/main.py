@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from dotenv import dotenv_values
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
@@ -27,7 +27,7 @@ from flowtrace import store
 from flowtrace.actions import planner, service
 from flowtrace.agent import registry
 from flowtrace.agent.investigate import save_case_memory
-from flowtrace.api import jobs
+from flowtrace.api import case_view, jobs
 from flowtrace.api.overview import build_overview
 from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
@@ -330,6 +330,38 @@ def get_case(case_id: str) -> dict:
         raise HTTPException(404, "no such case")
     c = CASES[case_id]
     return {"case": c, "result": RESULTS.get(case_id), "job": _job_brief(case_id)}
+
+
+def _case_actions(case_id: str) -> list[dict]:
+    try:
+        return service.list_actions(case_id=case_id)
+    except Exception as e:  # the graph may be restarting: the page still shows the case, without its actions
+        log.warning("could not read actions for %s: %s", case_id, e)
+        return []
+
+
+@app.get("/api/cases/{case_id}/overview")
+def case_overview(case_id: str) -> dict:
+    """Everything the case page shows, from stored data only (read-only): KPIs, the flow with account roles,
+    timeline, distribution, payments, findings, the summary and the state of its investigation."""
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    c = CASES[case_id]
+    return case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
+                                    _job_brief(case_id), _failed(case_id), cfg(),
+                                    uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at"))
+
+
+@app.get("/api/cases/{case_id}/report.md")
+def case_report(case_id: str) -> Response:
+    """The STR draft as Markdown, for a person to review before filing."""
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    if case_id not in RESULTS:
+        raise HTTPException(409, "investigate the case first: the STR draft comes from the investigation")
+    md = case_view.str_markdown(CASES[case_id], RESULTS[case_id], store.load_plan(case_id), _case_actions(case_id))
+    return Response(md, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{case_id}-STR-draft.md"'})
 
 
 # --- actions: the agent proposes, a person decides ------------------------------------------------

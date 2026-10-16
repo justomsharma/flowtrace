@@ -35,6 +35,16 @@ def case_currency(case: dict, plan: dict | None) -> str:
     return (plan or {}).get("currency") or "US Dollar"
 
 
+def case_rate(currency: str, plan: dict | None) -> float:
+    """Units of `currency` per US dollar: the plan's rate when it is in the same currency, else the data's rates."""
+    if currency == "US Dollar":
+        return 1.0
+    if (plan or {}).get("currency") == currency and plan.get("rate"):
+        return plan["rate"]
+    from flowtrace.actions.planner import fx_rates
+    return fx_rates().get(currency, 1.0)
+
+
 def _holds(actions: list[dict]) -> dict[str, str]:
     out: dict[str, str] = {}
     for a in actions:
@@ -162,11 +172,8 @@ INDICATORS = (("model", "ml_raw", "model"), ("red_flags", "red_raw", "red_flags"
 
 def build_overview(case: dict, result: dict | None, plan: dict | None, actions: list[dict], job: dict | None,
                    failed: bool, rules: dict, uploaded_at: float | None = None) -> dict:
-    from flowtrace.actions.planner import fx_rates
-
     currency = case_currency(case, plan)
-    rate = 1.0 if currency == "US Dollar" else (plan or {}).get("rate") if (plan or {}).get("currency") == currency \
-        else fx_rates().get(currency, 1.0)
+    rate = case_rate(currency, plan)
     f = flow(case, result, plan, actions, rules)
     evidence = (result or {}).get("evidence", [])
 
@@ -204,3 +211,86 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
         "next_steps": (rep or {}).get("next_steps", []),
         "steps": (result or {}).get("steps", []),
     }
+
+
+# --- STR draft (Markdown) ----------------------------------------------------------------------
+
+CODES = {"US Dollar": "USD", "Euro": "EUR", "UK Pound": "GBP", "Yuan": "CNY", "Yen": "JPY", "Rupee": "INR",
+         "Ruble": "RUB", "Canadian Dollar": "CAD", "Australian Dollar": "AUD", "Swiss Franc": "CHF",
+         "Mexican Peso": "MXN", "Shekel": "ILS", "Brazil Real": "BRL", "Saudi Riyal": "SAR", "Bitcoin": "BTC"}
+ACTION_TITLE = {"HOLD": "Hold account", "RELEASE": "Release the hold on account", "ESCALATE": "Send to a senior analyst",
+                "FILE_STR": "File an STR", "CLOSE": "Close as normal activity"}
+
+
+def money(usd: float, currency: str | None = "US Dollar", rate: float | None = 1.0) -> str:
+    """Amount in the data's own currency as an ISO code. Stored amounts are US dollars; rate = units per dollar."""
+    code = CODES.get(currency or "US Dollar")
+    if not code:
+        return f"USD {usd:,.0f}"
+    v = usd * (rate or 1.0)
+    return f"{code} {v:,.4f}" if code == "BTC" else f"{code} {v:,.0f}"
+
+
+def _utc(ms: int | None) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if ms else ""
+
+
+def _decision(a: dict) -> str:
+    who = f"{a.get('decided_by', 'someone')} ({a.get('reason', '')})"
+    return {"PROPOSED": "waiting for a decision", "APPROVED": f"approved by {who}",
+            "REJECTED": f"rejected by {who}"}.get(a.get("status"), "withdrawn or released")
+
+
+def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict]) -> str:
+    """The STR draft a person reviews before filing: the report, the evidence, the agent's proposed actions
+    with what people decided, and the case payments."""
+    rep, d = result["report"], result["disposition"]
+    cur = case_currency(case, plan)
+    rate = case_rate(cur, plan)
+    m = lambda usd: money(usd, cur, rate)
+    author = rep.get("author")
+    by = ("written by the rule-based fallback (no AI model)" if author in (None, "template")
+          else f"written by AI ({author})")
+    evidence = result.get("evidence", [])
+    out = [f"# STR draft: {case['case_id']}", "",
+           f"Draft for a person to review before filing. The narrative was {by}; every figure comes from the "
+           f"payment graph. Amounts in {cur}.", "",
+           "## Summary", "", f"**{rep['headline']}**", "", rep["executive_summary"]["text"], "",
+           f"Recommendation: **{d['action']}** (risk {d['risk']:.2f}, confidence {d.get('confidence_label', '')}). "
+           f"Case amount {m(case.get('amount', 0.0))} across {len(case.get('accounts', []))} accounts and "
+           f"{len(case.get('edges', []))} payments, {_utc(case.get('t0'))} to {_utc(case.get('t1'))}.", ""]
+    if rep.get("subject_profile"):
+        out += ["## Subject", "", rep["subject_profile"]["text"], ""]
+    if rep.get("money_trail"):
+        out += ["## Money trail", ""] + [f"- {t['text']}" for t in rep["money_trail"]] + [""]
+    if rep.get("typology_assessment"):
+        out += ["## Typology", "", rep["typology_assessment"]["text"], ""]
+        if hyp := result.get("crime_hypotheses"):
+            out += ["Possible predicate crime (a hypothesis from the shape, not a finding): "
+                    + "; ".join(f"{h['crime']} ({h['basis']})" for h in hyp) + ".", ""]
+    for title, kind in (("Red flags", "support"), ("Legitimate explanations", "counter")):
+        items = sorted((e for e in evidence if e["kind"] == kind), key=lambda e: -e["weight"])
+        out += [f"## {title}", ""]
+        out += [f"- {e['claim']} ({e['id']}, weight {e['weight']:.2f})" for e in items] or ["- None found."]
+        out += [""]
+    if rep.get("unknowns"):
+        out += ["## Unknowns", ""] + [f"- {u}" for u in rep["unknowns"]] + [""]
+    out += ["## Proposed actions", "", "The agent only proposes; a person approves or rejects each one with a reason.", ""]
+    for a in actions:
+        title = ACTION_TITLE.get(a["type"], a["type"])
+        if a["type"] in ("HOLD", "RELEASE") and a.get("account"):
+            amount = money(a.get("hold_amount") or 0.0, a.get("currency"), a.get("rate"))
+            out.append(f"- {title} {a['account']}: {amount} ({_decision(a)})")
+        else:
+            out.append(f"- {title}: {_decision(a)}")
+    if not actions:
+        out.append("- No action proposed.")
+    out += [""]
+    if rep.get("next_steps"):
+        out += ["## Next steps", ""] + [f"- {s}" for s in rep["next_steps"]] + [""]
+    out += ["## STR narrative", "", rep.get("str_narrative") or "Not written: the rule-based report has no narrative.", ""]
+    out += ["## Payments in the case", "", "| Time | From | To | Amount | Format |", "|---|---|---|---|---|"]
+    out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | {e.get('fmt') or ''} |"
+            for e in sorted(case.get("edges", []), key=lambda e: e["ts"])]
+    return "\n".join(out) + "\n"
