@@ -52,6 +52,7 @@ export default function Workspace() {
   const [investigating, setInvestigating] = useState(false)
   const [jobStatus, setJobStatus] = useState<JobBrief['status'] | null>(null)
   const stopStream = useRef<(() => void) | null>(null)
+  const following = useRef<string | null>(null)  // the job the panel is streaming, so it is never followed twice
   const caseRef = useRef(caseId)
   caseRef.current = caseId
   // Live build animation while a file is being processed.
@@ -81,9 +82,10 @@ export default function Workspace() {
   useEffect(() => {
     if (!working || !batchId) return
     let live = true  // a reply that lands after the batch changed (or a new upload started) is dropped
-    const t = setTimeout(() => getJSON<BatchSummary>(`/api/batches/${batchId}`).then((b) => { if (live) setBatch(b) }).catch(() => undefined), 3000)
-    return () => { live = false; clearTimeout(t) }
-  }, [working, batchId, batch])
+    // An interval, not a timeout chained on each reply: a failed fetch must not stop the polling.
+    const t = setInterval(() => getJSON<BatchSummary>(`/api/batches/${batchId}`).then((b) => { if (live) setBatch(b) }).catch(() => undefined), 3000)
+    return () => { live = false; clearInterval(t) }
+  }, [working, batchId])
 
   const current = batch?.cases.find((c) => c.case_id === caseId) ?? null
   // Cases arrive ranked; the top `capacity` are today's work, the rest stay listed (folded) below.
@@ -94,7 +96,7 @@ export default function Workspace() {
   // Opening a case shows its finished result, or joins its background investigation (replayed, then live).
   useEffect(() => {
     let stale = false
-    stopStream.current?.(); stopStream.current = null
+    stopStream.current?.(); stopStream.current = null; following.current = null
     setTraced([]); setSteps([]); setResult(null); setPulse(new Set()); setInvestigating(false); setJobStatus(null); setError(null)
     if (caseId) {
       getJSON<{ result: CaseResult | null; job: JobBrief | null }>(`/api/cases/${caseId}`).then((r) => {
@@ -103,7 +105,7 @@ export default function Workspace() {
         else if (r.job) { setJobStatus(r.job.status); follow(r.job.id) }
       }).catch(() => undefined)
     }
-    return () => { stale = true; stopStream.current?.(); stopStream.current = null }
+    return () => { stale = true; stopStream.current?.(); stopStream.current = null; following.current = null }
   }, [caseId])
 
   // A case opened before its background job existed (or whose run was replaced): join the job once the list shows it.
@@ -191,7 +193,9 @@ export default function Workspace() {
 
   /** Stream a case job into the panel. Events are replayed from the start, so joining late loses nothing. */
   function follow(jobId: string) {
+    if (following.current === jobId) return  // already streaming it (the case-open fetch and the list can both see it)
     stopStream.current?.()
+    following.current = jobId
     setInvestigating(true); setSteps([]); setTraced([]); setResult(null); setError(null)
     stopStream.current = streamJob(jobId, (e: JobEvent) => {
         if (e.type === 'step_start') {
@@ -211,10 +215,12 @@ export default function Workspace() {
         if (e.type === 'report') setResult(e.case)
         if (e.type === 'error') setError(e.error)
         if (e.type === 'cancelled') {
-          setResult(null)  // a report from a replaced run is not this case's result
-          setError('This file was uploaded again, so this run was stopped.')
+          setResult(null)  // a report from a stopped run is not this case's result
+          setError(e.reason === 'shutdown'
+            ? 'The server stopped, so this run was stopped. It is investigated again when the server restarts.'
+            : 'This file was uploaded again, so this run was stopped.')
         }
-      }, () => { setInvestigating(false); stopStream.current = null; refreshBatch() })
+      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch() })
   }
 
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.
