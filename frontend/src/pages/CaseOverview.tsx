@@ -56,9 +56,10 @@ function CasePage({ caseId }: { caseId: string }) {
   const [hold, setHold] = useState<{ plan: HoldPlan | null; actions: Action[] }>({ plan: null, actions: [] })
   const [planVersion, setPlanVersion] = useState(0)
 
+  const [loadError, setLoadError] = useState<string | null>(null)
   const load = useCallback(() => {
-    getJSON<Overview>(`/api/cases/${caseId}/overview`).then((x) => { setO(x); setMissing(false) })
-      .catch((e) => { if (String(e).includes(': 404')) setMissing(true) })
+    getJSON<Overview>(`/api/cases/${caseId}/overview`).then((x) => { setO(x); setMissing(false); setLoadError(null) })
+      .catch((e) => { if (String(e).includes(': 404')) setMissing(true); else setLoadError(String(e)) })
   }, [caseId])
   useEffect(() => { load() }, [load])
 
@@ -66,11 +67,18 @@ function CasePage({ caseId }: { caseId: string }) {
 
   // Keep the page current while its investigation is queued or running; the stream ending reloads it at once.
   const state = o?.status.state
+  // Until the first load succeeds it retries too.
   useEffect(() => {
-    if (!state || !['queued', 'investigating', 'not_started'].includes(state)) return
+    if (state && !['queued', 'investigating', 'not_started'].includes(state)) return
     const t = setInterval(load, state === 'not_started' ? 10000 : 4000)
     return () => clearInterval(t)
   }, [state, load])
+  // The page can learn of a run (or its end) from polling alone: its stream dropped, or it ran from another tab.
+  const jobId = o?.status.job?.id
+  const finished = !!o?.summary && !o?.status.job
+  const { live, join, reload } = inv
+  useEffect(() => { if (jobId && !live) join(jobId) }, [jobId, live, join])
+  useEffect(() => { if (finished && !live) reload() }, [finished, live, reload])
   useEffect(() => { if (inv.ended) { load(); refreshBatch(); setPlanVersion((v) => v + 1) } }, [inv.ended, load, refreshBatch])
 
   const onPlan = useCallback((plan: HoldPlan | null, actions: Action[]) => { setHold({ plan, actions }); load() }, [load])
@@ -91,7 +99,13 @@ function CasePage({ caseId }: { caseId: string }) {
       </div>
     )
   }
-  if (!o) return <div className="px-6 py-10 text-sm" style={{ color: 'var(--ink-2)' }}>Loading the case…</div>
+  if (!o) {
+    return (
+      <div className="px-6 py-10 text-sm" style={{ color: loadError ? 'var(--critical)' : 'var(--ink-2)' }} aria-live="polite">
+        {loadError ? `Could not load the case (${loadError}). Trying again…` : 'Loading the case…'}
+      </div>
+    )
+  }
 
   const m = (v: number) => fmtMoney(v, o.currency, o.rate)
   const investigated = !!o.summary

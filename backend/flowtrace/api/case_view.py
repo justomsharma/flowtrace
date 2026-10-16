@@ -4,7 +4,8 @@ the investigation result, the hold plan and the case's actions. Read-only: no gr
   flow      the case's payments, the money the investigation followed (trace/cycle; never the history it read
             for context), and the hold plan's trail payments into accounts proposed for a hold or held.
             Role from that flow: no money in = Sender, no money out = Destination, otherwise Intermediary.
-  status    Flagged = a case payment, or one a red flag cites. In trail = money followed onward. Normal = the rest.
+  status    Flagged = a case payment, or one a red flag cites. In trail = money the investigation followed
+            (traces, loops) or the plan's trail into a hold. Normal = the rest.
 """
 from __future__ import annotations
 
@@ -73,7 +74,7 @@ def flow(case: dict, result: dict | None, plan: dict | None, actions: list[dict]
         add(e, "case")
     for e in (result or {}).get("graph", {}).get("edges", []):
         if e.get("role") in FLOW_ROLES:
-            add(e, "trail" if e.get("role") == "trace" else "case" if e["tx_id"] in case_tx else "other")
+            add(e, "case" if e["tx_id"] in case_tx else "trail")  # money the investigation followed
     hold_tx = set()
     for e in (plan or {}).get("network", {}).get("edges", []):
         if e.get("kind") == "trail" and e["dst"] in holds:
@@ -242,9 +243,10 @@ def _utc(ms: int | None) -> str:
 
 
 def _decision(a: dict) -> str:
-    who = f"{a.get('decided_by', 'someone')} ({a.get('reason', '')})"
-    return {"PROPOSED": "waiting for a decision", "APPROVED": f"approved by {who}",
-            "REJECTED": f"rejected by {who}"}.get(a.get("status"), "withdrawn or released")
+    by = f" by {a['decided_by']}" if a.get("decided_by") else ""
+    why = f" ({a['reason']})" if a.get("reason") else ""
+    return {"PROPOSED": "waiting for a decision", "APPROVED": f"approved{by}{why}",
+            "REJECTED": f"rejected{by}{why}"}.get(a.get("status")) or ("released" if a.get("released_at") else "withdrawn")
 
 
 def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict]) -> str:

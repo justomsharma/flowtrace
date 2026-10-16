@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getJSON, type BatchSummary } from './api'
 
@@ -34,13 +34,16 @@ export function BatchProvider({ children }: { children: ReactNode }) {
       .finally(() => setListed(true))
   }, [urlBatch])
 
+  const current = useRef(batchId)
+  current.current = batchId
   const refresh = useCallback(() => {
     if (!batchId) return
     const id = batchId
     getJSON<BatchSummary>(`/api/batches/${id}`)
-      .then((b) => { if (b.batch_id === id) setBatch(b) })
-      .catch(() => setBatch(null))
-      .finally(() => setLoadedId(id))
+      .then((b) => { if (current.current === id) setBatch(b) })  // a reply for a batch no longer shown is dropped
+      // Only a missing batch clears the queue; a failed poll (server restarting, network blip) keeps the last one.
+      .catch((e) => { if (current.current === id && String(e).includes(': 404')) setBatch(null) })
+      .finally(() => { if (current.current === id) setLoadedId(id) })
   }, [batchId])
 
   useEffect(() => { setBatch(null); refresh() }, [refresh])

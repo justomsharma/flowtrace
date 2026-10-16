@@ -62,7 +62,7 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
 
   return (
     <div className="relative mx-auto w-full" style={{ maxWidth: Math.min(W, (W * 720) / H) }} onMouseLeave={() => setTip(null)}>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto block" role="img"
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto block" role="group"
         aria-label={`Money flow between ${nodes.length} accounts: ${nodes.map((n) => `${shortAcct(n.id)} ${n.role}`).join(', ')}`}>
         <defs>
           {Object.entries(FLOW_COLOR).map(([k, c]) => (
@@ -90,7 +90,7 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
           const r = ROLE[n.role]
           const label = nodeLines(n).join('. ')
           return (
-            <g key={n.id} tabIndex={0} aria-label={label} className="outline-none focus-visible:[&>circle:first-child]:stroke-[var(--focus)]"
+            <g key={n.id} tabIndex={0} role="img" aria-label={label} className="outline-none focus-visible:[&>circle:first-child]:stroke-[var(--focus)]"
               onMouseEnter={() => show(p.x, p.y - R, nodeLines(n))} onFocus={() => show(p.x, p.y - R, nodeLines(n))} onBlur={() => setTip(null)}>
               <circle cx={p.x} cy={p.y} r={R + 7} fill="none" stroke="transparent" strokeWidth={3} />
               {n.hold && (

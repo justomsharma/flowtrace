@@ -55,6 +55,18 @@ export function useInvestigation(caseId: string | null, jobId: string | null) {
   // A job that appears after the case was opened (queued in the background, or started elsewhere).
   useEffect(() => { if (jobId && caseId) follow(jobId, caseId) }, [jobId, caseId, follow])
 
+  /** Join a job the page sees running but isn't streaming (its stream dropped, or it started elsewhere). */
+  const join = useCallback((id: string) => { if (caseId) follow(id, caseId) }, [caseId, follow])
+
+  /** Fetch the stored result again: an investigation can finish without this page seeing its stream end. */
+  const reload = useCallback(() => {
+    const cid = caseId
+    if (!cid) return
+    getJSON<{ result: CaseResult | null }>(`/api/cases/${cid}`).then((r) => {
+      if (current.current === cid) { setResult(r.result); setSteps([]) }
+    }).catch(() => undefined)
+  }, [caseId])
+
   const investigate = useCallback(async () => {
     const cid = caseId
     if (!cid) return
@@ -65,5 +77,5 @@ export function useInvestigation(caseId: string | null, jobId: string | null) {
     } catch (err) { setError(String(err)) }
   }, [caseId, follow])
 
-  return { steps, result, live, error, ended, investigate }
+  return { steps, result, live, error, ended, investigate, join, reload }
 }

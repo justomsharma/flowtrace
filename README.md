@@ -229,7 +229,7 @@ How FlowTrace holds money, and what it is based on:
 - `GET /api/actions?status=&case_id=` lists actions.
 - `POST /api/actions/{id}/approve` and `/reject` take `{reason, by}`, the `X-Approver-Token` header, and an optional `Idempotency-Key`.
 - `GET /api/audit?case_id=&limit=` returns the audit trail.
-- `GET /api/cases/{id}/overview` returns everything the case page shows, built from stored data only (read-only, no graph query): figures, the flow with account roles, timeline, amount distribution, payments, findings, summary and investigation status.
+- `GET /api/cases/{id}/overview` returns everything the case page shows, built from the stored case, result and hold plan plus a read-only listing of the case's actions (it never writes, so polling it is safe): figures, the flow with account roles, timeline, amount distribution, payments, findings, summary and investigation status.
 - `GET /api/cases/{id}/report.md` downloads the STR draft as Markdown (409 until the case is investigated).
 
 **One tool registry** ([`agent/registry.py`](backend/flowtrace/agent/registry.py)):

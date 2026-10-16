@@ -49,7 +49,7 @@ const fromResult = (steps: StepInfo[], result: CaseResult | null): Row[] =>
 export function InvestigationProgress({ live, liveSteps, stored, result, error, writing }: {
   live: boolean; liveSteps: LiveStep[]; stored: StepInfo[]; result: CaseResult | null; error: string | null; writing: boolean
 }) {
-  const rows: Row[] = live || liveSteps.length ? liveSteps : fromResult(stored, result)
+  const rows: Row[] = live || !stored.length ? liveSteps : fromResult(stored, result)
   const done = rows.filter((r) => r.done).length
   return (
     <Panel title="Investigation progress" icon={ListChecks}

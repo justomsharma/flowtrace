@@ -306,8 +306,9 @@ def batch_graph(batch_id: str) -> dict:
 def _currency(case_id: str) -> dict:
     """The currency of the case's own payments (US dollars when mixed or unknown), so the queue shows the case
     amount the way the case page does."""
-    cur = case_view.case_currency(CASES.get(case_id, {}), None)
-    return {"currency": cur, "rate": case_view.fx_rate(cur)}
+    plan = store.load_plan(case_id)
+    cur = case_view.case_currency(CASES.get(case_id, {}), plan)
+    return {"currency": cur, "rate": case_view.case_rate(cur, plan)}
 
 
 def _result_brief(case_id: str) -> dict | None:
@@ -340,8 +341,9 @@ def get_case(case_id: str) -> dict:
 
 
 def _case_actions(case_id: str) -> list[dict]:
+    """Read-only: the expiry timer releases due holds, so a page poll never writes."""
     try:
-        return service.list_actions(case_id=case_id)
+        return service.list_actions(case_id=case_id, expire=False)
     except Exception as e:  # the graph may be restarting: the page still shows the case, without its actions
         log.warning("could not read actions for %s: %s", case_id, e)
         return []
@@ -349,8 +351,9 @@ def _case_actions(case_id: str) -> list[dict]:
 
 @app.get("/api/cases/{case_id}/overview")
 def case_overview(case_id: str) -> dict:
-    """Everything the case page shows, from stored data only (read-only): KPIs, the flow with account roles,
-    timeline, distribution, payments, findings, the summary and the state of its investigation."""
+    """Everything the case page shows (read-only): KPIs, the flow with account roles, timeline, distribution,
+    payments, findings, the summary and the state of its investigation. Built from the stored case, result and
+    plan, plus a read-only listing of the case's actions."""
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     c = CASES[case_id]

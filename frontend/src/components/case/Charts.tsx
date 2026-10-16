@@ -63,7 +63,7 @@ export function DistributionDonut({ o }: { o: CaseOverview }) {
           <PieChart>
             <Pie data={rows} dataKey="amount" nameKey="name" innerRadius={52} outerRadius={76} paddingAngle={rows.length > 1 ? 2 : 0}
               stroke="var(--surface)" strokeWidth={2} isAnimationActive={false}>
-              {rows.map((r) => <Cell key={r.name} fill={r.color} />)}
+              {rows.map((r) => <Cell key={r.account ?? 'other'} fill={r.color} />)}
             </Pie>
             <Tooltip content={({ active, payload }) => {
               if (!active || !payload?.length) return null
@@ -81,7 +81,7 @@ export function DistributionDonut({ o }: { o: CaseOverview }) {
       </div>
       <ul className="flex flex-col gap-1.5 text-sm min-w-[150px] flex-1">
         {rows.map((r) => (
-          <li key={r.name} className="flex items-baseline gap-2 tabular">
+          <li key={r.account ?? 'other'} className="flex items-baseline gap-2 tabular">
             <span className="w-2.5 h-2.5 rounded-full shrink-0 self-center" style={{ background: r.color }} aria-hidden />
             <span className="font-medium">{r.name}</span>
             <span className="ml-auto" style={{ color: 'var(--ink-2)' }}>{m(r.amount)}</span>

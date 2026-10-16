@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { Link, NavLink, useLocation } from 'react-router-dom'
 import { FileText, LayoutDashboard, ListChecks, Lock, Orbit, Waypoints } from 'lucide-react'
 import { getJSON, type CaseBrief, type Health } from '../lib/api'
 import { useBatch } from '../lib/batch'
@@ -29,6 +29,7 @@ const caseNo = (id: string) => id.slice(id.lastIndexOf('-') + 1)
 
 export default function Sidebar() {
   const { batch, caseId, query } = useBatch()
+  const onCase = useLocation().pathname === '/case'
   const top = (batch?.cases ?? []).filter((c, i) => inToday(c, i, batch?.capacity)).slice(0, 8)
 
   return (
@@ -60,17 +61,17 @@ export default function Sidebar() {
           <ul className="flex flex-col gap-0.5">
             {top.map((c) => {
               const d = dot(c)
-              const active = c.case_id === caseId
+              const active = onCase && c.case_id === caseId
               return (
                 <li key={c.case_id}>
-                  <NavLink to={{ pathname: '/case', search: query(c.case_id) }}
+                  <Link to={{ pathname: '/case', search: query(c.case_id) }} aria-current={active ? 'page' : undefined}
                     className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm tabular"
                     style={{ background: active ? 'var(--surface-2)' : 'transparent', color: active ? 'var(--ink)' : 'var(--ink-2)', fontWeight: active ? 600 : 400 }}>
                     <span className={`w-2 h-2 rounded-full ${d.pulse ? 'animate-pulse' : ''}`} style={{ background: d.color }} aria-hidden />
                     {caseNo(c.case_id)}
                     <span className="sr-only">: {d.label}</span>
                     <span className="ml-auto text-xs" style={{ color: 'var(--muted)' }} aria-hidden>{d.label === 'Not investigated' ? '' : d.label}</span>
-                  </NavLink>
+                  </Link>
                 </li>
               )
             })}

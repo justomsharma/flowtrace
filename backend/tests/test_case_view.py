@@ -243,3 +243,40 @@ def test_batch_cases_carry_their_currency(monkeypatch):
     monkeypatch.setattr(V, "fx_rate", lambda cur: 0.9)
     c = TestClient(M.app).get("/api/batches/BX").json()["cases"][0]
     assert (c["currency"], c["rate"]) == ("Euro", 0.9)
+
+
+def test_overview_and_report_never_write(monkeypatch):
+    """Listing actions must not run the expiry write: the case page polls this endpoint."""
+    from fastapi.testclient import TestClient
+    from flowtrace.api import main as M
+    monkeypatch.setattr(M, "CASES", {"BX-C001": case(CHAIN)})
+    monkeypatch.setattr(M, "RESULTS", {"BX-C001": full_result()})
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: None)
+    calls = []
+    monkeypatch.setattr(M.service, "list_actions", lambda **kw: calls.append(kw) or [])
+    client = TestClient(M.app)
+    client.get("/api/cases/BX-C001/overview")
+    client.get("/api/cases/BX-C001/report.md")
+    assert calls and all(kw.get("expire") is False for kw in calls)
+
+
+def test_followed_cycle_payments_are_in_trail():
+    r = result(graph_edges=[pay("c1", "C", "A", 50, ts=3 * H, role="cycle"), pay("t1", "A", "B", 100, role="cycle")])
+    status = {p["tx_id"]: p["status"] for p in V.flow(case(CHAIN), r, None, [], RULES)["payments"]}
+    assert status["c1"] == "trail" and status["t1"] == "flagged"
+
+
+def test_expired_hold_and_unnamed_decider_read_plainly():
+    md = V.str_markdown(case(CHAIN), full_result(), None, [
+        {"id": "A1", "type": "HOLD", "status": "EXPIRED", "account": "B", "hold_amount": 10.0},
+        {"id": "A3", "type": "HOLD", "status": "EXPIRED", "account": "C", "hold_amount": 5.0, "released_at": 1},
+        {"id": "A2", "type": "FILE_STR", "status": "REJECTED", "reason": "Not enough"}])
+    assert "Hold account B: USD 10 (withdrawn)" in md and "Hold account C: USD 5 (released)" in md
+    assert "File an STR: rejected (Not enough)" in md and "None" not in md
+
+
+def test_queue_currency_falls_back_to_the_plan(monkeypatch):
+    from flowtrace.api import main as M
+    monkeypatch.setattr(M, "CASES", {"BX-C001": case(CHAIN)})
+    monkeypatch.setattr(M.store, "load_plan", lambda cid: {"currency": "Euro", "rate": 0.9})
+    assert M._currency("BX-C001") == {"currency": "Euro", "rate": 0.9}

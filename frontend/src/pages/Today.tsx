@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Orbit, Upload } from 'lucide-react'
 import { ActionBadge } from '../components/badges'
 import { fmtInt, getJSON, postJSON, streamJob, type CaseBrief, type JobEvent } from '../lib/api'
@@ -10,8 +10,13 @@ import { SAMPLE_INFO, STAGE_PLAIN, caseReason, caseSentence, inToday, pct, trick
 const caseNo = (id: string) => id.slice(id.lastIndexOf('-') + 1)
 
 export default function Today() {
-  const { batch, batchId, ready, query, refresh } = useBatch()
+  const { batch, batchId, caseId, ready, query, refresh } = useBatch()
   const navigate = useNavigate()
+  const path = useLocation().pathname
+  const here = useRef(true)  // still on Today when an upload finishes? Then open its batch here.
+  useEffect(() => { here.current = true; return () => { here.current = false } }, [])
+  // Links from before the case page existed (/?batch=..&case=..) open the case.
+  useEffect(() => { if (caseId && path === '/') navigate({ pathname: '/case', search: query(caseId) }, { replace: true }) }, [caseId, path, navigate, query])
   const [samples, setSamples] = useState<string[]>([])
   const [stages, setStages] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
@@ -40,7 +45,7 @@ export default function Today() {
         if (e.type === 'error') setError(e.error)
         if (e.type === 'done' && id) {
           if (id === batchId) refresh()
-          else navigate({ pathname: '/', search: `?batch=${id}` })
+          else if (here.current) navigate({ pathname: '/', search: `?batch=${id}` })
         }
       }, () => setBusy(false))
     } catch (err) { setError(String(err)); setBusy(false) }
