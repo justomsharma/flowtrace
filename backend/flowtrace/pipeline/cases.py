@@ -114,7 +114,8 @@ def build_cases(tx: list[dict], hits: list[dict], batch_id: str, rules: dict, de
         signals = sorted([{"signal": "model", "p": round(float(p_model), 4)}] +
                          [{"signal": d, "p": round(p, 4)} for d, p in det.items()], key=lambda s: -s["p"])
         edges = [{"tx_id": t["tx_id"], "src": t["src"], "dst": t["dst"], "ts": t["ts"], "amount": t["amount_usd"],
-                  "fmt": t["payment_format"], "p": round(float(t["p"]), 4)} for t in ctx]
+                  "fmt": t["payment_format"], "p": round(float(t["p"]), 4)}
+                 | ({"cur": t["payment_currency"]} if t.get("payment_currency") else {}) for t in ctx]
         shape = classify(edges)
         labels = [t["is_laundering"] for t in ctx if t["is_laundering"] is not None]
         cases.append({

@@ -94,3 +94,9 @@ def test_counterparty_detector_scores_only_its_own_case():
     assert "E" in first["accounts"]
     scored = [c for c in cases if any(s["signal"] == "FAN-OUT" for s in c["signals"])]
     assert len(scored) == 1 and scored[0]["primary"] == "E"
+
+
+def test_case_payments_carry_their_currency():
+    tx = [t(1, "A", "B", 0.9) | {"payment_currency": "Euro"}, t(2, "B", "C", 0.9)]
+    edges = {e["tx_id"]: e for e in build_cases(tx, [], "B1", RULES, degrees={})[0]["edges"]}
+    assert edges["P1"]["cur"] == "Euro" and "cur" not in edges["P2"]

@@ -1,0 +1,165 @@
+"""The case overview: roles, payment status, holds, confidence, timeline and currency, all from stored data."""
+from flowtrace.api import case_view as V
+
+RULES = {
+    "ui": {"evidence_confidence": {"high": 0.5, "medium": 0.35}, "priority": {"high": 0.95, "medium": 0.8},
+           "flow_max_accounts": 16},
+    "cases": {"flag_probability": 0.5},
+}
+H = 3_600_000
+
+
+def pay(tx, src, dst, amount, ts=0, fmt="ACH", **kw):
+    return {"tx_id": tx, "src": src, "dst": dst, "amount": amount, "ts": ts, "fmt": fmt, **kw}
+
+
+def case(edges, **kw):
+    accts = sorted({a for e in edges for a in (e["src"], e["dst"])})
+    return {"case_id": "BX-C001", "batch_id": "BX", "primary": accts[0], "accounts": accts, "edges": edges,
+            "t0": min(e["ts"] for e in edges), "t1": max(e["ts"] for e in edges) + 1, "case_score": 0.97,
+            "amount": sum(e["amount"] for e in edges), "shape": {"typology": "STACK", "confidence": 0.6},
+            "tier": "today", **kw}
+
+
+def result(graph_edges=(), evidence=(), action="ESCALATE", author="gpt-6-luna"):
+    return {
+        "graph": {"nodes": [], "edges": list(graph_edges)},
+        "evidence": list(evidence),
+        "disposition": {"action": action, "risk": 0.7, "confidence_label": "High",
+                        "components": {"ml_raw": 0.99, "red_raw": 0.8, "shape_raw": 0.6, "legit_raw": 0.3,
+                                       "model": 0.45, "red_flags": 0.28, "shape": 0.12, "legitimacy": -0.12}},
+        "report": {"headline": "Money passed through three accounts", "author": author,
+                   "executive_summary": {"text": "Fast onward movement.", "evidence_ids": []},
+                   "next_steps": ["Ask for source of funds."], "str_narrative": "STR text."},
+        "steps": [],
+    }
+
+
+def ev(id, kind, weight, tx_ids=(), accounts=(), code="X", claim="claim"):
+    return {"id": id, "kind": kind, "code": code, "claim": claim, "weight": weight, "tx_ids": list(tx_ids),
+            "accounts": list(accounts), "escalator": False}
+
+
+CHAIN = [pay("t1", "A", "B", 100, ts=0), pay("t2", "B", "C", 90, ts=H)]
+
+
+def nodes(flow):
+    return {n["id"]: n for n in flow["nodes"]}
+
+
+def test_roles_from_flow():
+    f = V.flow(case(CHAIN), None, None, [], RULES)
+    n = nodes(f)
+    assert [n[a]["role"] for a in "ABC"] == ["Sender", "Intermediary", "Destination"]
+    assert (n["A"]["amount"], n["B"]["amount"], n["C"]["amount"]) == (100, 100, 90)
+    assert n["A"]["sent"] == 100 and n["B"]["received"] == 100 and n["B"]["sent"] == 90
+
+
+def test_pure_cycle_is_all_intermediaries():
+    loop = [pay("t1", "A", "B", 10), pay("t2", "B", "C", 10, ts=1), pay("t3", "C", "A", 10, ts=2)]
+    f = V.flow(case(loop), None, None, [], RULES)
+    assert {n["role"] for n in f["nodes"]} == {"Intermediary"}
+
+
+def test_context_edges_excluded_and_traced_money_included():
+    r = result(graph_edges=[pay("t1", "A", "B", 100, role="alert"), pay("h1", "Z", "A", 5, role="context"),
+                            pay("t3", "C", "D", 80, ts=2 * H, role="trace")])
+    f = V.flow(case(CHAIN), r, None, [], RULES)
+    assert "Z" not in nodes(f) and "D" in nodes(f)
+    assert nodes(f)["C"]["role"] == "Intermediary" and nodes(f)["D"]["role"] == "Destination"
+    assert not nodes(f)["D"]["in_case"] and nodes(f)["A"]["in_case"]
+
+
+def test_flagged_vs_trail_status():
+    r = result(graph_edges=[pay("t3", "C", "D", 80, ts=2 * H, role="trace"), pay("t4", "C", "E", 5, ts=2 * H, role="trace")],
+               evidence=[ev("E1", "support", 0.5, tx_ids=["t4"]), ev("E2", "counter", 0.3, tx_ids=["t3"])])
+    f = V.flow(case(CHAIN), r, None, [], RULES)
+    status = {p["tx_id"]: p["status"] for p in f["payments"]}
+    assert status == {"t1": "flagged", "t2": "flagged", "t3": "trail", "t4": "flagged"}
+    edge = {(e["src"], e["dst"]): e for e in f["edges"]}
+    assert edge[("C", "D")]["status"] == "trail" and edge[("C", "E")]["status"] == "flagged"
+    assert [p["tx_id"] for p in f["payments"]][-1] == "t1"  # newest first
+
+
+def test_hold_account_downstream_is_in_flow_and_amber():
+    plan = {"network": {"edges": [{"tx_id": "t9", "src": "C", "dst": "M", "amount": 70, "ts": 3 * H, "kind": "trail"},
+                                  {"tx_id": "t8", "src": "C", "dst": "Q", "amount": 5, "ts": 3 * H, "kind": "trail"}]},
+            "currency": "US Dollar", "rate": 1.0}
+    actions = [{"id": "A1", "type": "HOLD", "status": "PROPOSED", "account": "M"},
+               {"id": "A2", "type": "HOLD", "status": "REJECTED", "account": "Q"}]
+    f = V.flow(case(CHAIN), result(), plan, actions, RULES)
+    n = nodes(f)
+    assert n["M"]["hold"] == "proposed" and n["M"]["role"] == "Destination"
+    assert "Q" not in n  # a rejected hold is not on the map
+    assert next(e for e in f["edges"] if e["dst"] == "M")["hold"] is True
+
+
+def test_flow_is_capped_keeping_case_accounts():
+    rules = {**RULES, "ui": {**RULES["ui"], "flow_max_accounts": 4}}
+    r = result(graph_edges=[pay(f"x{i}", "C", f"D{i}", 10 + i, ts=2 * H, role="trace") for i in range(6)])
+    f = V.flow(case(CHAIN), r, None, [], rules)
+    ids = set(nodes(f))
+    assert len(ids) == 4 and {"A", "B", "C"} <= ids and "D5" in ids  # the largest traced payment stays
+    assert f["hidden_accounts"] == 5
+
+
+def test_confidence_thresholds_from_config():
+    assert [V.confidence(w, RULES) for w in (0.7, 0.5, 0.35, 0.34)] == ["High", "High", "Medium", "Low"]
+    assert [V.priority(s, RULES) for s in (0.99, 0.95, 0.8, 0.5)] == ["High", "High", "Medium", "Low"]
+
+
+def test_timeline_hourly_vs_daily():
+    t = V.timeline([{"ts": 0, "amount": 10, "status": "flagged"}, {"ts": H + 5, "amount": 4, "status": "trail"},
+                    {"ts": H + 9, "amount": 1, "status": "flagged"}])
+    assert t["bucket"] == "hour"
+    assert t["bins"] == [{"t": 0, "flagged": 10, "other": 0, "n": 1}, {"t": H, "flagged": 1, "other": 4, "n": 2}]
+    d = V.timeline([{"ts": 0, "amount": 1, "status": "flagged"}, {"ts": 72 * H, "amount": 2, "status": "normal"}])
+    assert d["bucket"] == "day" and [b["t"] for b in d["bins"]] == [0, 24 * H, 48 * H, 72 * H]  # empty days kept
+    assert d["bins"][1] == {"t": 24 * H, "flagged": 0, "other": 0, "n": 0}
+    assert V.timeline([]) == {"bucket": "hour", "bins": []}
+
+
+def test_uninvestigated_case_renders():
+    o = V.build_overview(case(CHAIN), None, None, [], None, False, RULES)
+    assert o["status"]["state"] == "not_started"
+    assert o["findings"] == [] and o["explanations"] == [] and o["summary"] is None and o["indicators"] == []
+    assert o["kpis"]["payments"] == 2 and o["kpis"]["accounts"] == 3 and o["kpis"]["suspicious_patterns"] is None
+    assert o["priority"] == "High" and o["currency"] == "US Dollar"
+
+
+def test_investigated_case_findings_summary_indicators():
+    r = result(evidence=[ev("E1", "support", 0.55, code="FAST_ONWARD_TRANSFER", claim="Passed on in 2 hours."),
+                         ev("E2", "support", 0.2), ev("E3", "counter", 0.3, claim="Known counterparty."),
+                         ev("E4", "context", 0.0)], author="template")
+    o = V.build_overview(case(CHAIN), r, None, [], None, False, RULES)
+    assert [(f["id"], f["confidence"]) for f in o["findings"]] == [("E1", "High"), ("E2", "Low")]
+    assert [e["id"] for e in o["explanations"]] == ["E3"]
+    assert o["kpis"]["suspicious_patterns"] == 2
+    assert o["summary"] == {"headline": "Money passed through three accounts", "text": "Fast onward movement.", "by_ai": False}
+    assert [(i["key"], i["value"]) for i in o["indicators"]] == [("model", 0.99), ("red_flags", 0.8), ("shape", 0.6), ("legitimacy", 0.3)]
+    assert o["status"]["state"] == "escalate"
+
+
+def test_currency_single_then_plan_then_usd():
+    euro = [pay("t1", "A", "B", 100, cur="Euro"), pay("t2", "B", "C", 90, ts=H, cur="Euro")]
+    assert V.case_currency(case(euro), None) == "Euro"
+    mixed = [pay("t1", "A", "B", 100, cur="Euro"), pay("t2", "B", "C", 90, ts=H, cur="Yen")]
+    assert V.case_currency(case(mixed), None) == "US Dollar"
+    assert V.case_currency(case(CHAIN), {"currency": "Brazil Real"}) == "Brazil Real"
+    assert V.case_currency(case(CHAIN), None) == "US Dollar"
+
+
+def test_status_from_job_and_disposition():
+    c = case(CHAIN)
+    st = lambda r, job, failed: V.build_overview(c, r, None, [], job, failed, RULES)["status"]["state"]
+    assert st(None, {"id": "J", "status": "queued"}, False) == "queued"
+    assert st(None, {"id": "J", "status": "running"}, False) == "investigating"
+    assert st(None, None, True) == "failed"
+    assert st(result(action="REVIEW"), None, False) == "review"
+    assert st(result(action="CLOSE"), {"id": "J", "status": "running"}, False) == "investigating"  # a re-run
+
+
+def test_distribution_by_receiving_account():
+    o = V.build_overview(case(CHAIN), None, None, [], None, False, RULES)
+    assert o["distribution"] == [{"account": "B", "amount": 100, "share": 100 / 190},
+                                 {"account": "C", "amount": 90, "share": 90 / 190}]

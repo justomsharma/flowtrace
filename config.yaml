@@ -106,6 +106,12 @@ actions:
   min_reason_chars: 5            # an approval or rejection needs a written reason
   expiry_check_seconds: 60       # how often the API releases holds whose time is up
 
+# --- Case page (display only; never used for flagging or the disposition) --------------------
+ui:
+  evidence_confidence: {high: 0.5, medium: 0.35}  # evidence weight at or above -> High / Medium badge; below -> Low
+  priority: {high: 0.95, medium: 0.8}              # case score at or above -> High / Medium priority; below -> Low
+  flow_max_accounts: 16                            # accounts drawn in the case's flow graph (case + hold accounts always kept)
+
 # --- Crime hypotheses (interpretation, not a measured label) --------------------------------
 # The dataset labels laundering yes/no only. These map observed shapes to the predicate crimes
 # the generator models (Altman et al. 2023) as analyst hypotheses.
