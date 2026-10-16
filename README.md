@@ -11,29 +11,49 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 15
 
 ## Screenshots
 
-**1. Upload a day of payments**, or try the sample day.
+All screenshots are from the real app on the curated sample day (`demo_mixed_2022-09-09.csv`), at laptop width.
 
-![Upload screen](docs/screenshots/upload.png)
+**1. Upload a day of payments**, or try the sample day. The steps show while the file is processed.
 
-**2. Today's work.** 2,271 payments become 40 flagged payments and 17 cases. The 15 with the highest chance of laundering are listed first, and the other 2 sit under *Lower priority*. The graph behind the list shows every payment in the file. This is the curated demo sample; full-day numbers are in *Results*.
+![Upload in progress](docs/screenshots/upload.png)
+
+**2. Today's work.** 2,271 payments become 40 flagged payments and 17 cases. The 15 with the highest chance of laundering are today's work; the other 2 are folded under *Lower priority*. The agent investigates the top 15 in the background. The sidebar lists the top cases with a dot for their disposition, and "System online" comes from `/api/health` (graph database and AI investigator). This is the curated demo sample; full-day numbers are in *Results*.
 
 ![Today's work: ranked cases](docs/screenshots/todays-work.png)
 
-**3. Investigate a case.** The investigator follows the money through the graph and lists the red flags and legitimate explanations it found. The disposition and risk score are computed in code from that evidence. The case's money trail is highlighted in the graph. This run used the rule-based fallback, because no LLM key was set (the *AI investigator* badge is red).
+**3. Case overview.** One page per case:
+- **Header:** the case, its laundering shape and a priority from the case score. *Generate report* downloads the STR draft.
+- **Four figures:** the amount involved, accounts connected, red flags found, and the investigation status (Queued, Investigating, Escalate, Review or Close).
+- **Transaction flow**, left to right. Each account's role comes from the flow itself: no money in = sender, no money out = destination, otherwise intermediary. Red arrows are suspicious payments, amber arrows carried case money into a proposed hold, and the amber ring marks the hold (dashed = proposed, solid = approved).
+- **Key findings:** one row per red flag, with a confidence badge from the evidence weight (thresholds in `config.yaml`, `ui.evidence_confidence`). Under them, the legitimate explanations the agent found.
 
-![Case investigation](docs/screenshots/investigation.png)
+Amounts are in the data's own currency ($, €, SAR, R$…).
 
-**4. Confirm hold.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The amber accounts on the map are the proposed holds, and the amber payments carried the case money into them. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Each proposal says where it came from (the agent, or an outside AI client over MCP).
+![Case overview](docs/screenshots/case-overview.png)
+
+**4. The agent acts: recommended next step.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Every hold, and the case decision (here: file an STR), waits for a person.
 
 ![Proposed holds on a case](docs/screenshots/holds.png)
 
-**5. A person decides.** Every hold, and the case decision (here: file an STR), needs Approve or Reject. The person gives their name (asked once) and a written reason, and the server checks its approver token. An approved hold shows who approved it, why, and a countdown to its automatic release. The rejected hold is no longer marked on the map.
+**5. A person decides.** Approve or Reject needs the person's name (asked once) and a written reason, and the server checks its approver token. An approved hold shows who approved it, why, and a live countdown to its automatic release.
 
-![Approve and reject with a reason](docs/screenshots/approve.png)
+![Approved hold and STR filing](docs/screenshots/approve.png)
 
-**6. Results.** Money frozen today, holds in place with live countdowns, proposals waiting for a decision, and the audit log. Each amount is shown in the currency of its money trail (R$, €, $).
+**6. Live investigation.** The agent's steps stream onto the case page as it works: what it checked, why, and what it found. The stepper maps the case to its real states: alert received, scored, graph investigation, report, analyst review.
 
-![Results and audit log](docs/screenshots/results.png)
+![Investigation streaming live](docs/screenshots/investigation.png)
+
+**7. Holds & audit.** Money frozen today, holds in place with live countdowns, proposals waiting for a decision, and the append-only audit log. Each amount is in the currency of its money trail.
+
+![Holds and audit log](docs/screenshots/results.png)
+
+**8. Reports.** The STR draft of every investigated case, built from the report, the evidence, the proposed actions and what people decided. It downloads as Markdown.
+
+![STR draft](docs/screenshots/reports.png)
+
+**9. Live Network.** The 3D map of every payment in the file, with the open case highlighted and the agent's money trace drawn as it runs. *View full graph* on a case opens it here.
+
+![Live Network](docs/screenshots/live-network.png)
 
 ---
 
@@ -72,7 +92,7 @@ CSV batch ─► parse ─► triage model (LightGBM) ─► load into FalkorDB 
 The same tools are served over **MCP** (`python -m flowtrace.mcp.server`), so Claude Desktop or any MCP client can investigate cases and propose actions.
 
 - **Backend:** Python, FastAPI, Server-Sent Events, FalkorDB (Python client), polars, LightGBM, networkx, OpenAI SDK (Anthropic optional)
-- **Frontend:** React, Vite, TypeScript, Tailwind, Recharts, 3d-force-graph (three.js)
+- **Frontend:** React, Vite, TypeScript, Tailwind, Recharts, a hand-drawn SVG flow graph (layered layout), 3d-force-graph (three.js), vitest
 - **LLM:** OpenAI `gpt-6-luna` by default (Responses API, strict JSON-schema output), chosen for low latency and cost. It chooses the next tool and writes the report. It never computes facts, never runs its own Cypher, and never sets the disposition.
 
 ---
@@ -209,6 +229,8 @@ How FlowTrace holds money, and what it is based on:
 - `GET /api/actions?status=&case_id=` lists actions.
 - `POST /api/actions/{id}/approve` and `/reject` take `{reason, by}`, the `X-Approver-Token` header, and an optional `Idempotency-Key`.
 - `GET /api/audit?case_id=&limit=` returns the audit trail.
+- `GET /api/cases/{id}/overview` returns everything the case page shows, built from stored data only (read-only, no graph query): figures, the flow with account roles, timeline, amount distribution, payments, findings, summary and investigation status.
+- `GET /api/cases/{id}/report.md` downloads the STR draft as Markdown (409 until the case is investigated).
 
 **One tool registry** ([`agent/registry.py`](backend/flowtrace/agent/registry.py)):
 - **Read-only tools** (GRAPH.RO_QUERY): the investigation tools, `get_case`, `list_cases` and `plan_holds`.
@@ -354,6 +376,7 @@ python -m flowtrace.eval.holds --sample demo_mixed_2022-09-09.csv
 python -m uvicorn flowtrace.api.main:app --port 8000
 python -m flowtrace.mcp.server
 cd ../frontend && npm install && npm run dev  # http://localhost:5173
+npm test                                      # frontend unit tests (vitest)
 ```
 
 ### Upgrading an existing FalkorDB volume to append-only persistence
@@ -440,6 +463,8 @@ Action-layer tests:
 - **API**:
   - plan, approve/reject, error codes and audit;
   - a decision without the right approver token, or with no approver name, is refused.
+- **Case page** (`tests/test_case_view.py`): account roles from the flow (a pure loop is all intermediaries), history payments left out, flagged vs followed payments, a hold account downstream of the case drawn amber, the account cap, confidence and priority thresholds from config, hourly vs daily timeline, an uninvestigated case, currency fallback, the STR draft and its endpoints.
+- **Frontend** (`frontend/src/lib/*.test.ts`, vitest): the layered flow layout (chains, loops, fan-out, crossings), the case stepper from real states, and the STR Markdown reader.
 
 ## AI assistance
 

@@ -61,7 +61,7 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
   const show = (x: number, y: number, lines: string[]) => setTip({ x: (x / W) * 100, y: (y / H) * 100, lines })
 
   return (
-    <div className="relative mx-auto w-full" style={{ maxWidth: Math.min(W, (W * 560) / H) }} onMouseLeave={() => setTip(null)}>
+    <div className="relative mx-auto w-full" style={{ maxWidth: Math.min(W, (W * 720) / H) }} onMouseLeave={() => setTip(null)}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto block" role="img"
         aria-label={`Money flow between ${nodes.length} accounts: ${nodes.map((n) => `${shortAcct(n.id)} ${n.role}`).join(', ')}`}>
         <defs>
