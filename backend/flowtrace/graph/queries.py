@@ -1,4 +1,5 @@
-"""Every Cypher query FlowTrace depends on. All are read-only and parameterised.
+"""Every Cypher query FlowTrace depends on, parameterised. Agent and MCP tools run only the read-only
+ones (GRAPH.RO_QUERY). Writes: the loader, case memory, and actions (proposals, decisions, audit).
 
 FalkorDB notes that shape these queries:
   * Always bind and use the TRANSFER variable (e.g. count(t)). If the edge alias is unused,
@@ -14,6 +15,11 @@ FalkorDB notes that shape these queries:
     starts from a label scan of every account there (2.2 s -> 1.5 ms for SHARED_DESTINATIONS).
   * A variable-length relationship variable is bound to a path, not a list: read the edges
     with relationships(p). shortestPath() is only allowed in WITH or RETURN.
+  * Conditional writes: put the condition in WHERE (`WHERE a.status = 'PROPOSED'`) so a second request
+    matches nothing and changes nothing. Writes on one graph are serialised, so this is race-free.
+  * MERGE on a key property is how a double click or two callers converge on one node; `ON CREATE SET a += $map`
+    sets the rest. A side write only on creation: FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END | ...).
+  * Audit entries are only ever CREATEd, in the same query as the change they record.
 """
 
 # --- Account context ----------------------------------------------------------------------
@@ -208,27 +214,32 @@ LIMIT 10
 """
 
 # How close is this account to accounts already escalated by earlier cases? (never the case itself)
+# An analyst's verdict replaces the agent's disposition: a human CLOSE removes an agent ESCALATE.
 NEAREST_ESCALATED = """
-MATCH (a:Account {id: $id}), (c:Case {disposition: 'ESCALATE'})-[:ABOUT]->(x:Account)
-WHERE x.id <> a.id AND NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
+MATCH (a:Account {id: $id}), (c:Case)-[:ABOUT]->(x:Account)
+WHERE coalesce(c.verdict, c.disposition) = 'ESCALATE' AND x.id <> a.id
+  AND NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
 WITH a, c, x, shortestPath((a)-[:TRANSFER*1..3]-(x)) AS p
 WHERE p IS NOT NULL
-RETURN x.id AS account, c.id AS case_id, length(p) AS hops
-ORDER BY hops
+RETURN x.id AS account, c.id AS case_id, length(p) AS hops,
+       CASE WHEN c.verdict IS NULL THEN 'agent' ELSE 'human' END AS decided_by
+ORDER BY hops, c.verdict IS NULL
 LIMIT 5
 """
 
 # --- Case memory --------------------------------------------------------------------------
 # Only earlier cases count: $batch_prefix ("<batch>-C") excludes the case itself and every case of the
 # same upload (investigated in parallel), and c.created_ts < $t0 excludes any case whose window ends after
-# this one starts (a same-day case from another upload is not history).
+# this one starts (a same-day case from another upload is not history). An analyst's verdict replaces the
+# agent's disposition, and human verdicts are listed first.
 
 PRIOR_CASES = """
 MATCH (a:Account {id: $id})<-[:ABOUT]-(c:Case)
 WHERE NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
-RETURN c.id AS case_id, c.disposition AS disposition, c.typology AS typology,
-       c.score AS score, c.created_ts AS created_ts, c.summary AS summary
-ORDER BY c.created_ts DESC
+RETURN c.id AS case_id, coalesce(c.verdict, c.disposition) AS disposition,
+       CASE WHEN c.verdict IS NULL THEN 'agent' ELSE 'human' END AS decided_by, c.typology AS typology,
+       c.score AS score, c.created_ts AS created_ts, coalesce(c.verdict_reason, c.summary) AS summary
+ORDER BY c.verdict IS NULL, c.created_ts DESC
 LIMIT 10
 """
 
@@ -279,4 +290,97 @@ ON CREATE SET t.ts = r.ts, t.amount = r.amount, t.fmt = r.fmt, t.cur = r.cur, t.
 DELETE_BATCH = """
 MATCH ()-[t:TRANSFER {batch: $batch}]->()
 DELETE t
+"""
+
+# --- Actions (the agent proposes, a person decides) -----------------------------------------
+# (:Action)-[:FOR]->(:Case), (:Action)-[:ON]->(:Account). dedup_key = "case|type|account" while the action is
+# open (proposed, approved or rejected); it is cleared when a hold ends, so the account can be held again.
+
+PROPOSE_ACTION = """
+MERGE (c:Case {id: $case_id})
+MERGE (a:Action {dedup_key: $dedup_key})
+ON CREATE SET a += $props
+WITH a, c, a.id = $props.id AS created
+MERGE (a)-[:FOR]->(c)
+WITH a, created
+OPTIONAL MATCH (x:Account {id: $account})
+FOREACH (_ IN CASE WHEN created AND x IS NOT NULL THEN [1] ELSE [] END | MERGE (a)-[:ON]->(x))
+FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
+  CREATE (:Audit {id: $audit_id, ts: $now, actor: a.proposed_by, event: 'PROPOSED', action_id: a.id,
+                  case_id: a.case_id, account: a.account, from_status: '', to_status: 'PROPOSED', reason: a.why}))
+RETURN properties(a) AS action, created
+"""
+
+GET_ACTION = """
+MATCH (a:Action {id: $id})
+RETURN properties(a) AS action
+"""
+
+# Approve or reject: only a PROPOSED action changes, so a second click finds nothing to change.
+DECIDE_ACTION = """
+MATCH (a:Action {id: $id}) WHERE a.status = 'PROPOSED'
+SET a.status = $to, a.decided_by = $by, a.decided_at = $now, a.reason = $reason, a.decision_key = $key,
+    a.expires_ts = $expires_ts
+CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, event: $to, action_id: a.id, case_id: a.case_id,
+                account: a.account, from_status: 'PROPOSED', to_status: $to, reason: $reason})
+RETURN properties(a) AS action
+"""
+
+# Holds whose time is up are released. One audit entry each, because a released hold no longer matches.
+EXPIRE_DUE = """
+MATCH (a:Action {type: 'HOLD', status: 'APPROVED'}) WHERE a.expires_ts <= $now
+SET a.status = 'EXPIRED', a.dedup_key = NULL, a.released_at = $now
+CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'system', event: 'AUTO_RELEASED',
+                action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'APPROVED',
+                to_status: 'EXPIRED', reason: 'The hold time is up'})
+RETURN count(a) AS n
+"""
+
+# An approved RELEASE ends the case's approved hold on that account early.
+RELEASE_HOLD = """
+MATCH (a:Action {type: 'HOLD', status: 'APPROVED', case_id: $case_id, account: $account})
+SET a.status = 'EXPIRED', a.dedup_key = NULL, a.released_at = $now
+CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: $by, event: 'RELEASED',
+                action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'APPROVED',
+                to_status: 'EXPIRED', reason: $reason})
+RETURN count(a) AS n
+"""
+
+# A re-uploaded batch renumbers its cases: proposals nobody decided on are withdrawn; approved holds stay.
+EXPIRE_PROPOSALS = """
+MATCH (a:Action {status: 'PROPOSED'}) WHERE a.case_id STARTS WITH $prefix
+SET a.status = 'EXPIRED', a.dedup_key = NULL
+CREATE (:Audit {id: 'AU-' + a.id + '-' + toString($now), ts: $now, actor: 'system', event: 'CASE_REUPLOADED',
+                action_id: a.id, case_id: a.case_id, account: a.account, from_status: 'PROPOSED',
+                to_status: 'EXPIRED', reason: $reason})
+RETURN count(a) AS n
+"""
+
+# The analyst's verdict, kept next to the agent's disposition (which is never overwritten).
+SET_VERDICT = """
+MATCH (c:Case {id: $case_id})
+SET c.verdict = $verdict, c.verdict_by = $by, c.verdict_at = $now, c.verdict_reason = $reason,
+    c.verdict_action = $action_id
+CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, event: 'VERDICT', action_id: $action_id, case_id: c.id,
+                from_status: coalesce(c.disposition, ''), to_status: $verdict, reason: $reason})
+RETURN c.id AS case_id
+"""
+
+OPEN_HOLDS = """
+MATCH (a:Action {case_id: $case_id, type: 'HOLD'}) WHERE a.status IN ['PROPOSED', 'APPROVED']
+RETURN count(a) AS n
+"""
+
+LIST_ACTIONS = """
+MATCH (a:Action) WHERE ($case_id IS NULL OR a.case_id = $case_id) AND ($status IS NULL OR a.status = $status)
+RETURN properties(a) AS action
+ORDER BY a.proposed_at DESC, a.id
+LIMIT 1000
+"""
+
+AUDIT_LOG = """
+MATCH (x:Audit) WHERE $case_id IS NULL OR x.case_id = $case_id
+RETURN properties(x) AS entry
+ORDER BY x.ts DESC, x.id DESC
+LIMIT 2000
 """

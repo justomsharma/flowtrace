@@ -378,13 +378,18 @@ def case_memory(ctx: CaseContext, a: AccountArgs) -> dict:
     skip = {"id": a.account, "batch_prefix": batch_prefix(ctx.case_id), "t0": ctx.t0}
     prior = ctx.q("prior cases", Q.PRIOR_CASES, skip).rows
     near = ctx.q("nearest escalated account", Q.NEAREST_ESCALATED, skip).rows
-    if any(p["disposition"] == "ESCALATE" for p in prior):
+    # Prior cases arrive with an analyst's verdict in place of the agent's disposition, human verdicts first.
+    esc = [p for p in prior if p["disposition"] == "ESCALATE"]
+    if esc:
+        who = "an analyst confirmed it" if esc[0].get("decided_by") == "human" else "flagged by the agent"
         ctx.book.add(kind="support", code="PRIOR_ESCALATION", tool="case_memory", step=ctx.step, accounts=[a.account],
-                     claim=f"{_a(a.account).capitalize()} was already escalated in an earlier case.", weight=0.5, escalator=True)
+                     claim=f"{_a(a.account).capitalize()} was already escalated in an earlier case ({who}).", weight=0.5, escalator=True)
     live_close = [p for p in prior if p["disposition"] == "CLOSE" and (p.get("created_ts") or 0) > ctx.t0 - 90 * DAY_MS]
     if live_close:
+        by = "an analyst" if live_close[0].get("decided_by") == "human" else "the agent"
         ctx.book.add(kind="counter", code="PRIOR_CLOSURE", tool="case_memory", step=ctx.step, accounts=[a.account],
-                     claim=f"An earlier alert on {_a(a.account)} was checked and closed as normal ({live_close[0]['summary'] or 'no note'}).",
+                     claim=f"An earlier alert on {_a(a.account)} was checked and closed as normal by {by} "
+                           f"({live_close[0]['summary'] or 'no note'}).",
                      weight=0.25)
     if near and near[0]["hops"] <= 2:
         ctx.book.add(kind="support", code="NEAR_ESCALATED", tool="case_memory", step=ctx.step,
