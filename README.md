@@ -189,6 +189,26 @@ python -m uvicorn flowtrace.api.main:app --port 8000
 cd ../frontend && npm install && npm run dev  # http://localhost:5173
 ```
 
+### Upgrading an existing FalkorDB volume to append-only persistence
+`docker-compose.yml` starts Redis with `--appendonly yes`, so writes survive restarts and crashes. **If your volume was created before this change, do the switch-over once, or the graph will start empty:** Redis then finds no append-only file and ignores `dump.rdb`.
+
+```bash
+# 0. Back up the current snapshot
+docker exec flowtrace-falkordb-1 redis-cli SAVE
+docker cp flowtrace-falkordb-1:/var/lib/falkordb/data/dump.rdb ./dump-backup.rdb
+# 1. Recreate the container with the new compose file, but append-only OFF for this one start
+#    (temporarily set REDIS_ARGS: "--appendonly no" in docker-compose.yml)
+docker compose up -d
+# 2. Turn append-only on live; Redis writes the append-only file from the loaded graph
+docker exec flowtrace-falkordb-1 redis-cli CONFIG SET appendonly yes
+docker exec flowtrace-falkordb-1 redis-cli INFO persistence   # wait for aof_rewrite_in_progress:0
+# 3. Restore REDIS_ARGS to "--appendonly yes --appendfsync everysec" and recreate
+docker compose up -d
+python -m flowtrace.graph.smoke                               # from backend/: checks counts and the history marker
+```
+
+If the graph does come up empty, stop the container, copy `dump-backup.rdb` back to `/var/lib/falkordb/data/dump.rdb`, delete `appendonlydir/` in the volume, and repeat from step 1. Or reload from scratch with `python -m flowtrace.graph.load --replace`.
+
 ### Model files
 `data/models/triage_lgbm.pkl` is the pickled bundle `{model, features, threshold}`. `triage_lgbm.txt` is the native LightGBM booster, and `triage_features.json` holds the feature order and threshold.
 
