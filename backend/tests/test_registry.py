@@ -63,8 +63,22 @@ def test_propose_action_holds_a_trail_account_with_the_plan_numbers(runs, propos
     made, _ = proposals
     out = registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M1",
                                            "reason": "Case money is resting here"})
-    assert out["created"] and made[0]["account"] == "M1" and made[0]["amount_blocked"] == pytest.approx(20000)
-    assert made[0]["currency"] == "Euro"
+    assert out["created"] and made[0]["account"] == "M1" and made[0]["hold_amount"] == pytest.approx(20000)
+    assert made[0]["currency"] == "Euro" and made[0]["proposed_by"] == "agent"
+
+
+def test_mcp_proposals_are_marked_as_mcp(runs, proposals):
+    made, _ = proposals
+    registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M1",
+                                     "reason": "Case money is resting here"}, origin="mcp")
+    assert made[0]["proposed_by"] == "mcp"
+
+
+def test_propose_action_refuses_a_hold_below_the_minimum(runs, proposals):
+    """M0 sent almost everything on in cash: 500 is left, under actions.min_hold_usd."""
+    with pytest.raises(ToolError, match="minimum"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M0",
+                                         "reason": "Hold what is left"})
 
 
 @pytest.mark.parametrize("account", ["HUB", "Y", "NOPE"])
@@ -75,9 +89,11 @@ def test_propose_action_refuses_hubs_and_accounts_off_the_trail(runs, proposals,
     assert proposals[0] == []
 
 
-def test_propose_action_refuses_more_holds_than_the_cap(runs, proposals):
-    made, open_ = proposals
-    open_ += [{"type": "HOLD", "status": "APPROVED", "account": f"Q{i}"} for i in range(3)]
+def test_a_full_case_comes_back_as_a_tool_error(runs, proposals, monkeypatch):
+    """The cap itself is checked inside the write (service.propose); the registry passes the refusal on."""
+    def full(*a, **k):
+        raise service.ActionError(409, "this case already has 3 open holds (the most is 3)")
+    monkeypatch.setattr(service, "propose", full)
     with pytest.raises(ToolError, match="already has 3"):
         registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M2",
                                          "reason": "Hold it please"})
@@ -92,7 +108,7 @@ def test_act_plans_then_proposes_holds_and_the_case_action(runs, proposals):
     made, _ = proposals
     out = registry.act(CASE["case_id"])
     assert [(a["type"], a.get("account")) for a in made] == [("HOLD", "M1"), ("HOLD", "M2"), ("FILE_STR", None)]
-    assert out["plan"]["blocked"] == pytest.approx(25000) and store.load_plan(CASE["case_id"]) == out["plan"]
+    assert out["plan"]["frozen_now"] == pytest.approx(25000) and store.load_plan(CASE["case_id"]) == out["plan"]
 
 
 def test_read_tools_never_write(runs, monkeypatch):
@@ -106,7 +122,7 @@ def test_read_tools_never_write(runs, monkeypatch):
     assert registry.call("list_cases", {})[0]["case_id"] == CASE["case_id"]
 
 
-@pytest.mark.parametrize("disposition", ["CLOSE", None])
+@pytest.mark.parametrize("disposition", ["CLOSE", "REVIEW", None])
 def test_propose_action_refuses_holds_the_investigation_did_not_recommend(runs, proposals, disposition):
     res = runs / "results" / f"{CASE['case_id']}.json"
     if disposition is None:

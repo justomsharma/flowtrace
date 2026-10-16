@@ -13,6 +13,8 @@ const EVENT_PLAIN: Record<AuditEntry['event'], string> = {
   RELEASED: 'Released early',
   VERDICT: 'Verdict recorded',
   CASE_REUPLOADED: 'Withdrawn: file uploaded again',
+  SUPERSEDED: 'Withdrawn: another decision was approved',
+  WITHDRAWN: 'Withdrawn: the case was closed',
 }
 
 const caseLink = (caseId: string) => {
@@ -26,7 +28,7 @@ const mixed = (holds: Action[]) => new Set(holds.map((h) => h.currency ?? 'US Do
 
 /** Sum of holds in their own currency when they share one; otherwise in US dollars. */
 function total(holds: Action[]): string {
-  const usd = holds.reduce((s, h) => s + (h.amount_blocked ?? 0), 0)
+  const usd = holds.reduce((s, h) => s + (h.hold_amount ?? 0), 0)
   return mixed(holds) ? fmtMoney(usd) : fmtMoney(usd, holds[0]?.currency, holds[0]?.rate)
 }
 
@@ -61,8 +63,8 @@ export default function Results() {
           <p className="text-sm" style={{ color: 'var(--ink-2)' }}>What people decided on the agent's proposals, and the money held because of it.</p>
         </div>
         <div className="flex flex-wrap gap-x-14 gap-y-4">
-        <Figure label="Blocked today" value={today.length ? total(today) : '0'} note={`${today.length} hold${today.length === 1 ? '' : 's'} approved today${mixed(today) ? ', in US dollars' : ''}`} accent />
-        <Figure label="Holds in place" value={String(active.length)} note={active.length ? `${total(active)} held` : 'none right now'} />
+        <Figure label="Frozen today" value={today.length ? total(today) : '0'} note={`${today.length} hold${today.length === 1 ? '' : 's'} approved today${mixed(today) ? ', in US dollars' : ''}`} accent />
+        <Figure label="Holds in place" value={String(active.length)} note={active.length ? `${total(active)} frozen` : 'none right now'} />
         <Figure label="Waiting for a decision" value={String(waiting.length)} note="proposals nobody has decided yet" />
         </div>
       </header>
@@ -79,7 +81,7 @@ export default function Results() {
               <thead>
                 <tr className="text-left text-xs" style={{ color: 'var(--muted)' }}>
                   <th className="py-1.5 pr-4 font-medium">Account</th><th className="pr-4 font-medium">Case</th>
-                  <th className="pr-4 font-medium text-right">Blocked</th><th className="pr-4 font-medium">Approved by</th>
+                  <th className="pr-4 font-medium text-right">Frozen</th><th className="pr-4 font-medium">Approved by</th>
                   <th className="pr-4 font-medium">Ends</th><th className="font-medium text-right">Time left</th>
                 </tr>
               </thead>
@@ -88,7 +90,7 @@ export default function Results() {
                   <tr key={a.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td className="py-2 pr-4">{a.account ? shortAcct(a.account) : ''}</td>
                     <td className="pr-4"><Link to={caseLink(a.case_id)} className="underline underline-offset-2">{a.case_id}</Link></td>
-                    <td className="pr-4 text-right font-semibold" style={{ color: 'var(--s4)' }}>{fmtMoney(a.amount_blocked ?? 0, a.currency, a.rate)}</td>
+                    <td className="pr-4 text-right font-semibold" style={{ color: 'var(--s4)' }}>{fmtMoney(a.hold_amount ?? 0, a.currency, a.rate)}</td>
                     <td className="pr-4">{a.decided_by}</td>
                     <td className="pr-4" style={{ color: 'var(--ink-2)' }}>{a.expires_ts ? untilLabel(a.expires_ts) : ''}</td>
                     <td className="text-right font-semibold">{a.expires_ts ? timeLeft(a.expires_ts, now) : ''}</td>
@@ -107,8 +109,9 @@ export default function Results() {
             {waiting.map((a) => (
               <li key={a.id} className="flex items-baseline gap-4 py-2 text-sm" style={{ borderTop: '1px solid var(--border)' }}>
                 <Link to={caseLink(a.case_id)} className="underline underline-offset-2 tabular">{a.case_id}</Link>
-                <span className="flex-1">{ACTION_PLAIN[a.type].title}{a.account ? ` account ${shortAcct(a.account)}` : ''}</span>
-                {a.type === 'HOLD' && <span className="tabular" style={{ color: 'var(--ink-2)' }}>{fmtMoney(a.amount_blocked ?? 0, a.currency, a.rate)}</span>}
+                <span className="flex-1">{ACTION_PLAIN[a.type].title}{a.account ? ` account ${shortAcct(a.account)}` : ''}
+                  {a.proposed_by === 'mcp' && <span className="text-xs" style={{ color: 'var(--muted)' }}> (proposed through MCP)</span>}</span>
+                {a.type === 'HOLD' && <span className="tabular" style={{ color: 'var(--ink-2)' }}>{fmtMoney(a.hold_amount ?? 0, a.currency, a.rate)}</span>}
               </li>
             ))}
           </ul>
@@ -136,7 +139,7 @@ export default function Results() {
                 {audit.map((e) => (
                   <tr key={e.id} className="align-top [&>td]:py-2" style={{ borderTop: '1px solid var(--border)' }}>
                     <td className="pr-4 whitespace-nowrap tabular" style={{ color: 'var(--ink-2)' }}>{untilLabel(e.ts)}</td>
-                    <td className="pr-4 whitespace-nowrap">{e.actor === 'agent' ? 'Agent' : e.actor === 'system' ? 'System' : e.actor}</td>
+                    <td className="pr-4 whitespace-nowrap">{e.actor === 'agent' ? 'Agent' : e.actor === 'mcp' ? 'MCP client' : e.actor === 'system' ? 'System' : e.actor}</td>
                     <td className="pr-4 whitespace-nowrap">{EVENT_PLAIN[e.event] ?? e.event}</td>
                     <td className="pr-4 whitespace-nowrap tabular"><Link to={caseLink(e.case_id)} className="underline underline-offset-2">{e.case_id}</Link></td>
                     <td className="pr-4 tabular">{e.account ? shortAcct(e.account) : ''}</td>

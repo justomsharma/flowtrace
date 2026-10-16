@@ -48,3 +48,19 @@ def test_mcp_refusal_comes_back_as_a_tool_error(runs, monkeypatch):  # noqa: F81
     res = asyncio.run(_session(lambda c: c.call_tool("propose_action", {
         "case_id": CASE["case_id"], "type": "HOLD", "account": "HUB", "reason": "Hold the merchant"})))
     assert res.is_error and "hub" in res.content[0].text.lower()
+
+
+def test_mcp_proposals_are_recorded_as_mcp(runs, monkeypatch):  # noqa: F811
+    made = []
+    monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [])
+    monkeypatch.setattr(service, "propose", lambda case_id, type, **kw: (made.append(kw) or {"id": "A1", **kw}, True))
+    res = asyncio.run(_session(lambda c: c.call_tool("propose_action", {
+        "case_id": CASE["case_id"], "type": "HOLD", "account": "M1", "reason": "Case money is resting here"})))
+    assert not res.is_error and made[0]["proposed_by"] == "mcp"
+
+
+def test_the_mcp_process_never_holds_the_approver_token(monkeypatch):
+    monkeypatch.setenv("APPROVER_TOKEN", "s3cret")
+    build_server()
+    import os
+    assert "APPROVER_TOKEN" not in os.environ

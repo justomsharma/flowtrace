@@ -14,6 +14,7 @@ Run (from backend/):  python -m flowtrace.mcp.server              stdio, for Cla
 """
 # No `from __future__ import annotations`: the MCP SDK reads these signatures to build the tool schemas.
 import argparse
+import os
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -38,12 +39,15 @@ proposes: a person approves or rejects every action in the FlowTrace app, with a
 
 def _run(name: str, args: dict, ctx: CaseContext | None = None):
     try:
-        return registry.call(name, args, ctx)
+        return registry.call(name, args, ctx, origin="mcp")
     except (ToolError, ValidationError) as e:
         raise MCPToolError(str(e)) from e
 
 
 def build_server() -> MCPServer:
+    # Only the API approves, with APPROVER_TOKEN. This process must never hold it, even if a client config
+    # passes it in the environment.
+    os.environ.pop("APPROVER_TOKEN", None)
     server = MCPServer("flowtrace", instructions=INSTRUCTIONS)
     sessions: dict[str, tuple[dict, CaseContext]] = {}
 

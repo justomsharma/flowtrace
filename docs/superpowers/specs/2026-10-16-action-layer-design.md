@@ -201,3 +201,20 @@ The trail is small (≤ a few hundred accounts), so the cut runs in networkx on 
 - 4 business days ignores bank holidays.
 - A cap of 3 holds and a $1,000 minimum, chosen from the pass-through rule's minimum amount before measuring.
 - The approval step has no login. `decided_by` is whatever name the analyst types (default "analyst").
+
+## Update after review (round 2)
+
+These decisions replace the matching parts above.
+
+- **A hold is a lien on an amount.** `hold = min(money at rest in the account since the case money arrived, case money traced into it)`. This follows the RBI draft (Sep 2026) and the Indian courts, which limit a lien to the disputed amount. The stored action carries `hold_amount`; `amount_blocked` is gone.
+- **The headline is "frozen now"** (the sum of the holds). "On the case's routes" is reported apart and labelled as an assumption.
+- **The minimum vertex cut is context only.** A lien on an account with nothing in it freezes nothing, so holds are picked by the money they freeze. Ties go to the account that sits on more routes.
+- **Holds only after ESCALATE** (decided after seeing Sep 9).
+- **Approving CLOSE** withdraws the case's proposed holds and releases its approved ones, in the same query.
+- **Approve/reject need the API's `APPROVER_TOKEN`** (`X-Approver-Token`) and an approver name. The audit records `auth`. The MCP process drops the token.
+- **MCP proposals** are recorded as `proposed_by: "mcp"`. They get the same minimum, cap and gate as the agent's. The cap is checked inside the propose write.
+- **Measurement:**
+  - hold precision counts only laundering before the decision time, and is shown next to the base rate;
+  - the hub metric is dropped (hubs are blocked by code and tests);
+  - the legitimate-case column is reported as a cost.
+- **Hub degrees use only payments before the decision time** (`DEGREES_UNTIL`).

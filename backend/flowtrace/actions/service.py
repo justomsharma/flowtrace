@@ -1,7 +1,9 @@
 """Actions on cases: the agent proposes, a person approves or rejects with a reason.
 
-  propose   MERGE on dedup_key = "case|type|account": a double click, a re-plan, or the app and the MCP
-            server racing each other all get the one existing action. proposed_by is always 'agent'.
+  propose   keyed on dedup_key = "case|type|account": a double click, a re-plan, or the app and the MCP
+            server racing each other all get the one existing action. A HOLD is refused once the case has
+            actions.max_holds_per_case open holds, checked in the same write. proposed_by is 'agent' (the
+            app) or 'mcp' (an MCP client), never a person.
   decide    conditional write (only a PROPOSED action changes). The same idempotency key replays the
             first answer; any other second decision is a conflict (409).
   expire    an approved HOLD ends at the end of its Nth business day (UTC, Mon-Fri) and is released
@@ -22,6 +24,7 @@ from flowtrace.graph.client import ro, rw
 from flowtrace.settings import cfg
 
 DAY_MS = 86_400_000
+PROPOSERS = ("agent", "mcp")
 ACTION_TYPES = ("HOLD", "RELEASE", "ESCALATE", "FILE_STR", "CLOSE")
 NEEDS_ACCOUNT = ("HOLD", "RELEASE")
 VERDICT = {"FILE_STR": "ESCALATE", "ESCALATE": "ESCALATE", "CLOSE": "CLOSE"}
@@ -59,11 +62,14 @@ def get(action_id: str) -> dict | None:
     return dict(rows[0]["action"]) if rows else None
 
 
-def propose(case_id: str, type: str, *, account: str | None = None, amount_blocked: float = 0.0,
-            frozen_now: float = 0.0, currency: str = "US Dollar", rate: float = 1.0, why: str = "",
-            evidence_ids: list[str] | tuple = (), tx_ids: list[str] | tuple = (),
+def propose(case_id: str, type: str, *, account: str | None = None, hold_amount: float = 0.0,
+            on_routes: float = 0.0, currency: str = "US Dollar", rate: float = 1.0, why: str = "",
+            evidence_ids: list[str] | tuple = (), tx_ids: list[str] | tuple = (), proposed_by: str = "agent",
             now: int | None = None) -> tuple[dict, bool]:
-    """Create a PROPOSED action, or return the open one for the same case, type and account."""
+    """Create a PROPOSED action, or return the current one for the same case, type and account.
+    hold_amount is the money the hold freezes (a lien on the amount); on_routes is the assumption figure."""
+    if proposed_by not in PROPOSERS:
+        raise ActionError(422, f"proposals come from {' or '.join(PROPOSERS)}, not {proposed_by!r}")
     if type not in ACTION_TYPES:
         raise ActionError(422, f"unknown action type {type!r}; use one of {', '.join(ACTION_TYPES)}")
     if type in NEEDS_ACCOUNT and not account:
@@ -71,20 +77,24 @@ def propose(case_id: str, type: str, *, account: str | None = None, amount_block
     now = now or now_ms()
     props = {
         "id": _id("A"), "type": type, "status": "PROPOSED", "case_id": case_id, "account": account,
-        "amount_blocked": float(amount_blocked), "frozen_now": float(frozen_now), "currency": currency,
+        "hold_amount": float(hold_amount), "on_routes": float(on_routes), "currency": currency,
         "rate": float(rate), "why": why, "evidence_ids": list(evidence_ids), "tx_ids": list(tx_ids)[:20],
         "expiry_days": cfg()["actions"]["hold_expiry_business_days"] if type == "HOLD" else None,
-        "proposed_by": "agent", "proposed_at": now, "dedup_key": f"{case_id}|{type}|{account or ''}",
+        "proposed_by": proposed_by, "proposed_at": now, "dedup_key": f"{case_id}|{type}|{account or ''}",
     }
     props = {k: v for k, v in props.items() if v is not None}
+    cap = cfg()["actions"]["max_holds_per_case"] if type == "HOLD" else None
     row = rw(Q.PROPOSE_ACTION, {"case_id": case_id, "dedup_key": props["dedup_key"], "props": props,
-                                "account": account, "audit_id": _id("AU"), "now": now}).rows[0]
+                                "account": account, "audit_id": _id("AU"), "now": now, "cap": cap}).rows[0]
+    if row["action"] is None:
+        raise ActionError(409, f"this case already has {row['open_holds']} open holds (the most is {cap})")
     return dict(row["action"]), bool(row["created"])
 
 
 def decide(action_id: str, approve: bool, reason: str, by: str = "analyst", key: str | None = None,
-           now: int | None = None) -> dict:
-    """A person approves or rejects a proposed action. Only people call this; the agent and MCP cannot."""
+           auth: str | None = None, now: int | None = None) -> dict:
+    """A person approves or rejects a proposed action. Only the API calls this, after checking the approver
+    token (auth says how the approver was checked, and goes in the audit log). MCP has no way to reach it."""
     reason = (reason or "").strip()
     by = (by or "").strip()[:80] or "analyst"
     if len(reason) < cfg()["actions"]["min_reason_chars"]:
@@ -99,7 +109,7 @@ def decide(action_id: str, approve: bool, reason: str, by: str = "analyst", key:
     expires = add_business_days(now, a["expiry_days"]) if approve and a["type"] == "HOLD" else None
     # One query: the decision, its audit entry, the verdict, the release and withdrawn alternatives.
     rows = rw(Q.DECIDE_ACTION, {"id": action_id, "to": to, "by": by, "now": now, "reason": reason, "key": key,
-                                "expires_ts": expires, "audit_id": _id("AU"),
+                                "expires_ts": expires, "audit_id": _id("AU"), "auth": auth,
                                 "verdict": VERDICT.get(a["type"]) if approve else None}).rows
     if not rows:  # someone else decided between our read and our write
         return _already(get(action_id), key)

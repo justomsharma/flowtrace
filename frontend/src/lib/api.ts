@@ -291,8 +291,10 @@ export interface Action {
   status: ActionStatus
   case_id: string
   account?: string
-  amount_blocked?: number
-  frozen_now?: number
+  /** Money the hold freezes: the case money traced into the account (a lien on the amount, not the account). */
+  hold_amount?: number
+  /** Assumption: money upstream that would have to pass this account if the mules keep their routes. */
+  on_routes?: number
   /** Currency of the case's money trail, and its units per US dollar (graph amounts are in US dollars). */
   currency?: string
   rate?: number
@@ -301,7 +303,8 @@ export interface Action {
   tx_ids?: string[]
   expiry_days?: number
   expires_ts?: number
-  proposed_by: 'agent'
+  /** 'agent' = the FlowTrace app; 'mcp' = an outside AI client through the MCP server. Never a person. */
+  proposed_by: 'agent' | 'mcp'
   proposed_at: number
   decided_by?: string
   decided_at?: number
@@ -311,8 +314,8 @@ export interface Action {
 
 export interface HoldProposal {
   account: string
-  amount_blocked: number
-  frozen_now: number
+  hold: number
+  on_routes: number
   why: string
   evidence_ids: string[]
   tx_ids: string[]
@@ -323,12 +326,16 @@ export interface HoldPlan {
   case_id: string
   decided_at: number
   disposition: string | null
+  /** Case money still at rest in the trail (what holds could freeze, over every account). */
   in_motion: number
-  already_out: number
-  blocked: number
+  /** Headline: what the planned holds freeze now. */
   frozen_now: number
-  method: 'min-cut' | 'greedy' | 'none'
-  min_cut_size: number
+  /** Assumption, reported apart: money on the case's routes the holds would also stop. */
+  on_routes: number
+  already_out: number
+  /** Account-wide freezes that would cut every route (context; liens on empty accounts freeze nothing). */
+  route_cut_size: number
+  candidates: string[]
   holds: HoldProposal[]
   case_action: { type: ActionType; why: string } | null
   skipped_hubs: string[]
@@ -345,7 +352,9 @@ export interface AuditEntry {
   id: string
   ts: number
   actor: string
-  event: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'AUTO_RELEASED' | 'RELEASED' | 'VERDICT' | 'CASE_REUPLOADED'
+  event: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'AUTO_RELEASED' | 'RELEASED' | 'VERDICT' | 'CASE_REUPLOADED' | 'SUPERSEDED' | 'WITHDRAWN'
+  /** How the approver was checked ('approver-token'); set on decisions only. */
+  auth?: string
   action_id: string
   case_id: string
   account?: string
@@ -354,10 +363,17 @@ export interface AuditEntry {
   reason?: string
 }
 
+/** What the holds still open freeze now, and the money on the case's routes they would also stop (assumption). */
+export interface OpenEffect { frozen: number; on_routes: number }
+
+/** The approver token for approve/reject, from the dev config (frontend/.env.development.local). */
+export const approverToken: string | undefined = import.meta.env.VITE_APPROVER_TOKEN || undefined
+
 /** POST a JSON body. The idempotency key makes a repeated click return the first answer instead of acting twice. */
-export async function sendJSON<T>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
+export async function sendJSON<T>(path: string, body?: unknown, opts: { key?: string; approverToken?: string } = {}): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
+  if (opts.key) headers['Idempotency-Key'] = opts.key
+  if (opts.approverToken) headers['X-Approver-Token'] = opts.approverToken
   const r = await fetch(path, { method: 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) })
   if (!r.ok) {
     const text = await r.text()

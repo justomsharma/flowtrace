@@ -8,6 +8,13 @@ from flowtrace.agent import registry
 from flowtrace.api import main as M
 
 client = TestClient(M.app)  # not a context manager: no startup re-queue, no expiry timer
+TOKEN = {"X-Approver-Token": "s3cret"}
+
+
+@pytest.fixture(autouse=True)
+def approver_token(monkeypatch):
+    """The server's APPROVER_TOKEN (from .env in real use)."""
+    monkeypatch.setattr(M, "approver_token", lambda: "s3cret")
 
 
 @pytest.fixture
@@ -38,20 +45,41 @@ def test_plan_runs_the_agents_act_step(case, monkeypatch):
 def test_approve_passes_the_reason_name_and_key(monkeypatch):
     seen = {}
 
-    def decide(action_id, approve, reason, by="analyst", key=None):
-        seen.update(id=action_id, approve=approve, reason=reason, by=by, key=key)
+    def decide(action_id, approve, reason, by="analyst", key=None, auth=None):
+        seen.update(id=action_id, approve=approve, reason=reason, by=by, key=key, auth=auth)
         return {"id": action_id, "status": "APPROVED"}
     monkeypatch.setattr(service, "decide", decide)
     r = client.post("/api/actions/A1/approve", json={"reason": "Money still moving", "by": "Priya"},
-                    headers={"Idempotency-Key": "k1"})
+                    headers={"Idempotency-Key": "k1", **TOKEN})
     assert r.status_code == 200 and r.json()["status"] == "APPROVED"
-    assert seen == {"id": "A1", "approve": True, "reason": "Money still moving", "by": "Priya", "key": "k1"}
+    assert seen == {"id": "A1", "approve": True, "reason": "Money still moving", "by": "Priya", "key": "k1",
+                    "auth": "approver-token"}
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Approver-Token": "wrong"}])
+@pytest.mark.parametrize("verb", ["approve", "reject"])
+def test_a_decision_without_the_approver_token_is_refused(monkeypatch, headers, verb):
+    called = []
+    monkeypatch.setattr(service, "decide", lambda *a, **k: called.append(1))
+    r = client.post(f"/api/actions/A1/{verb}", json={"reason": "Money still moving", "by": "Priya"}, headers=headers)
+    assert r.status_code == 401 and called == []
+
+
+def test_decisions_are_off_when_the_server_has_no_approver_token(monkeypatch):
+    monkeypatch.setattr(M, "approver_token", lambda: None)
+    r = client.post("/api/actions/A1/approve", json={"reason": "Money still moving", "by": "Priya"}, headers=TOKEN)
+    assert r.status_code == 403 and "APPROVER_TOKEN" in r.json()["detail"]
+
+
+def test_a_decision_needs_the_approvers_name():
+    assert client.post("/api/actions/A1/approve", json={"reason": "Money still moving", "by": " "}, headers=TOKEN).status_code == 422
 
 
 def test_reject_is_a_decision_too(monkeypatch):
-    monkeypatch.setattr(service, "decide", lambda action_id, approve, reason, by="analyst", key=None:
+    monkeypatch.setattr(service, "decide", lambda action_id, approve, reason, by="analyst", key=None, auth=None:
                         {"id": action_id, "status": "APPROVED" if approve else "REJECTED"})
-    assert client.post("/api/actions/A1/reject", json={"reason": "Known payroll agent"}).json()["status"] == "REJECTED"
+    r = client.post("/api/actions/A1/reject", json={"reason": "Known payroll agent", "by": "Priya"}, headers=TOKEN)
+    assert r.json()["status"] == "REJECTED"
 
 
 @pytest.mark.parametrize("status", [404, 409, 422])
@@ -59,12 +87,12 @@ def test_decision_errors_keep_their_status(monkeypatch, status):
     def decide(*a, **k):
         raise ActionError(status, "nope")
     monkeypatch.setattr(service, "decide", decide)
-    r = client.post("/api/actions/A1/approve", json={"reason": "whatever it is"})
+    r = client.post("/api/actions/A1/approve", json={"reason": "whatever it is", "by": "Priya"}, headers=TOKEN)
     assert r.status_code == status and r.json()["detail"] == "nope"
 
 
 def test_a_decision_needs_a_reason_field():
-    assert client.post("/api/actions/A1/approve", json={}).status_code == 422
+    assert client.post("/api/actions/A1/approve", json={"by": "Priya"}, headers=TOKEN).status_code == 422
 
 
 def test_actions_and_audit_endpoints(monkeypatch):
@@ -79,13 +107,14 @@ def test_get_plan_returns_the_saved_plan_and_current_actions(case, monkeypatch):
     act = {"id": "A1", "type": "FILE_STR", "status": "PROPOSED"}
     monkeypatch.setattr(M.store, "load_plan", lambda cid: plan)
     monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [act])
-    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": plan, "actions": [act], "blocked_open": 0}
+    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": plan, "actions": [act],
+                                                            "open_effect": {"frozen": 0, "on_routes": 0}}
 
 
 def test_get_plan_before_any_plan_exists(case, monkeypatch):
     monkeypatch.setattr(M.store, "load_plan", lambda cid: None)
     monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: [])
-    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": None, "actions": [], "blocked_open": None}
+    assert client.get(f"/api/cases/{case}/plan").json() == {"plan": None, "actions": [], "open_effect": None}
 
 
 def test_a_stored_result_triggers_the_act_step_and_survives_its_failure(monkeypatch, tmp_path):
@@ -109,6 +138,6 @@ def test_get_plan_says_what_the_open_holds_block(case, monkeypatch):
         {"id": "A1", "type": "HOLD", "status": "APPROVED", "account": "M1"},
         {"id": "A2", "type": "HOLD", "status": "REJECTED", "account": "M2"}])
     seen = []
-    monkeypatch.setattr(M.planner, "blocked_by", lambda p, held: seen.append((p, held)) or 123.0)
+    monkeypatch.setattr(M.planner, "effect", lambda p, held: seen.append((p, held)) or {"frozen": 1.0, "on_routes": 2.0})
     r = client.get(f"/api/cases/{case}/plan").json()
-    assert r["blocked_open"] == 123.0 and seen == [(plan, ["M1"])]
+    assert r["open_effect"] == {"frozen": 1.0, "on_routes": 2.0} and seen == [(plan, ["M1"])]

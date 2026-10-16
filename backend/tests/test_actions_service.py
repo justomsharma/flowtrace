@@ -38,7 +38,7 @@ def g(monkeypatch):
 
 
 def hold(**kw):
-    return S.propose("ZZ-C001", "HOLD", account="ACC1", amount_blocked=5000.0, frozen_now=5000.0,
+    return S.propose("ZZ-C001", "HOLD", account="ACC1", hold_amount=5000.0,
                      why="Case money reached this account and has not left yet.", **kw)
 
 
@@ -66,6 +66,31 @@ def test_hold_needs_an_account_and_types_are_checked(g):
     with pytest.raises(ActionError) as e:
         S.propose("ZZ-C001", "APPROVE")
     assert e.value.status == 422
+
+
+def test_the_stored_hold_amount_is_the_money_frozen(g):
+    a, _ = hold(now=LIVE)
+    assert a["hold_amount"] == 5000.0 and "amount_blocked" not in a
+
+
+def test_mcp_proposals_say_where_they_came_from(g):
+    a, _ = S.propose("ZZ-C001", "HOLD", account="ACC9", hold_amount=2000.0, proposed_by="mcp", now=LIVE)
+    assert a["proposed_by"] == "mcp" and S.audit()[0]["actor"] == "mcp"
+    with pytest.raises(ActionError) as e:
+        S.propose("ZZ-C001", "HOLD", account="ACC8", proposed_by="analyst")
+    assert e.value.status == 422
+
+
+def test_the_hold_cap_is_checked_in_the_same_write(g):
+    cap = cfg()["actions"]["max_holds_per_case"]
+    made = [S.propose("ZZ-C001", "HOLD", account=f"ACC{i}", hold_amount=2000.0, now=LIVE)[0] for i in range(cap)]
+    with pytest.raises(ActionError) as e:
+        S.propose("ZZ-C001", "HOLD", account="ACC-X", hold_amount=2000.0, now=LIVE)
+    assert e.value.status == 409
+    again, created = S.propose("ZZ-C001", "HOLD", account="ACC0", hold_amount=2000.0, now=LIVE)
+    assert not created and again["id"] == made[0]["id"]          # an existing hold is still returned
+    assert len([x for x in S.list_actions(case_id="ZZ-C001") if x["type"] == "HOLD"]) == cap
+    S.propose("ZZ-C002", "HOLD", account="ACC-X", hold_amount=2000.0, now=LIVE)  # the cap is per case
 
 
 # --- deciding -------------------------------------------------------------------------------------
@@ -135,7 +160,7 @@ def test_approving_a_release_ends_the_hold(g):
 
 def test_reupload_withdraws_proposals_and_retires_decisions_so_renumbered_cases_start_clean(g):
     a, _ = hold(now=LIVE)
-    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", amount_blocked=2000.0, now=LIVE)
+    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", hold_amount=2000.0, now=LIVE)
     c, _ = S.propose("ZZ-C001", "FILE_STR", why="The evidence points to laundering", now=LIVE)
     S.decide(a["id"], True, "Money is still moving to cash", now=LIVE)
     S.decide(c["id"], False, "Not enough to file yet", now=LIVE)
@@ -157,6 +182,27 @@ def test_approving_one_case_decision_withdraws_the_other_open_ones(g):
     S.decide(f["id"], True, "Confirmed mule chain", now=LIVE)
     assert (S.get(c["id"])["status"], S.get(h["id"])["status"]) == ("EXPIRED", "PROPOSED")
     assert "SUPERSEDED" in [e["event"] for e in S.audit()]
+
+
+def test_closing_a_case_withdraws_its_proposed_holds_and_releases_approved_ones(g):
+    a, _ = hold(now=LIVE)
+    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", hold_amount=2000.0, now=LIVE)
+    other, _ = S.propose("ZZ-C002", "HOLD", account="ACC3", hold_amount=2000.0, now=LIVE)
+    S.decide(a["id"], True, "Money is still moving to cash", now=LIVE)
+    c, _ = S.propose("ZZ-C001", "CLOSE", why="Legitimate explanations", now=LIVE + 1)
+    S.decide(c["id"], True, "Supplier invoices verified", now=LIVE + 2)
+    assert (S.get(a["id"])["status"], S.get(b["id"])["status"]) == ("EXPIRED", "EXPIRED")
+    assert S.get(a["id"])["released_at"] == LIVE + 2
+    assert S.get(other["id"])["status"] == "PROPOSED"               # other cases are untouched
+    events = {(e["action_id"], e["event"]) for e in S.audit()}
+    assert {(a["id"], "RELEASED"), (b["id"], "WITHDRAWN")} <= events
+
+
+def test_a_decision_records_how_the_approver_was_checked(g):
+    a, _ = hold(now=LIVE)
+    S.decide(a["id"], True, "Money is still moving to cash", by="Priya", auth="approver-token", now=LIVE)
+    entry = next(e for e in S.audit() if e["event"] == "APPROVED")
+    assert (entry["actor"], entry["auth"]) == ("Priya", "approver-token")
 
 
 def test_a_released_account_can_be_held_and_released_again(g):

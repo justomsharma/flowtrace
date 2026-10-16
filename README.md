@@ -23,15 +23,15 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 15
 
 ![Case investigation](docs/screenshots/investigation.png)
 
-**4. Confirm hold.** After the investigation, the agent proposes which accounts to hold so the case money still in the trail cannot leave. The amber accounts on the map are the proposed holds, and the amber payments carried the case money into them. The bar splits the money into blocked, still loose, and already gone (cash, crypto, another currency or a merchant).
+**4. Confirm hold.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The amber accounts on the map are the proposed holds, and the amber payments carried the case money into them. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Each proposal says where it came from (the agent, or an outside AI client over MCP).
 
 ![Proposed holds on a case](docs/screenshots/holds.png)
 
-**5. A person decides.** Every hold, and the case decision (here: file an STR), needs Approve or Reject with a written reason. An approved hold shows who approved it, why, and a countdown to its automatic release. The rejected hold is no longer marked on the map.
+**5. A person decides.** Every hold, and the case decision (here: file an STR), needs Approve or Reject. The person gives their name (asked once) and a written reason, and the server checks its approver token. An approved hold shows who approved it, why, and a countdown to its automatic release. The rejected hold is no longer marked on the map.
 
 ![Approve and reject with a reason](docs/screenshots/approve.png)
 
-**6. Results.** Money blocked today, holds in place with live countdowns, proposals waiting for a decision, and the audit log. Each amount is shown in the currency of its money trail (R$, €, $).
+**6. Results.** Money frozen today, holds in place with live countdowns, proposals waiting for a decision, and the audit log. Each amount is shown in the currency of its money trail (R$, €, $).
 
 ![Results and audit log](docs/screenshots/results.png)
 
@@ -49,7 +49,7 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 15
 | Case funnel, **full test day** (Sep 10, 208,325 payments, 0.21% laundering) | **262 flagged → 180 cases**, largest 7 accounts; **15 of the top 15 cases are laundering**; of 124 schemes active that day, 18 are in the top 15, 51 in the top 50, 86 in some case | `python -m flowtrace.eval.fullday --day 2022-09-10`: same offline method as Sep 9 |
 | Case funnel, **curated demo sample** (Sep 9, 2,271 payments, 2.3% laundering, ~29× a real day) | 40 flagged → 17 cases, largest 6 accounts; 14 of the top 15 cases are laundering; 18 of 26 schemes in the top 15 | `python -m flowtrace.eval.funnel ../data/samples/demo_mixed_2022-09-09.csv`. The sample is hand-picked around known schemes for the demo, so it reads far better than a real day |
 | Adaptive agent vs fixed workflow | `python -m flowtrace.eval.compare` writes `data/models/agent_eval.json` | Same alerts, same query budget; see *Evaluation* |
-| Hold planner, **Sep 9 eval slice**, laundering cases (21) | Holds block **$9.15M of $9.22M** still in motion (in the median case, all of it); **54%** of the 39 holds are on accounts that really launder; **0 hubs** held | `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40`, with dispositions from the rule-based investigation. Full table and caveats in *Acting on a case* |
+| Hold planner, **Sep 9 eval slice** (top 40 ranked cases), laundering cases (21) | Holds **freeze $5.59M** of the $5.67M of case money still in the trail; 61% of the 41 holds are on accounts that really launder, against a **64% base rate**; on legitimate cases the proposals would wrongly freeze $98.3M if approved | `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40`, with dispositions from the rule-based investigation. Full table and caveats in *Acting on a case* |
 
 For comparison, published results on HI-Small are 62.9 F1 for GFP+LightGBM and 68.2 for Multi-PNA, on a different split that includes the Sep 11–18 tail. We exclude that tail (see *Data*).
 
@@ -65,7 +65,7 @@ CSV batch ─► parse ─► triage model (LightGBM) ─► load into FalkorDB 
                        │  (the LLM, or rules, or the fixed baseline)      risk re-scored each step
                        └─► deterministic disposition ─► senior-analyst report ─► validator ─► case memory in graph
                                                                                         │
-                       act: hold planner (min cut of the money trail) ─► PROPOSED actions in the graph
+                       act: hold planner (lien on the traced case money) ─► PROPOSED actions in the graph
                             ─► a person approves or rejects with a reason ─► audit trail, verdict back into case memory
 ```
 
@@ -86,10 +86,10 @@ The same tools are served over **MCP** (`python -m flowtrace.mcp.server`), so Cl
 (:Case {id, disposition, typology, crime_hypothesis, score, confidence, created_ts, summary, tx_ids, expires_ts,
         verdict?, verdict_by?, verdict_at?, verdict_reason?})
       -[:ABOUT]->(:Account)                     case memory written after each investigation; verdict = a person's decision
-(:Action {id, type, status, case_id, account?, amount_blocked, frozen_now, currency, rate, why, evidence_ids, tx_ids,
-          expiry_days, expires_ts, proposed_by: 'agent', proposed_at, decided_by, decided_at, reason, dedup_key})
+(:Action {id, type, status, case_id, account?, hold_amount, on_routes, currency, rate, why, evidence_ids, tx_ids,
+          expiry_days, expires_ts, proposed_by: 'agent'|'mcp', proposed_at, decided_by, decided_at, reason, dedup_key})
       -[:FOR]->(:Case), -[:ON]->(:Account)      type HOLD|RELEASE|ESCALATE|FILE_STR|CLOSE; status PROPOSED|APPROVED|REJECTED|EXPIRED
-(:Audit {id, ts, actor, event, action_id, case_id, account, from_status, to_status, reason})   only ever created
+(:Audit {id, ts, actor, auth?, event, action_id, case_id, account, from_status, to_status, reason})   only ever created
 ```
 
 - `ts` is stored as an integer in epoch milliseconds, with a range index on it. `amount` is in USD, converted at fixed rates derived from the data.
@@ -109,8 +109,8 @@ Every query lives in two files: [`backend/flowtrace/graph/queries.py`](backend/f
 | Baseline | `ACCOUNT_DAILY_HISTORY` (robust z-score against the account's own history) |
 | Network shape | `SHARED_DESTINATIONS` / `SHARED_SOURCES`, `CYCLES` |
 | Case memory | `SAVE_CASE`, `PRIOR_CASES`, `NEAREST_ESCALATED` (`shortestPath` to escalated accounts). Both read `coalesce(c.verdict, c.disposition)`, so a person's verdict replaces the agent's, and human verdicts come first |
-| Hold planner | `TRACE_FORWARD_HOP` from the case accounts, `HUB_DEGREES` + `DEGREES` (hub rules), `HOLD_FLOWS` (what each trail account received and sent after the case money arrived) |
-| Actions | `PROPOSE_ACTION` (MERGE on `dedup_key`; audit entry only when created), `DECIDE_ACTION` (`WHERE a.status = 'PROPOSED'`, so a second click changes nothing), `EXPIRE_DUE`, `EXPIRE_PROPOSALS` + `RETIRE_DECIDED` (re-upload), `AUDIT_LOG`. The decision, its verdict, an approved release and withdrawing the case's other open decisions happen in one query |
+| Hold planner | `TRACE_FORWARD_HOP` from the case accounts, `HUB_DEGREES` + `DEGREES_UNTIL` (hub rules, payments before the decision only), `HOLD_FLOWS` (what each trail account received and sent after the case money arrived) |
+| Actions | `PROPOSE_ACTION` (dedup and the per-case hold cap checked in the same write; audit entry only when created), `DECIDE_ACTION` (`WHERE a.status = 'PROPOSED'`, so a second click changes nothing), `EXPIRE_DUE`, `EXPIRE_PROPOSALS` + `RETIRE_DECIDED` (re-upload), `AUDIT_LOG`. The decision, its verdict, an approved release and withdrawing the case's other open decisions happen in one query |
 
 FalkorDB specifics we rely on:
 - **`GRAPH.RO_QUERY`:** every agent tool is read-only, enforced by the database.
@@ -118,12 +118,12 @@ FalkorDB specifics we rely on:
 - **Edge counting:** every query references the `TRANSFER` variable (e.g. `count(t)`), because FalkorDB otherwise counts parallel edges between the same two accounts only once.
 - **Literal `LIMIT`s**, because `LIMIT` cannot take a parameter.
 
-**`algo.maxFlow`.** FalkorDB 6.0.2 has it (checked with `CALL dbms.procedures()`), along with BFS, WCC, PageRank, betweenness, harmonic centrality, label propagation, MSF and shortest paths. The hold planner does not use it:
+**`algo.maxFlow`.** FalkorDB 6.0.2 has it (checked with `CALL dbms.procedures()`), along with BFS, WCC, PageRank, betweenness, harmonic centrality, label propagation, MSF and shortest paths. The hold planner does not use it for its context figure (the minimum vertex cut of the trail):
 - it returns a flow, not a cut;
 - it has no node capacities;
 - it runs over stored edges, so time order, node splitting and a super-source would mean writing a temporary network into the graph.
 
-The trail is small (a few hundred accounts at most), so the planner reads it with read-only Cypher and computes the cut in networkx.
+The trail is small (a few hundred accounts at most), so the planner reads it with read-only Cypher and computes the cut in networkx. Holds are liens on amounts, so the cut doesn't choose them (see *Acting on a case*).
 
 **Without FalkorDB the product does not work:** detection, investigation, tracing, legitimacy checks and case memory are all graph queries.
 
@@ -167,56 +167,63 @@ All thresholds and weights live in [`config.yaml`](config.yaml).
 
 ## Acting on a case: holds a person approves
 
-An investigation ends with a recommendation. The agent then acts: it plans which accounts to hold, and proposes those holds and the case decision. **It can only propose. A person approves or rejects each proposal, with a reason.** This follows how banks hold suspicious money:
-- **UK, FCA [FG24/6](https://www.fca.org.uk/publication/finalised-guidance/fg24-6.pdf).** In force 30 Oct 2024. An outbound payment may be delayed until the end of the 4th business day after it was received, only while the bank investigates, and the payer is told why.
-- **India, RBI [draft KYC Amendment Directions 2026](https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=63587).** A debit hold on the suspected mule amount, not the whole account (that is the last resort), for at most 60 days, with the customer told at once.
-- **AML vendors.** Unit21, Lucinity and Feedzai present the same split: the AI recommends, a human decides, and an audit trail records every decision.
+An investigation ends with a recommendation. Then the agent acts: it plans which accounts to hold and proposes those holds, along with the case decision. **The agent can only propose. Only a person can approve or reject, and they must give a reason.**
 
-**Hold planner** ([`actions/planner.py`](backend/flowtrace/actions/planner.py)). Deterministic, no LLM.
-1. **Trail.** A time-ordered forward trace from the case accounts, plus the alert payments, up to the end of the case window. That is the first moment an end-of-day run can act. Some payments are exits, and money that took them is **already gone**:
-   - a cash or crypto payment;
-   - a cross-currency payment (the data's proxy for cross-border);
-   - a payment to a hub.
-2. **Money at rest.** For each trail account: the case money that reached it, minus everything it sent after that, never below 0. This is conservative: any payment out is assumed to carry the case money first. The sum over the trail is the **money still in motion**.
-3. **Flow network.**
-   - Each account is split into in → out, so cutting it costs one hold.
-   - A super-source feeds in the money at rest at each account.
-   - Trail payments link the accounts.
-   - An account links to the sink when it has an exit or no onward payment.
-4. **Minimum vertex cut.** The fewest accounts that cut every route from the money at rest to an exit. Ties go to the cut where more money already sits. If the cut needs more than `actions.max_holds_per_case` (3) holds, a greedy pick adds the account that blocks the most money next. Holds that block less than `actions.min_hold_usd` ($1,000) are dropped.
-5. **Never a hub.** An account that any existing hub rule marks (`cases.hub_degree`, `trace.hub_degree`, `legitimacy.hub_receiver_in_degree`) is never held, however much money it has.
+How FlowTrace holds money, and what it is based on:
+- **A hold freezes an amount, never a whole account.** It is a lien on the case money traced into an account. This follows the RBI [draft KYC Amendment Directions, Sep 2026](https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=63587), which allow a debit hold on the suspected amount for at most 60 days. Indian High Courts have also limited liens to the disputed amount.
+- **How long a hold lasts is a policy setting:** `actions.hold_expiry_business_days`, 4 business days by default. After that the hold is released automatically.
+- **For comparison only:** the UK FCA's [FG24/6](https://www.fca.org.uk/publication/finalised-guidance/fg24-6.pdf) lets the payer's bank delay **one outbound payment** for up to 4 business days. That rule is about single payments. It is not an account hold, and FlowTrace does not cite it as one.
+- **AML vendors** (Unit21, Lucinity, Feedzai) show the same split: the AI recommends, a person decides, and an audit trail records every decision.
 
-Each hold carries:
-- the money it blocks, and how much of that is in the account now (the rest would reach it on the routes the case has used);
-- why, in plain words;
-- the evidence ids and the trail payments into it;
-- its expiry: `actions.hold_expiry_business_days` (4) business days after approval, then released automatically.
+**Hold planner** ([`actions/planner.py`](backend/flowtrace/actions/planner.py)). It is deterministic and uses no LLM.
+1. **Trail.** It traces the money forward in time from the case accounts, and adds the case's own flagged payments. It stops at the end of the case window: that is the decision time, and nothing after it is used.
+   - Some payments are **exits**: cash or crypto, a payment in another currency (the data's stand-in for cross-border), or a payment to a hub. Money that took an exit is **already gone**.
+2. **Hold amount.** For each account on the trail, the hold amount is the smaller of two figures:
+   - the money at rest in the account since the case money arrived (money in minus money out);
+   - the case money traced into it.
+
+   So a busy company that is a case account holds only its flagged money, never its day's receipts. The sum over the trail is the **case money still in the trail**.
+3. **Which holds.** The planner picks the accounts that freeze the most money, with these limits:
+   - at most `actions.max_holds_per_case` (3) holds per case;
+   - none below `actions.min_hold_usd` ($1,000);
+   - never a hub, by any of the existing hub rules. Hub status counts only payments before the decision time.
+
+   When two accounts hold the same amount, it picks the one that also sits on more of the case's routes.
+4. **The headline is "frozen now":** what the holds freeze today.
+5. **"On the case's routes" is an assumption, reported separately.** It is money resting upstream whose every route seen so far passes a held account. It counts only if the mules don't pay someone new. The planner still computes a minimum vertex cut of the trail network, but only as context: how many *account-wide* freezes would cut every route. A lien on an account with nothing in it freezes nothing, so the cut doesn't choose the holds.
+6. **Holds only after ESCALATE.** REVIEW means mixed evidence, which is below "reasonable grounds to suspect", so REVIEW only proposes a senior look. *This rule was decided after seeing the Sep 9 results* (before that, REVIEW cases got holds too).
 
 **Actions and audit** ([`actions/service.py`](backend/flowtrace/actions/service.py)):
-- **No duplicates.** Proposals MERGE on case, type and account. A double click, a re-plan, or the app and an MCP client racing each other all return the one existing action. A rejected proposal is not proposed again for that case.
-- **Decisions.** Approve and reject are conditional writes, and both need a reason. Repeating a decision with the same `Idempotency-Key` returns the first answer; any other second decision gets a 409.
-- **Audit.** Every change writes an `Audit` node in the same query. No query changes or deletes one.
-- **Verdicts.** Approving FILE_STR or ESCALATE, or closing a case, writes the person's verdict on the Case node next to the agent's disposition. `PRIOR_CASES` and `NEAREST_ESCALATED` prefer it, and keep the `created_ts < $t0` rule.
+- **Proposals.** Proposals are keyed on case, type and account, so a double click or a re-plan never creates a second action. The per-case cap of 3 holds is checked in the same write, so two callers racing each other can't go over it. Each proposal records where it came from: `agent` (the app) or `mcp` (an outside AI client).
+- **Decisions.** Approve and reject need a written reason, the approver's name, and the server's `APPROVER_TOKEN` in the `X-Approver-Token` header. The audit log records the name and how the approver was checked. The same `Idempotency-Key` returns the first answer; any other second decision gets a 409.
+- **What a decision changes, all in one query:**
+  - **Approving FILE_STR, ESCALATE or CLOSE** writes the person's verdict on the Case node, and withdraws the case's other open case decisions.
+  - **Approving CLOSE** (the case is legitimate) also withdraws the case's proposed holds and releases its approved holds.
+  - **Approving a RELEASE** ends that hold.
+- **Append-only audit.** Audit entries are only ever created. No query changes or deletes one.
+- **Case memory.** `PRIOR_CASES` and `NEAREST_ESCALATED` prefer a person's verdict over the agent's, and keep the `created_ts < $t0` rule.
 
 **API:**
-- `POST /api/cases/{id}/plan` plans and proposes. It needs a finished investigation, and it also runs automatically after every investigation.
-- `GET /api/cases/{id}/plan` returns the saved plan and the current actions.
+- `POST /api/cases/{id}/plan` plans holds and proposes them. It needs a finished investigation, and it also runs automatically after each investigation.
+- `GET /api/cases/{id}/plan` returns the plan, the actions, and what the open holds freeze now.
 - `GET /api/actions?status=&case_id=` lists actions.
-- `POST /api/actions/{id}/approve` and `POST /api/actions/{id}/reject` take `{reason, by}` and an optional `Idempotency-Key` header.
+- `POST /api/actions/{id}/approve` and `/reject` take `{reason, by}`, the `X-Approver-Token` header, and an optional `Idempotency-Key`.
 - `GET /api/audit?case_id=&limit=` returns the audit trail.
 
-**One tool registry** ([`agent/registry.py`](backend/flowtrace/agent/registry.py)).
+**One tool registry** ([`agent/registry.py`](backend/flowtrace/agent/registry.py)):
 - **Read-only tools** (GRAPH.RO_QUERY): the investigation tools, `get_case`, `list_cases` and `plan_holds`.
-- **One write tool:** `propose_action`.
-- **One implementation for every caller:** the in-app agent, the app's act step and the MCP server all go through the registry.
-- **Same checks for every caller.** `propose_action` refuses an account that is not on the case's money trail, refuses a hub, and refuses a hold once the case is at its cap.
+- **One write tool**, `propose_action`, with the same checks for every caller:
+  - a hold only after ESCALATE, only on an account on the trail, and never on a hub;
+  - only for at least the minimum amount, and only within the cap;
+  - a RELEASE only of an approved hold.
+- The in-app agent, the app's act step and the MCP server all use this one registry.
 
 ### MCP server
 
 [`backend/flowtrace/mcp/server.py`](backend/flowtrace/mcp/server.py) uses the official Python SDK (`mcp` 2.x, `MCPServer`).
 - **Read-only tools:** `account_profile`, `counterparty_history`, `recurring_flows`, `trace_funds`, `shared_counterparties`, `find_cycles`, `owner_network`, `case_memory`, `get_case`, `list_cases`, `plan_holds`. They are annotated `read_only_hint`, and their Cypher runs through GRAPH.RO_QUERY, so FalkorDB itself rejects a write.
-- **One write tool:** `propose_action`, annotated as idempotent and not read-only. It only creates PROPOSED actions.
-- **No approve tool.** Approval happens only in the FlowTrace app.
+- **One write tool:** `propose_action`. Its proposals are recorded as `proposed_by: "mcp"`, and the confirm panel shows "Proposed by an outside AI client (MCP)".
+- **It can't approve.** There is no approve tool, and the process drops `APPROVER_TOKEN` from its environment at startup, so it never holds the approver token.
 - **Sessions.** Investigation tools keep one context per case for the session, so an account found by `trace_funds` can be profiled next.
 
 ```bash
@@ -225,9 +232,9 @@ python -m flowtrace.mcp.server             # stdio (Claude Desktop, IDEs, most c
 python -m flowtrace.mcp.server --http      # streamable HTTP on http://127.0.0.1:8765/mcp
 ```
 
-The server needs FalkorDB running and the cases the app saved in `data/runs`. It does not need the API.
+The server needs FalkorDB and the cases the app saved (`data/runs`), but not the API.
 
-**Claude Desktop.** Edit the config file, then restart Claude Desktop:
+**Claude Desktop.** Edit the config file, then restart Claude Desktop. Do **not** add `APPROVER_TOKEN` to it.
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
@@ -246,39 +253,45 @@ The server needs FalkorDB running and the cases the app saved in `data/runs`. It
 
 **Any other MCP client.** Run the same command over stdio, or point the client at the HTTP endpoint. Try: "list the cases, then plan holds for the top one".
 
-### Measurement (honest; nothing tuned on Sep 9)
+### Measurement (honest)
 
-How this was measured:
-- `config.yaml` `actions` was set before this run and not changed after.
-- Holds are planned only for cases the investigation sends to ESCALATE or REVIEW, as in the app.
-- Dispositions come from the rule-based investigation (deterministic, no LLM).
-- A hold counts as right when its account sent or received a labelled laundering payment. Labels are used only for this scoring.
-- Amounts are in US dollars.
+How the measurement works:
+- **Which cases.** The **top 40 ranked cases** of the Sep 9 eval slice, and every case of the curated sample.
+- **Dispositions** come from the rule-based investigation (deterministic, no LLM). Holds are planned only after ESCALATE, as in the app.
+- **Correct hold.** A hold counts as correct when its account sent or received a labelled laundering payment **before the decision time**.
+- **Base rate.** The same share among *every* account a hold could have gone on (the planner's candidates), shown next to the precision.
+- **Fixed in advance.** The config values (cap, minimum, expiry) were set before the first run. The two later method changes were decided after seeing Sep 9:
+  - holds only after ESCALATE;
+  - a lien on the traced amount instead of the account's balance.
+- **Currency.** Amounts are in US dollars.
 
-| | Sep 9 eval slice: 21 laundering cases | Sep 9 eval slice: 19 legitimate cases | Curated sample: 17 cases (16 laundering) |
-|---|---|---|---|
-| Money still in motion | $9,217,839 total; median case $34,721 | $98,353,748 total; median case $7,459 | $4,658,747 total; median case $17,387 |
-| Already gone (cannot be held) | $144,885 | $16,392 | $116,663 |
-| Blocked by the planned holds | **$9,148,332 (99.2%)** | $98,353,748 (100%) | **$4,577,491 (98.3%)** |
-| Holds | 39, in 17 cases (2.3 per case) | 18, in 18 cases | 18, in 10 cases (1.8 per case) |
-| Holds on accounts that really launder | **21 of 39 (54%)** | 0 of 18 (0%) | **12 of 18 (67%)** |
-| A hub proposed for a hold | **0** | **0** | **0** |
+| | Sep 9 slice: 21 laundering cases | Curated sample: 17 cases (16 laundering) |
+|---|---|---|
+| Case money still in the trail | $5,669,216 (median case $31,763) | $813,787 |
+| **Frozen now by the planned holds** | **$5,588,222 (98.6%)** | **$704,345 (86.6%)** |
+| On the case's routes (assumption, not held) | $7,097 | $1,580 |
+| Already gone (cannot be held) | $144,885 | $116,663 |
+| Holds | 41, in 17 cases | 16, in 9 cases |
+| Holds on accounts that really launder | 25 of 41 (61%) | 10 of 16 (62.5%) |
+| Base rate among accounts a hold could go on | 37 of 58 (64%) | 15 of 21 (71%) |
 
-To reproduce, run `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40`, then the same with `--sample demo_mixed_2022-09-09.csv`.
+**Cost: money wrongly frozen on legitimate cases** (Sep 9 slice, 19 legitimate cases):
+- The rule-based investigation escalates 16 of them.
+- The planner proposes 15 holds that would freeze **$98,331,468** if a person approved them.
+- $98.2M of that comes from two cases (C024 and C025). In each, the *flagged payment itself* is a single ACH of $77.3M or $20.9M into the case account. So a lien limited to the flagged amount is still that large, and only a person rejecting it prevents the cost.
+- The other 13 holds come to $104,502.
+
+To reproduce, run `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40` and `--sample demo_mixed_2022-09-09.csv`.
 - Each run writes `data/models/holds_eval_*.json`.
 - The planner only reads.
 - The slice batch is uploaded and then deleted. The demo batch is left alone if the UI already uploaded it.
 
-What the numbers say, and what they do not:
-- **The holds are only as good as the decision before them.** On this slice, the rule-based investigation escalates 16 of the 19 legitimate cases, so the planner proposes 18 holds on legitimate money. A person should reject exactly those, which is why nothing is held without a person's approval.
-- **Two legitimate corporate cases account for $77.3M and $20.9M** of the money in motion. The planner counts every payment a *case* account received that day as case money (step 2), so a busy company's daily receipts count as "in motion".
-  - The fix the RBI draft points to: cap the hold on a case account at the suspicious amount (a lien on the amount, not on the account).
-  - It is not applied here, because changing the method after seeing Sep 9 would be tuning on the test day. It should be chosen on Sep 7–8 first.
-- **Hold precision is 54% on the slice and 67% on the curated sample.** So in laundering cases, a third to a half of the holds sit on accounts with no labelled laundering payment. Those accounts are downstream receivers of the money: some are likely unlabelled mules, some are innocent receivers. A hold there still blocks case money, but it needs a person's judgement.
-- **The hub rule costs some laundering.** In 2 slice cases and 3 curated cases, every case account is a hub (70+ payments in 6 days). Those cases get no hold, by design.
-- **The samples are small and inflated.**
-  - About 50% of the slice's cases are laundering, and 94% of the curated sample's, against well under 1% of payments on a real day.
-  - With n = 40 and n = 17, one case moves a share by several points.
+What the numbers say:
+- **The holds freeze most of the case money still in the trail** (98.6% and 86.6%), with at most 3 holds per case.
+- **Picking by amount is no better than picking at random** among the holdable accounts: 61% vs a 64% base rate, and 62.5% vs 71%. The planner finds where the money is. It doesn't tell a mule from an innocent receiver.
+- **The decision before the holds sets their cost.** The rule-based investigation escalated 16 of 19 legitimate cases on this slice. This is why every hold waits for a person.
+- **The hub rule costs some laundering.** In 2 slice cases and 3 curated cases, every case account is a hub (70+ payments in 6 days before the case), so those cases get no hold.
+- **The samples are small and inflated.** About 50% of the slice's cases are laundering, and 94% of the curated sample's, against well under 1% of payments on a real day. With n = 40 and n = 17, one case moves a share by several points.
 
 ## Data
 
@@ -335,7 +348,9 @@ python -m flowtrace.eval.compare --cases 25
 python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40
 python -m flowtrace.eval.holds --sample demo_mixed_2022-09-09.csv
 
-# 6. Run the app (and, optionally, the MCP server for Claude Desktop or any MCP client)
+# 6. Run the app (and, optionally, the MCP server for Claude Desktop or any MCP client).
+#    Approve/reject needs APPROVER_TOKEN in .env and the same value as VITE_APPROVER_TOKEN in
+#    frontend/.env.development.local (see the .env.example files). Never give it to the MCP server.
 python -m uvicorn flowtrace.api.main:app --port 8000
 python -m flowtrace.mcp.server
 cd ../frontend && npm install && npm run dev  # http://localhost:5173
@@ -402,17 +417,29 @@ python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 
 `backend/tests` holds unit tests for recurring-payment detection, the agent loop, the LLM client (mocked OpenAI: success, refusal, truncation, invalid JSON, no key, API errors), pass-through pairing, case building (hubs, size cap, score, tiers), calibration, idempotent uploads, sample date range and the loader's index wait. The agent tests use a small in-memory stand-in for FalkorDB, so the tool, policy and disposition logic can be tested without a database. The real Cypher is checked against FalkorDB by `flowtrace.graph.smoke`.
 
 Action-layer tests:
-- **Hold planner** (in-memory graph): min cut, the greedy cap, the small-hold floor, round-trip loops, hubs never held, currency.
+- **Hold planner** (in-memory graph):
+  - a lien only on the traced case money (a busy case account holds only its flagged money);
+  - the largest amounts within the cap, nothing below the minimum, and round-trip loops;
+  - hubs never held, and hub degrees counted only before the decision;
+  - holds only after ESCALATE;
+  - currency.
 - **Actions** (a scratch FalkorDB graph that is deleted afterwards, never the main graph):
   - double proposals, and double approvals with idempotency keys;
+  - the hold cap checked in the same write, and MCP proposals marked `mcp`;
   - reasons required, and rejected holds not proposed again;
-  - expiry and release, and withdrawal on re-upload;
+  - expiry and release, and approving CLOSE withdrawing and releasing the case's holds;
+  - withdrawal on re-upload;
   - verdict write-back, and case memory preferring human verdicts.
 
   A separate check confirms the audit queries only ever create entries.
-- **Registry**: the read tools never write, and `propose_action` refuses hubs, accounts off the trail, and holds over the cap.
-- **MCP**: the tools are listed and called through an in-process MCP client.
-- **API**: plan, approve/reject, error codes, audit.
+- **Registry**: the read tools never write, and `propose_action` refuses hubs, accounts off the trail, amounts below the minimum, and REVIEW or CLOSE cases.
+- **MCP**:
+  - the tools are listed and called through an in-process MCP client;
+  - its proposals are recorded as `mcp`;
+  - it has no approve tool, and it drops the approver token.
+- **API**:
+  - plan, approve/reject, error codes and audit;
+  - a decision without the right approver token, or with no approver name, is refused.
 
 ## AI assistance
 

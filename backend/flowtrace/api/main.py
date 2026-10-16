@@ -5,6 +5,7 @@ Run:  uvicorn flowtrace.api.main:app --port 8000   (from backend/)
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import multiprocessing
@@ -18,7 +19,8 @@ from typing import Literal
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from dotenv import dotenv_values
+from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from flowtrace import store
@@ -31,7 +33,7 @@ from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
-from flowtrace.settings import cfg, settings
+from flowtrace.settings import ROOT, cfg, settings
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -334,7 +336,27 @@ def get_case(case_id: str) -> dict:
 
 class Decision(BaseModel):
     reason: str
-    by: str = "analyst"
+    by: str  # the approver's name, recorded in the audit log
+
+    @field_validator("by")
+    @classmethod
+    def _named(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("say who is deciding")
+        return v.strip()
+
+
+def approver_token() -> str | None:
+    """APPROVER_TOKEN from the environment or .env. Only this API process reads it; the MCP server drops it."""
+    return os.environ.get("APPROVER_TOKEN") or dotenv_values(ROOT / ".env").get("APPROVER_TOKEN") or None
+
+
+def _check_approver(token: str | None) -> None:
+    expected = approver_token()
+    if not expected:
+        raise HTTPException(403, "approvals are switched off on this server: set APPROVER_TOKEN in .env")
+    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(401, "approver token missing or wrong")
 
 
 @app.post("/api/cases/{case_id}/plan")
@@ -350,11 +372,11 @@ def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
 
 @app.get("/api/cases/{case_id}/plan")
 def get_plan(case_id: str) -> dict:
-    """The saved plan, the case's current actions, and what the holds still open (proposed or approved) block:
-    once a person rejects one, the rest no longer add up to the plan's total."""
+    """The saved plan, the case's current actions, and what the holds still open (proposed or approved) freeze,
+    plus the money on the case's routes they would also stop (an assumption). Recounted after every decision."""
     plan, actions = store.load_plan(case_id), service.list_actions(case_id=case_id)
     held = [a["account"] for a in actions if a["type"] == "HOLD" and a["status"] in ("PROPOSED", "APPROVED")]
-    return {"plan": plan, "actions": actions, "blocked_open": planner.blocked_by(plan, held) if plan else None}
+    return {"plan": plan, "actions": actions, "open_effect": planner.effect(plan, held) if plan else None}
 
 
 @app.get("/api/actions")
@@ -362,21 +384,24 @@ def list_actions(status: str | None = None, case_id: str | None = None) -> list[
     return service.list_actions(case_id=case_id, status=status)
 
 
-def _decide(action_id: str, approve: bool, d: Decision, key: str | None) -> dict:
+def _decide(action_id: str, approve: bool, d: Decision, key: str | None, token: str | None) -> dict:
+    _check_approver(token)
     try:
-        return service.decide(action_id, approve, d.reason, by=d.by, key=key)
+        return service.decide(action_id, approve, d.reason, by=d.by, key=key, auth="approver-token")
     except service.ActionError as e:
         raise HTTPException(e.status, str(e)) from e
 
 
 @app.post("/api/actions/{action_id}/approve")
-def approve_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None)) -> dict:
-    return _decide(action_id, True, d, idempotency_key)
+def approve_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
+                   x_approver_token: str | None = Header(None)) -> dict:
+    return _decide(action_id, True, d, idempotency_key, x_approver_token)
 
 
 @app.post("/api/actions/{action_id}/reject")
-def reject_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None)) -> dict:
-    return _decide(action_id, False, d, idempotency_key)
+def reject_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
+                  x_approver_token: str | None = Header(None)) -> dict:
+    return _decide(action_id, False, d, idempotency_key, x_approver_token)
 
 
 @app.get("/api/audit")

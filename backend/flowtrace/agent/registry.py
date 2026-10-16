@@ -5,9 +5,11 @@
   propose_action the only write: creates PROPOSED actions. Nothing here can approve; only a person can,
                  through the API the UI calls.
 
-propose_action checks every caller the same way: a known type; a HOLD only when the investigation recommends
-it (actions.propose_for), only on an account of the case's money trail that is not a hub, and at most
-actions.max_holds_per_case open holds per case; a RELEASE only of an approved hold.
+propose_action checks every caller the same way: a known type; a HOLD only after an investigation that
+recommends escalation (actions.propose_for), only on an account of the case's money trail that is not a hub,
+only for at least actions.min_hold_usd of case money, and at most actions.max_holds_per_case open holds per
+case (checked inside the write); a RELEASE only of an approved hold. Each proposal records where it came
+from: 'agent' (the app) or 'mcp' (an MCP client).
 """
 from __future__ import annotations
 
@@ -77,18 +79,20 @@ def list_cases(a: ListArgs) -> list[dict]:
 
 
 def plan_holds(a: CaseArgs) -> dict:
-    """Which accounts to hold so the case money still in the trail cannot leave: fewest holds (a minimum cut
-    of the money trail), never a hub. Read-only: it only computes the plan."""
+    """Which accounts to hold so the case money still sitting in them cannot leave. A hold is a lien on the
+    case money traced into an account, never its whole balance, and never on a hub. frozen_now is what the holds
+    freeze today; on_routes is an assumption (money that would have to pass a held account if the mules keep
+    their routes). Read-only: it only computes the plan."""
     return planner.plan_holds(_case(a.case_id), cfg(), store.load_result(a.case_id))
 
 
-def propose_action(a: ProposeArgs) -> dict:
+def propose_action(a: ProposeArgs, origin: str = "agent") -> dict:
     """Propose an action for a person to approve or reject (HOLD, RELEASE, ESCALATE, FILE_STR, CLOSE).
     It is only a proposal: it changes nothing until a person approves it."""
-    return _propose(a)
+    return _propose(a, origin=origin)
 
 
-def _propose(a: ProposeArgs, plan: dict | None = None) -> dict:
+def _propose(a: ProposeArgs, plan: dict | None = None, origin: str = "agent") -> dict:
     """plan: the case's hold plan when the caller already has it (the act step), so it is computed once."""
     case = _case(a.case_id)
     if a.type in ("HOLD", "RELEASE") and not a.account:
@@ -102,7 +106,7 @@ def _propose(a: ProposeArgs, plan: dict | None = None) -> dict:
         result = store.load_result(a.case_id)
         disposition = (result or {}).get("disposition", {}).get("action")
         if disposition not in cfg()["actions"]["propose_for"]:
-            raise ToolError("a hold needs an investigation that recommends one (escalate or review); "
+            raise ToolError("a hold needs an investigation that recommends escalation; "
                             + (f"this one recommends {disposition.lower()}" if disposition else "this case is not investigated yet"))
         plan = plan or planner.plan_holds(case, cfg(), result)
         node = next((n for n in plan["network"]["nodes"] if n["id"] == a.account), None)
@@ -110,19 +114,20 @@ def _propose(a: ProposeArgs, plan: dict | None = None) -> dict:
             raise ToolError(f"{a.account} is a hub (a merchant or processor): FlowTrace never holds hubs")
         if node is None:
             raise ToolError(f"{a.account} is not on this case's money trail")
-        open_holds = {x["account"] for x in current if x["type"] == "HOLD" and x["status"] in ("PROPOSED", "APPROVED")}
-        cap = cfg()["actions"]["max_holds_per_case"]
-        if a.account not in open_holds and len(open_holds) >= cap:
-            raise ToolError(f"this case already has {len(open_holds)} open holds (the most is {cap})")
+        floor = cfg()["actions"]["min_hold_usd"]
+        if node["at_rest"] < floor:
+            raise ToolError(f"only {node['at_rest']:,.0f} of case money is in {a.account}, under the minimum hold of {floor:,.0f}")
         hold = next((h for h in plan["holds"] if h["account"] == a.account), None)
-        numbers = {"amount_blocked": hold["amount_blocked"] if hold else node["at_rest"],
-                   "frozen_now": hold["frozen_now"] if hold else node["at_rest"],
+        numbers = {"hold_amount": node["at_rest"], "on_routes": hold["on_routes"] if hold else 0.0,
                    "currency": plan["currency"], "rate": plan["rate"],
                    "tx_ids": hold["tx_ids"] if hold else []}
         if not a.evidence_ids and hold:
             a.evidence_ids = hold["evidence_ids"]
-    action, created = service.propose(a.case_id, a.type, account=a.account, why=a.reason,
-                                      evidence_ids=a.evidence_ids, **numbers)
+    try:
+        action, created = service.propose(a.case_id, a.type, account=a.account, why=a.reason,
+                                          evidence_ids=a.evidence_ids, proposed_by=origin, **numbers)
+    except service.ActionError as e:  # e.g. the case is at its hold cap (checked inside the write)
+        raise ToolError(str(e)) from e
     return {"action": action, "created": created}
 
 
@@ -139,8 +144,9 @@ def investigation_tools() -> dict[str, ToolSpec]:
     return {n: s for n, s in REGISTRY.items() if s.scope == "case"}
 
 
-def call(name: str, args: dict, ctx: CaseContext | None = None):
-    """Validate and run one registry tool. Case tools need the case's investigation context."""
+def call(name: str, args: dict, ctx: CaseContext | None = None, origin: str = "agent"):
+    """Validate and run one registry tool. Case tools need the case's investigation context. origin says who
+    is calling ('agent' = the app, 'mcp' = an MCP client) and is recorded on proposals."""
     spec = REGISTRY.get(name)
     if spec is None:
         raise ToolError(f"unknown tool {name}")
@@ -148,6 +154,8 @@ def call(name: str, args: dict, ctx: CaseContext | None = None):
         if ctx is None:
             raise ToolError(f"{name} runs inside a case investigation")
         return run_tool(ctx, name, args)
+    if spec.writes:
+        return spec.fn(spec.args.model_validate(args), origin=origin)
     return spec.fn(spec.args.model_validate(args))
 
 

@@ -135,6 +135,15 @@ RETURN a.id AS id, out_deg, count(i) AS in_deg
 
 # --- Hold planner -------------------------------------------------------------------------
 
+# Degrees from payments before the decision time only, so a later busy spell never decides a past hold.
+DEGREES_UNTIL = """
+MATCH (a:Account) WHERE a.id IN $ids
+OPTIONAL MATCH (a)-[o:TRANSFER]->() WHERE o.ts + 0 < $t1
+WITH a, count(o) AS out_deg
+OPTIONAL MATCH (a)<-[i:TRANSFER]-() WHERE i.ts + 0 < $t1
+RETURN a.id AS id, out_deg, count(i) AS in_deg
+"""
+
 # What each trail account did with money after the case money first reached it ($since: [{id, ts}]),
 # up to the decision time $t1. exit_sum = money sent in hard-to-trace form or across currencies.
 HOLD_FLOWS = """
@@ -301,19 +310,28 @@ DELETE t
 # current (proposed, approved or rejected); it is cleared when a hold ends (so the account can be held again) and
 # when the batch is uploaded again (its cases are renumbered).
 
+# A new action is created only when no current action has the same dedup_key and, for a HOLD ($cap set), the
+# case has fewer than $cap open holds. Both checks and the write are one query, so two callers racing each
+# other can neither duplicate an action nor go over the cap. action is null when the cap stopped it.
 PROPOSE_ACTION = """
 MERGE (c:Case {id: $case_id})
-MERGE (a:Action {dedup_key: $dedup_key})
-ON CREATE SET a += $props
-WITH a, c, a.id = $props.id AS created
-MERGE (a)-[:FOR]->(c)
-WITH a, created
-OPTIONAL MATCH (x:Account {id: $account})
-FOREACH (_ IN CASE WHEN created AND x IS NOT NULL THEN [1] ELSE [] END | MERGE (a)-[:ON]->(x))
+WITH c
+OPTIONAL MATCH (o:Action {case_id: $case_id, type: 'HOLD'})
+WHERE $cap IS NOT NULL AND o.status IN ['PROPOSED', 'APPROVED'] AND o.retired_at IS NULL
+WITH c, count(o) AS open_holds
+OPTIONAL MATCH (x:Action {dedup_key: $dedup_key})
+WITH c, open_holds, x IS NULL AND ($cap IS NULL OR open_holds < $cap) AS created
 FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
-  CREATE (:Audit {id: $audit_id, ts: $now, actor: a.proposed_by, event: 'PROPOSED', action_id: a.id,
-                  case_id: a.case_id, account: a.account, from_status: '', to_status: 'PROPOSED', reason: a.why}))
-RETURN properties(a) AS action, created
+  CREATE (n:Action)
+  SET n += $props
+  MERGE (n)-[:FOR]->(c)
+  CREATE (:Audit {id: $audit_id, ts: $now, actor: $props.proposed_by, event: 'PROPOSED', action_id: $props.id,
+                  case_id: $case_id, account: $account, from_status: '', to_status: 'PROPOSED', reason: $props.why}))
+WITH created, open_holds
+OPTIONAL MATCH (a:Action {dedup_key: $dedup_key})
+OPTIONAL MATCH (acc:Account {id: $account})
+FOREACH (_ IN CASE WHEN created AND a IS NOT NULL AND acc IS NOT NULL THEN [1] ELSE [] END | MERGE (a)-[:ON]->(acc))
+RETURN properties(a) AS action, created, open_holds
 """
 
 GET_ACTION = """
@@ -325,6 +343,8 @@ RETURN properties(a) AS action
 # decision causes happens in the same query, so it all happens or none of it does:
 #   $verdict   (approved FILE_STR / ESCALATE / CLOSE) the person's verdict on the Case, and the case's other
 #              open case decisions are withdrawn (SUPERSEDED)
+#   CLOSE      (approved: the case is legitimate) its proposed holds and releases are withdrawn (WITHDRAWN)
+#              and its approved holds end now (RELEASED)
 #   RELEASE    (approved) the case's approved hold on that account ends now, and the release's own
 #              dedup_key is cleared so the account can be released again after a new hold
 DECIDE_ACTION = """
@@ -332,29 +352,31 @@ MATCH (a:Action {id: $id}) WHERE a.status = 'PROPOSED'
 SET a.status = $to, a.decided_by = $by, a.decided_at = $now, a.reason = $reason, a.decision_key = $key,
     a.expires_ts = $expires_ts,
     a.dedup_key = CASE WHEN a.type = 'RELEASE' AND $to = 'APPROVED' THEN NULL ELSE a.dedup_key END
-CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, event: $to, action_id: a.id, case_id: a.case_id,
+CREATE (:Audit {id: $audit_id, ts: $now, actor: $by, auth: $auth, event: $to, action_id: a.id, case_id: a.case_id,
                 account: a.account, from_status: 'PROPOSED', to_status: $to, reason: $reason})
 WITH a
 OPTIONAL MATCH (c:Case {id: a.case_id})
 FOREACH (_ IN CASE WHEN $verdict IS NOT NULL AND c IS NOT NULL THEN [1] ELSE [] END |
   SET c.verdict = $verdict, c.verdict_by = $by, c.verdict_at = $now, c.verdict_reason = $reason,
       c.verdict_action = a.id
-  CREATE (:Audit {id: $audit_id + '-V', ts: $now, actor: $by, event: 'VERDICT', action_id: a.id, case_id: c.id,
-                  from_status: coalesce(c.disposition, ''), to_status: $verdict, reason: $reason}))
+  CREATE (:Audit {id: $audit_id + '-V', ts: $now, actor: $by, auth: $auth, event: 'VERDICT', action_id: a.id,
+                  case_id: c.id, from_status: coalesce(c.disposition, ''), to_status: $verdict, reason: $reason}))
 WITH a
 OPTIONAL MATCH (o:Action {case_id: a.case_id})
 WHERE o.id <> a.id AND o.retired_at IS NULL AND (
       ($to = 'APPROVED' AND a.type = 'RELEASE' AND o.type = 'HOLD' AND o.status = 'APPROVED' AND o.account = a.account)
-   OR ($verdict IS NOT NULL AND o.status = 'PROPOSED' AND o.type IN ['ESCALATE', 'FILE_STR', 'CLOSE']))
+   OR ($verdict IS NOT NULL AND o.status = 'PROPOSED' AND o.type IN ['ESCALATE', 'FILE_STR', 'CLOSE'])
+   OR ($verdict = 'CLOSE' AND o.type IN ['HOLD', 'RELEASE'] AND o.status = 'PROPOSED')
+   OR ($verdict = 'CLOSE' AND o.type = 'HOLD' AND o.status = 'APPROVED'))
 WITH a, collect(o) AS others
 FOREACH (o IN others |
-  SET o.status = 'EXPIRED', o.dedup_key = NULL,
-      o.released_at = CASE WHEN o.type = 'HOLD' THEN $now ELSE o.released_at END
-  CREATE (:Audit {id: $audit_id + '-' + o.id, ts: $now, actor: $by,
-                  event: CASE WHEN o.type = 'HOLD' THEN 'RELEASED' ELSE 'SUPERSEDED' END, action_id: o.id,
-                  case_id: o.case_id, account: o.account,
-                  from_status: CASE WHEN o.type = 'HOLD' THEN 'APPROVED' ELSE 'PROPOSED' END, to_status: 'EXPIRED',
-                  reason: $reason}))
+  CREATE (:Audit {id: $audit_id + '-' + o.id, ts: $now, actor: $by, auth: $auth,
+                  event: CASE WHEN o.status = 'APPROVED' THEN 'RELEASED'
+                              WHEN o.type IN ['HOLD', 'RELEASE'] THEN 'WITHDRAWN' ELSE 'SUPERSEDED' END,
+                  action_id: o.id, case_id: o.case_id, account: o.account, from_status: o.status,
+                  to_status: 'EXPIRED', reason: $reason})
+  SET o.released_at = CASE WHEN o.status = 'APPROVED' THEN $now ELSE o.released_at END
+  SET o.status = 'EXPIRED', o.dedup_key = NULL)
 RETURN properties(a) AS action
 """
 
