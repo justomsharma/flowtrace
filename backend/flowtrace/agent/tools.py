@@ -344,10 +344,14 @@ def find_cycles(ctx: CaseContext, a: AccountArgs) -> dict:
                        for i, t in enumerate(r["tx_ids"])], role="cycle")
     if rows:
         best = rows[0]
-        kept = best["amounts"][-1] / best["amounts"][0] if best["amounts"][0] else 0
+        sent, back = best["amounts"][0], best["amounts"][-1]
+        others = len(best["accounts"]) - 2
+        # The returning payment is a different transfer, so it can be larger than the one that left:
+        # state both amounts instead of a share.
+        kept = min(back / sent, 1.0) if sent else 0
         ctx.book.add(kind="support", code="CYCLE", tool="find_cycles", step=ctx.step,
-                     claim=f"Money went round in a loop: it left {_a(a.account)}, passed through "
-                           f"{len(best['accounts']) - 2} other accounts and {kept:.0%} of it came back.",
+                     claim=f"Money went round in a loop: {_usd(sent)} left {_a(a.account)}, passed through "
+                           f"{others} other account{'s' if others != 1 else ''}, and {_usd(back)} came back.",
                      weight=0.55, escalator=True, tx_ids=list(best["tx_ids"]), accounts=list(best["accounts"]),
                      metrics={"cycles": len(rows), "amount_kept": round(kept, 3)})
     return {"cycles": len(rows)}

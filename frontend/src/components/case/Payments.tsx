@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ArrowRight } from 'lucide-react'
 import { fmtUtc, type Payment } from '../../lib/api'
 import { fmtMoney } from '../../lib/money'
-import { shortAcct } from '../../lib/plain'
+import { fullId, useName } from '../../lib/names'
 import { StatusPill } from './Panel'
 
 const gap = (ms: number) => {
@@ -15,6 +15,7 @@ const gap = (ms: number) => {
 
 /** The flow as a sequence: every payment in time order, with the wait before it. */
 export function PaymentSequence({ payments, currency, rate }: { payments: Payment[]; currency: string; rate: number }) {
+  const name = useName()
   const [all, setAll] = useState(false)
   const ordered = [...payments].sort((a, b) => a.ts - b.ts || a.tx_id.localeCompare(b.tx_id))
   const shown = all ? ordered : ordered.slice(0, 12)
@@ -27,7 +28,7 @@ export function PaymentSequence({ payments, currency, rate }: { payments: Paymen
               <span>{fmtUtc(p.ts)}</span>
               {i > 0 && <span className="text-xs" style={{ color: 'var(--muted)' }}>{gap(p.ts - shown[i - 1].ts)}</span>}
             </span>
-            <span className="flex items-center gap-2 font-medium">{shortAcct(p.src)} <ArrowRight size={14} style={{ color: 'var(--muted)' }} aria-label="to" /> {shortAcct(p.dst)}</span>
+            <span className="flex items-center gap-2 font-medium">{name(p.src)} <ArrowRight size={14} style={{ color: 'var(--muted)' }} aria-label="to" /> {name(p.dst)}</span>
             <span className="font-semibold text-right">{fmtMoney(p.amount, currency, rate)}</span>
             <StatusPill status={p.status} />
           </li>
@@ -43,6 +44,7 @@ export function PaymentSequence({ payments, currency, rate }: { payments: Paymen
 }
 
 export function PaymentsTable({ payments, currency, rate }: { payments: Payment[]; currency: string; rate: number }) {
+  const name = useName()
   const [all, setAll] = useState(false)
   const shown = all ? payments : payments.slice(0, 8)
   return (
@@ -54,7 +56,7 @@ export function PaymentsTable({ payments, currency, rate }: { payments: Payment[
               <th className="py-2 px-3 font-medium rounded-l-lg">Time (UTC)</th>
               <th className="px-3 font-medium">From</th>
               <th className="px-3 font-medium">To</th>
-              <th className="px-3 font-medium text-right">Amount ({currency})</th>
+              <th className="px-3 font-medium text-right">Amount</th>
               <th className="px-3 font-medium">Type</th>
               <th className="px-3 font-medium rounded-r-lg">Status</th>
             </tr>
@@ -63,8 +65,8 @@ export function PaymentsTable({ payments, currency, rate }: { payments: Payment[
             {shown.map((p) => (
               <tr key={p.tx_id} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td className="py-2.5 px-3">{fmtUtc(p.ts).replace(' UTC', '')}</td>
-                <td className="px-3 font-medium" title={p.src}>{shortAcct(p.src)}</td>
-                <td className="px-3 font-medium" title={p.dst}>{shortAcct(p.dst)}</td>
+                <td className="px-3 font-medium" title={fullId(p.src)}>{name(p.src)}</td>
+                <td className="px-3 font-medium" title={fullId(p.dst)}>{name(p.dst)}</td>
                 <td className="px-3 text-right">{fmtMoney(p.amount, currency, rate)}</td>
                 <td className="px-3" style={{ color: 'var(--ink-2)' }}>{p.fmt ?? ''}</td>
                 <td className="px-3"><StatusPill status={p.status} /></td>
@@ -74,7 +76,7 @@ export function PaymentsTable({ payments, currency, rate }: { payments: Payment[
         </table>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--muted)' }}>
-        <span>Flagged: a case payment, or one a red flag points to. In trail: money the investigation followed onward.</span>
+        <span>Followed: money the investigation traced onward.</span>
         {payments.length > 8 && (
           <button onClick={() => setAll((v) => !v)} className="ml-auto text-sm font-medium" style={{ color: 'var(--brand)' }}>
             {all ? 'Show the latest 8' : `Show all ${payments.length} payments`}

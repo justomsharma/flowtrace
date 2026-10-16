@@ -52,8 +52,8 @@ export function Pill({ children, bg, fg }: { children: ReactNode; bg: string; fg
 }
 
 const STATUS_PILL = {
-  flagged: { label: 'Flagged', bg: 'var(--flag-tint)', fg: 'var(--critical)' },
-  trail: { label: 'In trail', bg: 'var(--brand-tint)', fg: 'var(--brand)' },
+  flagged: { label: 'Suspicious', bg: 'var(--flag-tint)', fg: 'var(--critical)' },
+  trail: { label: 'Followed', bg: 'var(--brand-tint)', fg: 'var(--brand)' },
   normal: { label: 'Normal', bg: 'var(--good-tint)', fg: 'var(--good)' },
 }
 

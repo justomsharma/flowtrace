@@ -1,0 +1,80 @@
+{
+  "base_rate": 0.000978,
+  "NEW_COUNTERPARTIES": {
+    "label": "first payment between the two accounts",
+    "payments": 611068,
+    "share": 0.1678,
+    "rate": 0.00445,
+    "lift": 4.6
+  },
+  "ESTABLISHED_COUNTERPARTIES": {
+    "label": "accounts that paid each other 3+ times before",
+    "payments": 2430918,
+    "share": 0.6676,
+    "rate": 0.000191,
+    "lift": 0.2
+  },
+  "PASS_THROUGH": {
+    "label": "sender paid out 80%+ of what it received that day",
+    "payments": 1655798,
+    "share": 0.4547,
+    "rate": 0.000813,
+    "lift": 0.8
+  },
+  "FAST_ONWARD_TRANSFER": {
+    "label": "receiver paid out 80%+ of what it received that day",
+    "payments": 838394,
+    "share": 0.2302,
+    "rate": 0.000767,
+    "lift": 0.8
+  },
+  "DORMANT_THEN_ACTIVE": {
+    "label": "sender had no earlier activity, then 3+ payments in a day",
+    "payments": 486439,
+    "share": 0.1336,
+    "rate": 0.000393,
+    "lift": 0.4
+  },
+  "EQUAL_SPLITS": {
+    "label": "sender's payments that day were near-identical amounts",
+    "payments": 1935,
+    "share": 0.0005,
+    "rate": 0.0,
+    "lift": 0.0
+  },
+  "CONVERGENCE": {
+    "label": "money reached one receiver through 2+ middle accounts",
+    "payments": 11,
+    "share": 0.0,
+    "rate": 0.090909,
+    "lift": 93.0
+  },
+  "ROUND_TRIP": {
+    "label": "money went back to the sender the same day",
+    "payments": 932,
+    "share": 0.0003,
+    "rate": 0.131974,
+    "lift": 135.0
+  },
+  "HIGH_RISK_RAIL": {
+    "label": "paid in cash or Bitcoin",
+    "payments": 495711,
+    "share": 0.1361,
+    "rate": 0.000272,
+    "lift": 0.3
+  },
+  "CYCLE": {
+    "label": "money went back to the sender the same day",
+    "payments": 932,
+    "share": 0.0003,
+    "rate": 0.131974,
+    "lift": 135.0
+  },
+  "CASH_OR_CRYPTO_EXIT": {
+    "label": "paid in cash or Bitcoin",
+    "payments": 495711,
+    "share": 0.1361,
+    "rate": 0.000272,
+    "lift": 0.3
+  }
+}

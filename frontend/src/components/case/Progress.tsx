@@ -1,6 +1,6 @@
-import { Check, ListChecks, Loader2, X } from 'lucide-react'
+import { AlertTriangle, Check, ListChecks, Loader2, Minus, ShieldCheck, X } from 'lucide-react'
 import type { CaseResult, StepInfo } from '../../lib/api'
-import { STEP_PLAIN } from '../../lib/plain'
+import { STEP_PLAIN, shortText } from '../../lib/plain'
 import type { CaseStep } from '../../lib/stepper'
 import type { LiveStep } from '../../lib/useInvestigation'
 import { Panel } from './Panel'
@@ -37,54 +37,75 @@ export function Stepper({ steps }: { steps: CaseStep[] }) {
   )
 }
 
-interface Row { step: number; tool: string; reason: string; done: boolean; found: string[] }
+interface Row { step: number; tool: string; reason: string; done: boolean; found: string[]; kinds?: string[] }
 
 const fromResult = (steps: StepInfo[], result: CaseResult | null): Row[] =>
-  steps.map((s) => ({
-    step: s.step, tool: s.tool, reason: s.reason, done: true,
-    found: (result?.evidence ?? []).filter((e) => e.step === s.step && e.kind !== 'context').map((e) => e.claim),
-  }))
+  steps.map((s) => {
+    const ev = (result?.evidence ?? []).filter((e) => e.step === s.step && e.kind !== 'context')
+    return { step: s.step, tool: s.tool, reason: s.reason, done: true, found: ev.map((e) => e.claim), kinds: ev.map((e) => e.kind) }
+  })
 
-/** The agent's own steps: streamed live while it works, from the stored result afterwards. */
-export function InvestigationProgress({ live, liveSteps, stored, result, error, writing }: {
+/** Standard names for the checks, as they would appear in an audit file. */
+const CHECK_NAME: Record<string, string> = {
+  account_profile: 'Account profile',
+  counterparty_history: 'Counterparty history',
+  recurring_flows: 'Recurring payments',
+  trace_funds: 'Fund tracing',
+  shared_counterparties: 'Common beneficiary',
+  find_cycles: 'Circular flows',
+  owner_network: 'Related accounts (same owner)',
+  case_memory: 'Prior cases',
+}
+
+const OUTCOME = {
+  indicator: { label: 'Indicator found', bg: 'var(--flag-tint)', fg: 'var(--critical)', Icon: AlertTriangle },
+  explained: { label: 'Explanation found', bg: 'var(--good-tint)', fg: 'var(--good)', Icon: ShieldCheck },
+  clear: { label: 'No issue found', bg: 'var(--surface-2)', fg: 'var(--ink-2)', Icon: Minus },
+}
+
+/** The checks the investigator performed and what each one found: the case's audit trail. */
+export function InvestigationProgress({ live, liveSteps, stored, result, error, writing, briefs = {} }: {
   live: boolean; liveSteps: LiveStep[]; stored: StepInfo[]; result: CaseResult | null; error: string | null; writing: boolean
+  /** claim -> short line, from the case overview */
+  briefs?: Record<string, string>
 }) {
   const rows: Row[] = live || !stored.length ? liveSteps : fromResult(stored, result)
   const done = rows.filter((r) => r.done).length
   return (
-    <Panel title="Investigation progress" icon={ListChecks}
-      right={rows.length > 0 ? <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{done} of {rows.length} steps done</span> : undefined}>
-      {rows.length > 0 && (
-        <div className="h-2 rounded-full overflow-hidden -mt-1" style={{ background: 'var(--surface-2)' }} aria-hidden>
-          <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${(100 * done) / rows.length}%`, background: 'var(--brand)' }} />
-        </div>
-      )}
+    <Panel title="Checks performed" icon={ListChecks} sub="What the investigator checked, and what each check found"
+      right={rows.length > 0 && live ? <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{done} of {rows.length}</span> : undefined}>
       {rows.length === 0 && (
         <p className="text-sm flex items-center gap-2" style={{ color: 'var(--ink-2)' }}>
-          {live ? <><Loader2 size={14} className="animate-spin" aria-hidden /> Starting the investigation…</> : 'The agent has not investigated this case yet.'}
+          {live ? <><Loader2 size={14} className="animate-spin" aria-hidden /> Starting the investigation…</> : 'Not investigated yet.'}
         </p>
       )}
       <ol className="flex flex-col" aria-live="polite">
         {rows.map((r, i) => {
-          const plain = STEP_PLAIN[r.tool]
+          const kinds = r.kinds ?? []
+          const o = kinds.includes('support') ? OUTCOME.indicator : kinds.includes('counter') ? OUTCOME.explained : OUTCOME.clear
+          const first = r.found[0]
           return (
-            <li key={r.step} className="flex gap-3 py-2.5" style={{ borderTop: i ? '1px solid var(--border)' : undefined }}>
-              {r.done ? <span className="w-6 h-6 rounded-full grid place-items-center shrink-0" style={{ background: 'var(--good)' }}><Check size={14} color="#fff" aria-hidden /></span>
-                : <Loader2 size={24} className="animate-spin shrink-0" style={{ color: 'var(--brand)' }} aria-hidden />}
-              <div className="min-w-0">
-                <div className="text-sm font-medium">{plain?.label ?? r.tool}</div>
-                <div className="text-xs" style={{ color: 'var(--muted)' }}>
-                  {r.done ? (r.found.length ? `Found ${r.found.length} thing${r.found.length === 1 ? '' : 's'}` : 'Nothing new') : plain?.doing ?? 'Working'}
-                </div>
-                {r.reason && <p className="text-xs mt-0.5 italic" style={{ color: 'var(--ink-2)' }}>Why: {r.reason}</p>}
-                {r.found.slice(0, 2).map((f, j) => <p key={j} className="text-xs mt-0.5" style={{ color: 'var(--ink-2)' }}>{f}</p>)}
-              </div>
+            <li key={r.step} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 py-2.5 items-start" style={{ borderTop: i ? '1px solid var(--border)' : undefined }}>
+              <span className="text-sm font-medium flex items-center gap-2">
+                {!r.done && <Loader2 size={14} className="animate-spin" style={{ color: 'var(--brand)' }} aria-hidden />}
+                {CHECK_NAME[r.tool] ?? STEP_PLAIN[r.tool]?.label ?? r.tool}
+              </span>
+              {r.done ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium whitespace-nowrap" style={{ background: o.bg, color: o.fg }}>
+                  <o.Icon size={12} aria-hidden />{o.label}
+                </span>
+              ) : <span className="text-xs" style={{ color: 'var(--muted)' }}>Running</span>}
+              {r.done && first && (
+                <span className="col-span-2 text-xs" style={{ color: 'var(--ink-2)' }}>
+                  {briefs[first] ?? shortText(first)}{r.found.length > 1 ? ` (+${r.found.length - 1} more)` : ''}
+                </span>
+              )}
             </li>
           )
         })}
         {writing && (
-          <li className="flex gap-3 py-2.5 text-sm" style={{ borderTop: '1px solid var(--border)', color: 'var(--ink-2)' }}>
-            <Loader2 size={20} className="animate-spin shrink-0" style={{ color: 'var(--brand)' }} aria-hidden /> Writing the report…
+          <li className="flex gap-2 py-2.5 text-sm" style={{ borderTop: '1px solid var(--border)', color: 'var(--ink-2)' }}>
+            <Loader2 size={16} className="animate-spin shrink-0" style={{ color: 'var(--brand)' }} aria-hidden /> Writing the report…
           </li>
         )}
       </ol>

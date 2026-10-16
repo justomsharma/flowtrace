@@ -423,6 +423,14 @@ export interface Finding {
   id: string
   code: string
   claim: string
+  /** One short line (12 words or fewer) for the case page, naming the account ("Account A"). */
+  brief: string
+  /** Measured strength: Strong sign / Moderate sign / Common in normal accounts / Strong sign of normal, or empty. */
+  tag: string
+  /** Why it matters, with the measured rate when there is one. */
+  why: string
+  /** What an analyst checks to rule the sign out (red flags only). */
+  check: string
   weight: number
   confidence: 'High' | 'Medium' | 'Low'
   escalator: boolean
@@ -443,7 +451,7 @@ export interface CaseOverview {
   uploaded_at: number | null
   currency: string
   rate: number
-  status: { state: OverviewState; job: JobBrief | null; risk: number | null; confidence: string | null; reasons: string[] }
+  status: { state: OverviewState; job: JobBrief | null; risk: number | null; confidence: string | null; confidence_pct: number | null; reasons: string[] }
   kpis: { amount: number; accounts: number; payments: number; connected_accounts: number; traced_accounts: number; suspicious_patterns: number | null }
   flow: { nodes: FlowNode[]; edges: FlowEdge[]; hidden_accounts: number }
   transactions: Payment[]
@@ -452,7 +460,17 @@ export interface CaseOverview {
   findings: Finding[]
   explanations: Finding[]
   indicators: { key: 'model' | 'red_flags' | 'shape' | 'legitimacy'; value: number; contribution: number }[]
-  summary: { headline: string; text: string; by_ai: boolean } | null
+  /** Why the case was flagged before any investigation: detectors that fired, then the model. */
+  alert_reasons: string[]
+  /** Likely underlying crime, guessed from the laundering shape (the data records no crime type). */
+  crime_guess: string[]
+  /** Account id -> "Account A", the same names everywhere on the page and in the report. */
+  names: Record<string, string>
+  /** Two or three plain sentences: what moved, the pattern, and what the investigation concluded. */
+  story: string[]
+  /** One sentence naming what decided the verdict. */
+  verdict_basis: string | null
+  summary: { headline: string; text: string; points: string[]; by_ai: boolean } | null
   next_steps: string[]
   steps: StepInfo[]
 }

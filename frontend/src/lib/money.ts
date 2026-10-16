@@ -1,24 +1,16 @@
-/** Money in the data's own currency. Graph amounts are US dollars (converted at the dataset's fixed rates);
- *  `rate` is units of `currency` per US dollar, so the original amount is usd * rate. */
-
-const CODES: Record<string, string> = {
-  'US Dollar': 'USD', Euro: 'EUR', 'UK Pound': 'GBP', Yuan: 'CNY', Yen: 'JPY', Rupee: 'INR', Ruble: 'RUB',
-  'Canadian Dollar': 'CAD', 'Australian Dollar': 'AUD', 'Swiss Franc': 'CHF', 'Mexican Peso': 'MXN',
-  Shekel: 'ILS', 'Brazil Real': 'BRL', 'Saudi Riyal': 'SAR',
-}
-
-export function fmtMoney(usd: number, currency = 'US Dollar', rate = 1): string {
-  const v = usd * (rate || 1)
-  if (currency === 'Bitcoin') return `₿${v.toLocaleString('en-US', { maximumFractionDigits: 4 })}`
-  const code = CODES[currency]
-  if (!code) return `$${Math.round(usd).toLocaleString('en-US')}`
-  const compact = Math.abs(v) >= 1e7
+/** Every amount in the app is shown in US dollars, as stored in the graph (the dataset's payments were
+ *  converted at its fixed rates). The currency and rate arguments are kept for older callers and ignored. */
+export function fmtMoney(usd: number, _currency?: string | null, _rate?: number | null): string {
+  void _currency
+  void _rate
+  const compact = Math.abs(usd) >= 1e7
   return new Intl.NumberFormat('en-US', {
-    style: 'currency', currency: code, maximumFractionDigits: compact ? 1 : 0,
+    style: 'currency', currency: 'USD', maximumFractionDigits: compact ? 1 : 0,
     notation: compact ? 'compact' : 'standard',
-  }).format(v)
+  }).format(usd)
 }
 
-/** "a mixed-currency trail" note: the plan falls back to US dollars when the trail used several currencies. */
-export const currencyNote = (currency: string) =>
-  currency === 'US Dollar' ? 'Amounts in US dollars.' : `Amounts in ${currency}, the currency of this money trail.`
+export const currencyNote = (_currency?: string) => {
+  void _currency
+  return 'Amounts in US dollars.'
+}

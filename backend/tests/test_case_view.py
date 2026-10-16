@@ -135,18 +135,23 @@ def test_investigated_case_findings_summary_indicators():
     assert [(f["id"], f["confidence"]) for f in o["findings"]] == [("E1", "High"), ("E2", "Low")]
     assert [e["id"] for e in o["explanations"]] == ["E3"]
     assert o["kpis"]["suspicious_patterns"] == 2
-    assert o["summary"] == {"headline": "Money passed through three accounts", "text": "Fast onward movement.", "by_ai": False}
+    assert {k: v for k, v in o["summary"].items() if k != "points"} == {
+        "headline": "Money passed through three accounts", "text": "Fast onward movement.", "by_ai": False}
+    # A result saved without bullet points gets the strongest reasons each way, then the decision.
+    assert o["summary"]["points"] == ["Receiving accounts forwarded the funds within 24 hours.", "claim.", "Known counterparty.",
+                                      "Recommend escalating to a senior analyst."]
+    assert [f["brief"] for f in o["findings"]][0] == "Receiving accounts forwarded the funds within 24 hours"
+    assert o["names"]["A"] == "Account A" and o["findings"][0]["tag"] in ("Strong sign", "Moderate sign", "Common in normal accounts", "")
     assert [(i["key"], i["value"]) for i in o["indicators"]] == [("model", 0.99), ("red_flags", 0.8), ("shape", 0.6), ("legitimacy", 0.3)]
     assert o["status"]["state"] == "escalate"
 
 
-def test_currency_single_then_plan_then_usd():
+def test_every_page_uses_us_dollars():
+    """One currency everywhere: the graph stores dollars and the investigation writes dollars."""
     euro = [pay("t1", "A", "B", 100, cur="Euro"), pay("t2", "B", "C", 90, ts=H, cur="Euro")]
-    assert V.case_currency(case(euro), None) == "Euro"
-    mixed = [pay("t1", "A", "B", 100, cur="Euro"), pay("t2", "B", "C", 90, ts=H, cur="Yen")]
-    assert V.case_currency(case(mixed), None) == "US Dollar"
-    assert V.case_currency(case(CHAIN), {"currency": "Brazil Real"}) == "Brazil Real"
-    assert V.case_currency(case(CHAIN), None) == "US Dollar"
+    assert V.case_currency(case(euro), None) == "US Dollar"
+    assert V.case_currency(case(CHAIN), {"currency": "Brazil Real"}) == "US Dollar"
+    assert V.case_rate("US Dollar", {"currency": "Euro", "rate": 0.9}) == 1.0
 
 
 def test_status_from_job_and_disposition():
@@ -186,7 +191,7 @@ def test_report_md_has_sections():
     md = V.str_markdown(case(CHAIN), full_result(), None, actions)
     for part in ("# STR draft: BX-C001", "Money passed through three accounts", "## Red flags",
                  "Passed on within 2 hours.", "## Legitimate explanations", "Known counterparty for 6 days.",
-                 "## Proposed actions", "Hold account B: EUR 45 (waiting for a decision)",
+                 "## Proposed actions", "Hold account B: $90 (waiting for a decision)",
                  "File an STR: approved by Asha (Clear layering)", "## STR narrative", "STR text.",
                  "smuggling", "KYC not available.", "| From | To |"):
         assert part in md, part
@@ -232,7 +237,7 @@ def test_overview_survives_the_graph_being_down(monkeypatch):
     assert TestClient(M.app).get("/api/cases/BX-C001/overview").status_code == 200
 
 
-def test_batch_cases_carry_their_currency(monkeypatch):
+def test_batch_cases_show_us_dollars(monkeypatch):
     from fastapi.testclient import TestClient
     from flowtrace.api import main as M
     euro = case([pay("t1", "A", "B", 100, cur="Euro")])
@@ -242,7 +247,7 @@ def test_batch_cases_carry_their_currency(monkeypatch):
     monkeypatch.setattr(M, "top_cases", lambda bid: [])
     monkeypatch.setattr(V, "fx_rate", lambda cur: 0.9)
     c = TestClient(M.app).get("/api/batches/BX").json()["cases"][0]
-    assert (c["currency"], c["rate"]) == ("Euro", 0.9)
+    assert (c["currency"], c["rate"]) == ("US Dollar", 1.0)
 
 
 def test_overview_and_report_never_write(monkeypatch):
@@ -271,12 +276,28 @@ def test_expired_hold_and_unnamed_decider_read_plainly():
         {"id": "A1", "type": "HOLD", "status": "EXPIRED", "account": "B", "hold_amount": 10.0},
         {"id": "A3", "type": "HOLD", "status": "EXPIRED", "account": "C", "hold_amount": 5.0, "released_at": 1},
         {"id": "A2", "type": "FILE_STR", "status": "REJECTED", "reason": "Not enough"}])
-    assert "Hold account B: USD 10 (withdrawn)" in md and "Hold account C: USD 5 (released)" in md
+    assert "Hold account B: $10 (withdrawn)" in md and "Hold account C: $5 (released)" in md
     assert "File an STR: rejected (Not enough)" in md and "None" not in md
 
 
-def test_queue_currency_falls_back_to_the_plan(monkeypatch):
+def test_queue_shows_us_dollars_even_with_a_plan(monkeypatch):
     from flowtrace.api import main as M
     monkeypatch.setattr(M, "CASES", {"BX-C001": case(CHAIN)})
     monkeypatch.setattr(M.store, "load_plan", lambda cid: {"currency": "Euro", "rate": 0.9})
-    assert M._currency("BX-C001") == {"currency": "Euro", "rate": 0.9}
+    assert M._currency("BX-C001") == {"currency": "US Dollar", "rate": 1.0}
+
+
+def test_report_text_never_shows_evidence_ids():
+    from flowtrace.agent.report import clean
+    assert clean("A paid 6 accounts (E1, E3). Then E4 shows [E2] fast moves.") == "A paid 6 accounts. Then shows fast moves."
+
+
+def test_short_reasons_stay_short():
+    from flowtrace.agent.brief import alert_reasons, brief
+    e = {"code": "NEW_COUNTERPARTIES", "metrics": {"new": 6, "counterparties": 6}, "claim": "6 of the 6 accounts..."}
+    assert brief(e) == "6 of 6 counterparties are new to {A}"
+    assert V.fill(brief(e), ["X"], {"X": "Account B"}) == "6 of 6 counterparties are new to Account B"
+    assert len(brief({"code": "UNKNOWN", "claim": " ".join(["word"] * 30)}).split()) <= 12
+    c = {"detector_hits": [{"detector": "FAN-OUT", "strength": 0.9, "detail": "paid 9 distinct accounts ($12,000)"}],
+         "signals": [{"signal": "model", "p": 0.82}]}
+    assert alert_reasons(c) == ["Paid 9 different accounts in a short period", "The risk model scores these payments as high risk"]

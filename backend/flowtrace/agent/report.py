@@ -24,6 +24,11 @@ prose. Rules:
 - Weigh the legitimate explanation fairly; say what evidence is missing.
 - Write so a junior analyst or a non-specialist manager can follow it: short sentences, plain words,
   and explain any AML term the first time you use it (e.g. "pass-through (money leaving almost as soon as it arrives)").
+- Style, for every field: plain words, no paragraphs. summary_points: 3 to 5 points, each one short
+  sentence of at most 12 words, most important first (what happened, why it is suspicious, why it may
+  be normal). Do not state the decision: it is added after your points. headline: at most 10 words. executive_summary: one sentence, at most 20 words.
+  next_steps: at most 3, each at most 12 words. All amounts in US dollars ($).
+- Never write evidence IDs (E1, E2…) in any text; put them only in evidence_ids.
 - str_narrative: only when the disposition is ESCALATE, a draft STR narrative (who, what, when,
   where, why suspicious, how), otherwise an empty string."""
 
@@ -34,6 +39,7 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "headline": {"type": "string"},
+        "summary_points": {"type": "array", "items": ITEM},
         "executive_summary": ITEM,
         "subject_profile": ITEM,
         "money_trail": {"type": "array", "items": ITEM},
@@ -44,12 +50,18 @@ SCHEMA = {
         "next_steps": {"type": "array", "items": {"type": "string"}},
         "str_narrative": {"type": "string"},
     },
-    "required": ["headline", "executive_summary", "subject_profile", "money_trail", "typology_assessment",
+    "required": ["headline", "summary_points", "executive_summary", "subject_profile", "money_trail", "typology_assessment",
                  "red_flags", "mitigating_factors", "unknowns", "next_steps", "str_narrative"],
     "additionalProperties": False,
 }
 
 NUM = re.compile(r"\d[\d,]*\.?\d*")
+# Evidence IDs written into text, e.g. "(E1, E3)", "[E2]", "E4": the page never shows them.
+IDS = re.compile(r"\s*[\(\[]\s*E\d+(?:\s*,\s*E\d+)*\s*[\)\]]|\bE\d+\b")
+
+
+def clean(text: str) -> str:
+    return re.sub(r"\s{2,}", " ", IDS.sub("", text or "")).replace(" .", ".").replace(" ,", ",").strip()
 
 
 def _nums(text: str) -> set[str]:
@@ -84,7 +96,7 @@ def validate(report: dict, ctx: CaseContext, disp: Disposition) -> dict:
         if not ok:
             dropped.append({"section": key, "text": report[key]["text"], "why": why})
             report[key] = {"text": "(statement removed: could not be verified against evidence)", "evidence_ids": []}
-    for key in ("money_trail", "red_flags", "mitigating_factors"):
+    for key in ("summary_points", "money_trail", "red_flags", "mitigating_factors"):
         kept = []
         for item in report[key]:
             ok, why = _check(item, ev, computed)
@@ -94,10 +106,34 @@ def validate(report: dict, ctx: CaseContext, disp: Disposition) -> dict:
             else:
                 dropped.append({"section": key, "text": item["text"], "why": why})
         report[key] = kept
+    if not report["summary_points"]:
+        report["summary_points"] = _points(ctx, disp)
+    # The decision is computed in code, not claimed by the writer: it closes the list unvalidated.
+    report["summary_points"] = report["summary_points"][:5] + [{"text": DECISION_POINT[disp.action], "evidence_ids": []}]
+    for key in ("executive_summary", "subject_profile", "typology_assessment"):
+        report[key]["text"] = clean(report[key]["text"])
+    for key in ("summary_points", "money_trail", "red_flags", "mitigating_factors"):
+        for item in report[key]:
+            item["text"] = clean(item["text"])
+    report["headline"] = clean(report["headline"])
+    report["next_steps"] = [clean(x) for x in report["next_steps"]][:3]
+    report["str_narrative"] = clean(report["str_narrative"])
     report["validation"] = {"statements_checked": checked, "unsupported": len(dropped),
                             "unsupported_rate": round(len(dropped) / checked, 3) if checked else 0.0,
                             "dropped": dropped}
     return report
+
+
+DECISION_POINT = {"ESCALATE": "Recommend escalating to a senior analyst.",
+                  "REVIEW": "Mixed signals: a person should review it.",
+                  "CLOSE": "Looks like normal activity: recommend closing."}
+
+
+def _points(ctx: CaseContext, disp: Disposition) -> list[dict]:
+    """Fallback summary: the strongest reasons each way, in short lines, then the decision."""
+    from flowtrace.agent.brief import brief
+    strongest = lambda kind, n: sorted(ctx.book.by_kind(kind), key=lambda e: -e.weight)[:n]  # noqa: E731
+    return [{"text": brief(e.as_dict()).rstrip(".…") + ".", "evidence_ids": [e.id]} for e in strongest("support", 3) + strongest("counter", 2)]
 
 
 def template_report(ctx: CaseContext, disp: Disposition) -> dict:
@@ -107,7 +143,8 @@ def template_report(ctx: CaseContext, disp: Disposition) -> dict:
     item = lambda e: {"text": e.claim, "evidence_ids": [e.id]}  # noqa: E731
     trail = [item(e) for e in ctx.book.items if e.tool == "trace_funds"]
     return {
-        "headline": f"{disp.action}: {shape.get('typology', 'unclassified')} pattern around {ctx.primary}",
+        "headline": f"{disp.action.capitalize()}: {shape.get('typology', 'unclassified').lower()} pattern",
+        "summary_points": [],
         "executive_summary": {"text": f"{len(sup)} red flags and {len(cnt)} legitimate explanations were found; "
                                       f"risk {disp.risk} leads to {disp.action}.",
                               "evidence_ids": [e.id for e in (sup + cnt)[:4]]},

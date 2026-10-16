@@ -81,6 +81,9 @@ escalators:
 # --- Disposition (Stage C) -----------------------------------------------------------------
 # Case-level decision. Computed in code from the evidence ledger, never by the LLM.
 disposition:
+  # Weight each indicator by its measured strength (data/processed/signal_rates.json, built by
+  # python -m flowtrace.ml.signal_rates). Off = every indicator counts at its tool weight.
+  measured_weights: true
   # risk = w_ml * model score + w_red * red-flag strength + w_shape * shape confidence
   #        - w_legit * legitimacy strength (halved when any escalator fired), clipped to [0, 1]
   w_ml: 0.45
@@ -123,4 +126,4 @@ crime_hypotheses:
   CYCLE: [embezzlement]
   STACK: [smuggling, drugs]
   BIPARTITE: [embezzlement, extortion]
-  PASS-THROUGH: [money mule (cyber fraud, kidnapping/ransom)]
+  PASS-THROUGH: ["money mule (cyber fraud or ransom)"]

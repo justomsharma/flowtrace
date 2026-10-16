@@ -11,10 +11,40 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from flowtrace.agent.brief import alert_reasons, assess, brief
+from flowtrace.agent.report import clean
+
 HOUR = 3_600_000
 DAY = 24 * HOUR
 FLOW_ROLES = ("alert", "trace", "cycle")  # result graph edges that are case money; "context" is history
 OPEN_HOLD = {"PROPOSED": "proposed", "APPROVED": "approved"}
+
+
+def letters(i: int) -> str:
+    """0 -> A, 25 -> Z, 26 -> AA."""
+    out = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+ROLE_ORDER = {"Sender": 0, "Intermediary": 1, "Destination": 2}
+
+
+def account_names(nodes: list[dict], others: list[str]) -> dict[str, str]:
+    """Readable per-case names, "Account A", "Account B"…: senders first, then middle accounts, then receivers,
+    then any other account the page mentions. Raw IDs (bank:account) mean nothing to an analyst."""
+    order = [n["id"] for n in sorted(nodes, key=lambda n: ROLE_ORDER.get(n["role"], 3))]
+    order += [a for a in dict.fromkeys(others) if a not in set(order)]
+    return {a: f"Account {letters(i)}" for i, a in enumerate(order)}
+
+
+def fill(text: str, accounts: list[str], names: dict[str, str]) -> str:
+    """Put the evidence's subject account into a short reason ("{A} sent on …")."""
+    who = names.get(accounts[0], "The account") if accounts else "The account"
+    return text.replace("{A}", who)
 
 
 def confidence(weight: float, rules: dict) -> str:
@@ -28,12 +58,9 @@ def priority(score: float, rules: dict) -> str:
 
 
 def case_currency(case: dict, plan: dict | None) -> str:
-    """The case payments' own currency when they share one; mixed currencies are shown in US dollars, and
-    cases stored before payments carried a currency use the hold plan's."""
-    curs = {e.get("cur") for e in case.get("edges", []) if e.get("cur")}
-    if curs:
-        return curs.pop() if len(curs) == 1 else "US Dollar"
-    return (plan or {}).get("currency") or "US Dollar"
+    """Every page shows one currency, US dollars: the graph stores every amount in dollars (converted at the
+    dataset's fixed rates) and the investigation's sentences are written in dollars too."""
+    return "US Dollar"
 
 
 def fx_rate(currency: str) -> float:
@@ -43,12 +70,8 @@ def fx_rate(currency: str) -> float:
 
 
 def case_rate(currency: str, plan: dict | None) -> float:
-    """The plan's rate when the plan is in the same currency, else the data's rate."""
-    if currency == "US Dollar":
-        return 1.0
-    if (plan or {}).get("currency") == currency and plan.get("rate"):
-        return plan["rate"]
-    return fx_rate(currency)
+    """Amounts are shown in US dollars as stored, so the rate is always 1."""
+    return 1.0
 
 
 def _holds(actions: list[dict]) -> dict[str, str]:
@@ -169,6 +192,7 @@ def _status(result: dict | None, job: dict | None, failed: bool) -> dict:
         state = "not_started"
     d = (result or {}).get("disposition") or {}
     return {"state": state, "job": job, "risk": d.get("risk"), "confidence": d.get("confidence_label"),
+            "confidence_pct": round(d["confidence"] * 100) if d.get("confidence") is not None else None,
             "reasons": d.get("reasons", [])}
 
 
@@ -183,8 +207,12 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
     f = flow(case, result, plan, actions, rules)
     evidence = (result or {}).get("evidence", [])
 
+    others = [a for e in evidence for a in e.get("accounts", [])[:1]] + [p[k] for p in f["payments"] for k in ("src", "dst")]
+    names = account_names(f["nodes"], list(case.get("accounts", [])) + others)
+
     def item(e: dict) -> dict:
-        return {"id": e["id"], "code": e["code"], "claim": e["claim"], "weight": e["weight"],
+        return {"id": e["id"], "code": e["code"], "claim": e["claim"], "brief": fill(brief(e), e.get("accounts", []), names),
+                **assess(e), "weight": e["weight"],
                 "confidence": confidence(e["weight"], rules), "escalator": e.get("escalator", False),
                 "accounts": e.get("accounts", [])[:6], "tx_ids": e.get("tx_ids", [])[:20]}
 
@@ -212,11 +240,114 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
         "explanations": [item(e) for e in by_weight("counter")],
         "indicators": [{"key": k, "value": comp[raw], "contribution": comp.get(part, 0.0)}
                        for k, raw, part in INDICATORS if raw in comp],
-        "summary": {"headline": rep["headline"], "text": rep["executive_summary"]["text"],
-                    "by_ai": rep.get("author") not in (None, "template")} if rep else None,
-        "next_steps": (rep or {}).get("next_steps", []),
+        "alert_reasons": alert_reasons(case),
+        # A guess at the underlying crime from the laundering shape (the data has no crime label).
+        "crime_guess": crime_guess(case, evidence, rules),
+        "summary": {"headline": clean(rep["headline"]), "text": clean(rep["executive_summary"]["text"]),
+                    "points": summary_points(rep, evidence, result, names), "by_ai": rep.get("author") not in (None, "template")}
+                   if rep else None,
+        "next_steps": [clean(x) for x in (rep or {}).get("next_steps", [])][:3],
+        "names": names,
+        "story": story(case, evidence, result, names, rules),
+        "verdict_basis": verdict_basis(result, evidence, names),
         "steps": (result or {}).get("steps", []),
     }
+
+
+PATTERN = {
+    "FAN-OUT": "{A} distributed the funds to several accounts in a short period.",
+    "FAN-IN": "Funds from several accounts were collected into {A}.",
+    "GATHER-SCATTER": "{A} collected funds from several accounts and paid them out to others.",
+    "SCATTER-GATHER": "Funds from {A} were routed through intermediary accounts to a single beneficiary.",
+    "CYCLE": "Funds left {A} and returned to it through other accounts.",
+    "BIPARTITE": "A group of accounts paid another group of accounts directly.",
+    "STACK": "Funds passed through layers of intermediary accounts.",
+    "RANDOM": "Funds moved through a chain of accounts with no regular pattern.",
+}
+OUTCOME = {"ESCALATE": "escalate to a senior analyst", "REVIEW": "manual review", "CLOSE": "close as normal activity"}
+
+
+def _when(ms: int | None) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%d %b %H:%M").lstrip("0") if ms else ""
+
+
+def story(case: dict, evidence: list[dict], result: dict | None, names: dict[str, str], rules: dict) -> list[str]:
+    """Two or three plain sentences: what moved, the pattern, and what the investigation concluded."""
+    edges = case.get("edges", [])
+    n = len(case.get("accounts", []))
+    out = [f"{n} accounts moved {money(case.get('amount', 0.0))} in {len(edges)} payment{'s' if len(edges) != 1 else ''} "
+           f"between {_when(case.get('t0'))} and {_when((case.get('t1') or 1) - 1)} UTC."]
+    pattern = PATTERN.get((case.get("shape") or {}).get("typology"))
+    if pattern:
+        out.append(pattern.replace("{A}", names.get(case.get("primary"), "the main account")))
+    if result:
+        tags = [assess(e)["tag"] for e in evidence if e["kind"] == "support"]
+        strong = sum(t == "Strong sign" for t in tags)
+        normal = sum(e["kind"] == "counter" for e in evidence)
+        action = (result.get("disposition") or {}).get("action")
+        out.append(f"The investigation found {strong} strong and {len(tags) - strong} weaker indicator{'s' if len(tags) - strong != 1 else ''}, "
+                   f"and {normal} legitimate explanation{'s' if normal != 1 else ''}. Recommendation: {OUTCOME.get(action, 'review')}.")
+    return out
+
+
+def verdict_basis(result: dict | None, evidence: list[dict], names: dict[str, str]) -> str | None:
+    """One sentence naming what decided the case, weighed by measured strength, so the verdict never
+    looks at odds with the explanations listed beside it."""
+    if not result:
+        return None
+    action = (result.get("disposition") or {}).get("action")
+    rank = {"Strong sign": 0, "Moderate sign": 1, "": 2, "Common in normal accounts": 3}
+    sup = sorted((e for e in evidence if e["kind"] == "support"), key=lambda e: (rank.get(assess(e)["tag"], 2), -e["weight"]))
+    cnt = sorted((e for e in evidence if e["kind"] == "counter"), key=lambda e: -e["weight"])
+    line = lambda e: fill(brief(e), e.get("accounts", []), names)  # noqa: E731
+    n = len(cnt)
+    if action == "ESCALATE" and sup:
+        top, a = sup[0], assess(sup[0])
+        strength = f" ({a['why'].rstrip('.')})" if a["tag"] in ("Strong sign", "Moderate sign") else ""
+        outweighs = f", which outweighs {n} legitimate explanation{'s' if n != 1 else ''}" if n else ""
+        return f"Escalated because {line(top)[0].lower() + line(top)[1:]}{strength}{outweighs}."
+    if action == "CLOSE" and cnt:
+        weak = " The indicators found are weak on their own." if sup else ""
+        return f"Closed because {line(cnt[0])[0].lower() + line(cnt[0])[1:]}.{weak}"
+    if action == "REVIEW":
+        if sup and cnt:
+            return f"Mixed: {line(sup[0])[0].lower() + line(sup[0])[1:]}, but {line(cnt[0])[0].lower() + line(cnt[0])[1:]}. An analyst should decide."
+        return "The indicators are not strong enough to escalate or close. An analyst should decide."
+    return None
+
+
+def crime_guess(case: dict, evidence: list[dict], rules: dict) -> list[str]:
+    """Likely crimes from the laundering shape, plus money-mule crimes when money passed straight through.
+    Read from config.yaml each time, so stored cases follow the current mapping."""
+    m = rules.get("crime_hypotheses", {})
+    out = list(m.get((case.get("shape") or {}).get("typology"), []))
+    if {"PASS_THROUGH", "FAST_ONWARD_TRANSFER"} & {e.get("code") for e in evidence}:
+        out += m.get("PASS-THROUGH", [])
+    return list(dict.fromkeys(out))
+
+
+DECISION_POINT = {"ESCALATE": "Recommend escalating to a senior analyst.",
+                  "REVIEW": "Mixed signals: a person should review it.",
+                  "CLOSE": "Looks like normal activity: recommend closing."}
+
+
+def summary_points(rep: dict, evidence: list[dict], result: dict | None, names: dict[str, str] | None = None) -> list[str]:
+    """The report's bullet points; results saved before reports had them get the strongest reasons each way."""
+    names = names or {}
+    by_id = {e["id"]: e for e in evidence}
+    subject = lambda ids: next((by_id[i].get("accounts", []) for i in ids if i in by_id), [])  # noqa: E731
+    # Rule-written points are rebuilt from the evidence each time, so they always use the current wording.
+    by_ai = rep.get("author") not in (None, "template")
+    pts = [fill(clean(p["text"]), subject(p.get("evidence_ids", [])), names)
+           for p in (rep.get("summary_points") or [] if by_ai else []) if p.get("text")]
+    if not pts:
+        top = lambda kind, n: sorted((e for e in evidence if e["kind"] == kind), key=lambda e: -e["weight"])[:n]  # noqa: E731
+        pts = [fill(brief(e).rstrip(".…") + ".", e.get("accounts", []), names) for e in top("support", 3) + top("counter", 2)]
+        action = ((result or {}).get("disposition") or {}).get("action")
+        if action in DECISION_POINT:
+            pts.append(DECISION_POINT[action])
+    return pts[:6]
 
 
 # --- STR draft (Markdown) ----------------------------------------------------------------------
@@ -229,12 +360,8 @@ ACTION_TITLE = {"HOLD": "Hold account", "RELEASE": "Release the hold on account"
 
 
 def money(usd: float, currency: str | None = "US Dollar", rate: float | None = 1.0) -> str:
-    """Amount in the data's own currency as an ISO code. Stored amounts are US dollars; rate = units per dollar."""
-    code = CODES.get(currency or "US Dollar")
-    if not code:
-        return f"USD {usd:,.0f}"
-    v = usd * (rate or 1.0)
-    return f"{code} {v:,.4f}" if code == "BTC" else f"{code} {v:,.0f}"
+    """Amounts are stated in US dollars everywhere, as stored in the graph."""
+    return f"${usd:,.0f}"
 
 
 def _utc(ms: int | None) -> str:
@@ -262,8 +389,11 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     evidence = result.get("evidence", [])
     out = [f"# STR draft: {case['case_id']}", "",
            f"Draft for a person to review before filing. The narrative was {by}; every figure comes from the "
-           f"payment graph. Amounts in {cur}.", "",
-           "## Summary", "", f"**{rep['headline']}**", "", rep["executive_summary"]["text"], "",
+           f"payment graph. Amounts in US dollars.", "",
+           "## Summary", "", f"**{clean(rep['headline'])}**", ""]
+    f = flow(case, result, plan, actions, {"ui": {"flow_max_accounts": 10_000}})
+    names = account_names(f["nodes"], list(case.get("accounts", [])))
+    out += [f"- {p}" for p in summary_points(rep, evidence, result, names)] + ["",
            f"Recommendation: **{d['action']}** (risk {d['risk']:.2f}, confidence {d.get('confidence_label', '')}). "
            f"Case amount {m(case.get('amount', 0.0))} across {len(case.get('accounts', []))} accounts and "
            f"{len(case.get('edges', []))} payments, {_utc(case.get('t0'))} to {_utc(case.get('t1'))}.", ""]
@@ -279,7 +409,7 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     for title, kind in (("Red flags", "support"), ("Legitimate explanations", "counter")):
         items = sorted((e for e in evidence if e["kind"] == kind), key=lambda e: -e["weight"])
         out += [f"## {title}", ""]
-        out += [f"- {e['claim']} ({e['id']}, weight {e['weight']:.2f})" for e in items] or ["- None found."]
+        out += [f"- {clean(e['claim'])}" for e in items] or ["- None found."]
         out += [""]
     if rep.get("unknowns"):
         out += ["## Unknowns", ""] + [f"- {u}" for u in rep["unknowns"]] + [""]

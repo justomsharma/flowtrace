@@ -1,3 +1,4 @@
+import { caseNo } from '../lib/plain'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Download, FileText } from 'lucide-react'
@@ -5,7 +6,6 @@ import { ActionBadge } from '../components/badges'
 import { useBatch } from '../lib/batch'
 import { renderMarkdown, type Block, type Seg } from '../lib/markdown'
 
-const caseNo = (id: string) => id.slice(id.lastIndexOf('-') + 1)
 
 /** STR drafts: one per investigated case, written from the investigation, for a person to review before filing. */
 export default function Reports() {
@@ -38,7 +38,7 @@ export default function Reports() {
 
       {done.length === 0 ? (
         <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
-          No case has been investigated yet. <Link to={{ pathname: '/', search: query(null) }} className="font-medium underline" style={{ color: 'var(--brand)' }}>Open Today's work</Link>.
+          No case has been investigated yet. <Link to={{ pathname: '/today', search: query(null) }} className="font-medium underline" style={{ color: 'var(--brand)' }}>Open Today's work</Link>.
         </p>
       ) : (
         <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)] items-start">
@@ -49,7 +49,7 @@ export default function Reports() {
                   <Link to={{ pathname: '/reports', search: query(c.case_id) }} aria-current={c.case_id === open?.case_id ? 'page' : undefined}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm tabular"
                     style={{ background: c.case_id === open?.case_id ? 'var(--brand-tint)' : 'transparent', fontWeight: c.case_id === open?.case_id ? 600 : 400 }}>
-                    <FileText size={15} style={{ color: 'var(--muted)' }} aria-hidden />{caseNo(c.case_id)}
+                    <FileText size={15} style={{ color: 'var(--muted)' }} aria-hidden />Case {caseNo(c.case_id)}
                     <span className="ml-auto">{c.result && <ActionBadge action={c.result.action} />}</span>
                   </Link>
                 </li>

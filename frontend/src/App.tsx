@@ -17,10 +17,11 @@ export default function App() {
             <Routes>
               <Route path="/case" element={<CaseOverview />} />
               {/* The 3D screen, unchanged, in its dark console. */}
-              <Route path="/network" element={<div className="theme-dark min-h-screen p-3"><Workspace /></div>} />
+              <Route path="/today" element={<Today />} />
               <Route path="/results" element={<div className="px-6 py-5"><Results /></div>} />
               <Route path="/reports" element={<Reports />} />
-              <Route path="*" element={<Today />} />
+              {/* Home: the 3D Live Network, in its dark console. /network is kept for old links. */}
+              <Route path="*" element={<div className="theme-dark min-h-screen p-3"><Workspace /></div>} />
             </Routes>
           </main>
         </div>

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, Lock, ShieldCheck, XCircle } from 'lucide-react'
 import { approverToken, fmtTime, getJSON, sendJSON, type Action, type CaseResult, type HoldPlan, type OpenEffect } from '../lib/api'
 import { currencyNote, fmtMoney } from '../lib/money'
-import { ACTION_PLAIN, shortAcct } from '../lib/plain'
+import { ACTION_PLAIN, friendlyError } from '../lib/plain'
+import { useName } from '../lib/names'
 import { useNow, timeLeft, untilLabel } from '../lib/time'
 
 const MIN_REASON = 5
@@ -19,11 +20,13 @@ const ORIGIN: Record<Action['proposed_by'], string> = {
 
 /** The agent's proposed holds and case decision for one case. Nothing happens until a person approves.
  *  Mount it with key={caseId}: each case starts from a fresh panel. */
-export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
+export default function HoldPanel({ caseId, result, refreshKey, onPlan, briefs = {} }: {
   caseId: string
   result: CaseResult
   refreshKey: number
   onPlan: (plan: HoldPlan | null, actions: Action[]) => void
+  /** evidence id -> short reason line, from the case overview */
+  briefs?: Record<string, string>
 }) {
   const [plan, setPlan] = useState<HoldPlan | null>(null)
   const [actions, setActions] = useState<Action[]>([])
@@ -43,7 +46,7 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
         if (!alive.current) return
         setPlan(r.plan); setActions(r.actions); setEffect(r.open_effect); setLoaded(true); onPlan(r.plan, r.actions)
       })
-      .catch((e) => { if (alive.current) { setError(String(e)); setLoaded(true) } })
+      .catch((e) => { if (alive.current) { setError(friendlyError(e)); setLoaded(true) } })
   }, [caseId, onPlan])
 
   useEffect(() => { load() }, [load, refreshKey])
@@ -54,14 +57,14 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
       const r = await sendJSON<{ plan: HoldPlan; actions: Action[] }>(`/api/cases/${caseId}/plan`, undefined, { key: planKey.current })
       if (!alive.current) return
       setPlan(r.plan); onPlan(r.plan, r.actions); load()
-    } catch (e) { setError((e as Error).message) } finally { setPlanning(false) }
+    } catch (e) { setError(friendlyError(e)) } finally { setPlanning(false) }
   }
 
   const saveName = (v: string) => { setName(v); try { localStorage.setItem(NAME_KEY, v) } catch { /* private window */ } }
   const holds = actions.filter((a) => a.type === 'HOLD' || a.type === 'RELEASE')
     .sort((x, y) => (y.hold_amount ?? 0) - (x.hold_amount ?? 0))
   const decisions = actions.filter((a) => a.type !== 'HOLD' && a.type !== 'RELEASE')
-  const evidence = Object.fromEntries(result.evidence.map((e) => [e.id, e.claim]))
+  const evidence = Object.fromEntries(result.evidence.map((e) => [e.id, briefs[e.id] ?? e.claim]))
   const payments = Object.fromEntries((plan?.network.edges ?? []).map((e) => [e.tx_id, e]))
   const deciding = actions.some((a) => a.status === 'PROPOSED')
 
@@ -125,23 +128,22 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
 function Effect({ plan, effect, open }: { plan: HoldPlan; effect: OpenEffect | null; open: number }) {
   const m = (v: number) => fmtMoney(v, plan.currency, plan.rate)
   const frozen = Math.min(effect?.frozen ?? 0, plan.in_motion)
-  const routes = effect?.on_routes ?? 0
   const notHeld = Math.max(plan.in_motion - frozen, 0)
   const total = plan.in_motion + plan.already_out
   let line: string
   if (open > 0) {
-    line = `Holding ${open} account${open === 1 ? '' : 's'} freezes ${m(frozen)} of case money now.`
+    line = `${open} hold${open === 1 ? '' : 's'} would freeze ${m(frozen)} of case money.`
   } else if (plan.holds.length > 0) {
-    line = `No hold is open, so nothing is frozen. ${m(plan.in_motion)} of case money is still in the trail.`
+    line = `Nothing is frozen yet. ${m(plan.in_motion)} of case money can still be stopped.`
   } else if (plan.in_motion <= 0) {
-    line = 'No case money is still sitting in the trail, so there is nothing to hold.'
+    line = 'The case money has already moved on, so there is nothing to hold.'
   } else {
-    line = `${m(plan.in_motion)} of case money is still in the trail, but none of it can be held here.`
+    line = `${m(plan.in_motion)} of case money is still moving, but none of it can be held here.`
   }
   const seg = [
     { v: frozen, c: 'var(--s4)', label: 'Frozen now' },
-    { v: notHeld, c: 'var(--axis)', label: 'In the trail, not held' },
-    { v: plan.already_out, c: 'var(--s8)', label: 'Already gone' },
+    { v: notHeld, c: 'var(--axis)', label: 'Still moving, not held' },
+    { v: plan.already_out, c: 'var(--s8)', label: 'Already gone (cash, crypto, shops)' },
   ]
   return (
     <div className="flex flex-col gap-2">
@@ -162,22 +164,11 @@ function Effect({ plan, effect, open }: { plan: HoldPlan; effect: OpenEffect | n
           </ul>
         </>
       )}
-      {routes > 0 && (
-        <p className="text-xs" style={{ color: 'var(--ink-2)' }}>
-          On the case's routes: {m(routes)} more would have to pass these accounts, but only if the mules keep paying the same accounts. That is an assumption, not money held.
-        </p>
-      )}
       <p className="text-xs" style={{ color: 'var(--muted)' }}>
-        A hold freezes only the case money traced into an account, never its whole balance.
-        {plan.already_out > 0 && ' Already gone means it left in cash, crypto or another currency, or reached a merchant.'}
+        Only the case money is frozen, never the whole account.
+        {plan.skipped_hubs.length > 0 && ` ${plan.skipped_hubs.length} busy account${plan.skipped_hubs.length === 1 ? ' is' : 's are'} never held (shops, processors).`}
+        {' '}{currencyNote()}
       </p>
-      {plan.note && <p className="text-xs" style={{ color: 'var(--ink-2)' }}>{plan.note}</p>}
-      {plan.skipped_hubs.length > 0 && (
-        <p className="text-xs" style={{ color: 'var(--muted)' }}>
-          Not held: {plan.skipped_hubs.length} busy account{plan.skipped_hubs.length === 1 ? '' : 's'} (merchant or processor). FlowTrace never holds those.
-        </p>
-      )}
-      <p className="text-xs" style={{ color: 'var(--muted)' }}>{currencyNote(plan.currency)}</p>
     </div>
   )
 }
@@ -195,7 +186,9 @@ function ActionRow({ action: a, evidence, payments, name, onChange }: {
   const key = useRef(crypto.randomUUID())  // one per decision: a double click returns the first answer
   const now = useNow(a.status === 'APPROVED' ? 1000 : 0)
   const m = (v = 0) => fmtMoney(v, a.currency, a.rate)
+  const acctName = useName()
   const isHold = a.type === 'HOLD'
+  const firstSentence = (t: string) => t.split(/(?<=\.)\s/)[0]
   const claims = (a.evidence_ids ?? []).map((id) => evidence[id]).filter(Boolean)
   const into = (a.tx_ids ?? []).map((t) => payments[t]).filter(Boolean)
   const ready = reason.trim().length >= MIN_REASON && !!name.trim() && !!approverToken
@@ -206,37 +199,27 @@ function ActionRow({ action: a, evidence, payments, name, onChange }: {
       await sendJSON(`/api/actions/${a.id}/${kind}`, { reason: reason.trim(), by: name.trim() },
         { key: `${key.current}:${kind}`, approverToken })
       onChange()
-    } catch (e) { setError((e as Error).message); onChange() } finally { setBusy(null) }
+    } catch (e) { setError(friendlyError(e)); onChange() } finally { setBusy(null) }
   }
 
   return (
     <li className="rounded-lg p-3 flex flex-col gap-2" style={{ background: 'var(--surface-2)' }}>
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-sm font-medium">
-          {ACTION_PLAIN[a.type].title}{a.account ? ` account ${shortAcct(a.account)}` : ''}
+        <span className="text-sm font-semibold">
+          {isHold ? `Freeze ${m(a.hold_amount)} in ${a.account ? acctName(a.account) : 'the account'}`
+            : `${ACTION_PLAIN[a.type].title}${a.account ? ` ${acctName(a.account)}` : ''}`}
         </span>
-        {isHold && <span className="text-base font-semibold tabular" style={{ color: 'var(--s4)' }}>{m(a.hold_amount)}</span>}
       </div>
-      {isHold && (
-        <p className="text-xs tabular" style={{ color: 'var(--ink-2)' }}>
-          Freezes {m(a.hold_amount)} of case money in this account, not its whole balance.
-          {(a.on_routes ?? 0) > 0 && <> If the mules keep their routes, {m(a.on_routes)} more would have to pass through it (an assumption).</>}
-        </p>
-      )}
-      {a.why && <p className="text-sm leading-snug">{a.why}</p>}
-      {claims.length > 0 && (
-        <ul className="flex flex-col gap-1 pl-3" style={{ borderLeft: '2px solid var(--critical)' }}>
-          {claims.slice(0, 3).map((c, i) => <li key={i} className="text-xs" style={{ color: 'var(--ink-2)' }}>{c}</li>)}
-        </ul>
-      )}
-      {into.length > 0 && (
-        <ul className="flex flex-col gap-0.5 text-xs tabular" style={{ color: 'var(--ink-2)' }} aria-label="Case payments into this account">
-          {into.slice(0, 3).map((e) => (
-            <li key={e.tx_id}>Received {m(e.amount)} from account {shortAcct(e.src)} on {fmtTime(e.ts)}</li>
-          ))}
-          {into.length > 3 && <li>and {into.length - 3} more payments</li>}
-        </ul>
-      )}
+      <dl className="grid grid-cols-[104px_1fr] gap-x-2 gap-y-1 text-sm">
+        {a.why && (<><dt className="text-xs font-semibold pt-0.5" style={{ color: 'var(--muted)' }}>Basis for hold</dt><dd>{firstSentence(a.why)}</dd></>)}
+        {claims.length > 0 && (<><dt className="text-xs font-semibold pt-0.5" style={{ color: 'var(--muted)' }}>Indicators</dt>
+          <dd><ul className="flex flex-col gap-0.5">{claims.slice(0, 2).map((c, i) => <li key={i}>{c}</li>)}</ul></dd></>)}
+        {into.length > 0 && (<><dt className="text-xs font-semibold pt-0.5" style={{ color: 'var(--muted)' }}>Funds received</dt>
+          <dd className="tabular"><ul className="flex flex-col gap-0.5">
+            {into.slice(0, 2).map((e) => <li key={e.tx_id}>{m(e.amount)} from {acctName(e.src)}, {fmtTime(e.ts)}</li>)}
+            {into.length > 2 && <li style={{ color: 'var(--muted)' }}>and {into.length - 2} more</li>}
+          </ul></dd></>)}
+      </dl>
 
       <Status a={a} now={now} />
 
@@ -278,7 +261,7 @@ function Status({ a, now }: { a: Action; now: number }) {
   const origin = ORIGIN[a.proposed_by] ?? ORIGIN.agent
   if (a.status === 'PROPOSED') {
     return a.type === 'HOLD'
-      ? <p className="text-xs" style={muted}>{origin}. Ends {a.expiry_days} business days after approval.</p>
+      ? <p className="text-xs" style={muted}>{origin}. Lasts {a.expiry_days} business days once approved.</p>
       : <p className="text-xs" style={muted}>{origin}.</p>
   }
   if (a.status === 'APPROVED') {
