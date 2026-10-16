@@ -9,6 +9,22 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 15
 
 ---
 
+## Screenshots
+
+**1. Upload a day of payments**, or try the sample day.
+
+![Upload screen](docs/screenshots/upload.png)
+
+**2. Today's work.** 2,271 payments become 40 flagged payments and 17 cases. The 15 with the highest chance of laundering are listed first, and the other 2 sit under *Lower priority*. The graph behind the list shows every payment in the file. This is the curated demo sample; full-day numbers are in *Results*.
+
+![Today's work: ranked cases](docs/screenshots/todays-work.png)
+
+**3. Investigate a case.** The investigator follows the money through the graph and lists the red flags and legitimate explanations it found. The disposition and risk score are computed in code from that evidence. The case's money trail is highlighted in the graph. This run used the rule-based fallback, because no LLM key was set (the *AI investigator* badge is red).
+
+![Case investigation](docs/screenshots/investigation.png)
+
+---
+
 ## Results (measured; reproduce with the commands below)
 
 | What | Result | How it was measured |
@@ -18,6 +34,7 @@ Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs × FalkorDB, Oct 15
 | Laundering-shape recognition | **96.5%** on 282 schemes with 3+ accounts; 80.8% on all 370 | Against IBM's ground-truth pattern file. Schemes with 1–2 transfers are inherently ambiguous |
 | Strongest legitimacy signal | First-time account pairs launder at **1.69%**; pairs with >10 prior transfers at **0.018%** (92× lower) | Whole HI-Small dataset |
 | Case funnel, **full test day** (Sep 9, 654,467 payments, 0.08% laundering) | **280 flagged → 186 cases**, largest 9 accounts; **15 of the top 15 cases are laundering**; of 121 schemes active that day, 18 are in the top 15, 49 in the top 50, 93 in some case | `python -m flowtrace.eval.fullday --day 2022-09-09`: offline, every payment, no graph upload, detectors not run (see *How flagging works*). Validation days: 168 and 176 cases, 22 of 117 and 22 of 116 schemes in the top 15 |
+| Case funnel, **full test day** (Sep 10, 208,325 payments, 0.21% laundering) | **262 flagged → 180 cases**, largest 7 accounts; **15 of the top 15 cases are laundering**; of 124 schemes active that day, 18 are in the top 15, 51 in the top 50, 86 in some case | `python -m flowtrace.eval.fullday --day 2022-09-10`: same offline method as Sep 9 |
 | Case funnel, **curated demo sample** (Sep 9, 2,271 payments, 2.3% laundering, ~29× a real day) | 40 flagged → 17 cases, largest 6 accounts; 14 of the top 15 cases are laundering; 18 of 26 schemes in the top 15 | `python -m flowtrace.eval.funnel ../data/samples/demo_mixed_2022-09-09.csv`. The sample is hand-picked around known schemes for the demo, so it reads far better than a real day |
 | Adaptive agent vs fixed workflow | `python -m flowtrace.eval.compare` writes `data/models/agent_eval.json` | Same alerts, same query budget; see *Evaluation* |
 
