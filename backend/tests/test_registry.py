@@ -1,0 +1,152 @@
+"""One tool registry: the in-app agent, the API's act step and the MCP server use the same tools."""
+import json
+
+import pytest
+
+from flowtrace import store
+from flowtrace.actions import planner as P
+from flowtrace.actions import service
+from flowtrace.agent import context as ctx_mod
+from flowtrace.agent import policy, registry
+from flowtrace.agent.tools import ToolError
+from flowtrace.graph import client
+from flowtrace.graph import trace as trace_mod
+from tests.test_planner import CASE, mule_world, result
+
+
+@pytest.fixture
+def runs(tmp_path, monkeypatch):
+    """data/runs in a temp folder, holding the fake mule case and its ESCALATE result."""
+    monkeypatch.setattr(store, "RUNS", tmp_path)
+    for kind, obj in (("cases", CASE), ("results", {**result("ESCALATE"), "case_id": CASE["case_id"],
+                                                     "report": {"headline": "Mule split"}})):
+        (tmp_path / kind).mkdir()
+        (tmp_path / kind / f"{CASE['case_id']}.json").write_text(json.dumps(obj))
+    (tmp_path / "batches").mkdir()
+    (tmp_path / "batches" / "BX.json").write_text(json.dumps(
+        {"batch_id": "BX", "cases": [{"case_id": CASE["case_id"], "tier": "today", "case_score": 0.9,
+                                      "accounts": ["X"], "amount": 60000.0, "shape": {"typology": "FAN-OUT"}}]}))
+    w = mule_world()
+    monkeypatch.setattr(P, "ro", w.ro)
+    monkeypatch.setattr(trace_mod, "ro", w.ro)
+    monkeypatch.setattr(ctx_mod, "ro", w.ro)
+    monkeypatch.setattr(P, "fx_rates", lambda: {"US Dollar": 1.0, "Euro": 0.85})
+    return tmp_path
+
+
+@pytest.fixture
+def proposals(monkeypatch):
+    """Record proposals instead of writing them; no open actions to start with."""
+    made, open_ = [], []
+    monkeypatch.setattr(service, "list_actions", lambda case_id=None, status=None, expire=True: list(open_))
+
+    def propose(case_id, type, **kw):
+        a = {"id": f"A{len(made)}", "case_id": case_id, "type": type, "status": "PROPOSED", "proposed_by": "agent", **kw}
+        made.append(a)
+        return a, True
+    monkeypatch.setattr(service, "propose", propose)
+    return made, open_
+
+
+def test_policy_tools_come_from_the_registry():
+    enum = policy._schema()["properties"]["action"]["enum"]
+    assert enum == list(registry.investigation_tools()) + ["finish"]
+    assert set(registry.investigation_tools()) >= {"account_profile", "trace_funds", "counterparty_history",
+                                                   "shared_counterparties", "find_cycles", "case_memory"}
+
+
+def test_only_propose_action_writes():
+    assert [n for n, s in registry.REGISTRY.items() if s.writes] == ["propose_action"]
+
+
+def test_propose_action_holds_a_trail_account_with_the_plan_numbers(runs, proposals):
+    made, _ = proposals
+    out = registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M1",
+                                           "reason": "Case money is resting here"})
+    assert out["created"] and made[0]["account"] == "M1" and made[0]["hold_amount"] == pytest.approx(20000)
+    assert made[0]["currency"] == "Euro" and made[0]["proposed_by"] == "agent"
+
+
+def test_mcp_proposals_are_marked_as_mcp(runs, proposals):
+    made, _ = proposals
+    registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M1",
+                                     "reason": "Case money is resting here"}, origin="mcp")
+    assert made[0]["proposed_by"] == "mcp"
+
+
+def test_propose_action_refuses_a_hold_below_the_minimum(runs, proposals):
+    """M0 sent almost everything on in cash: 500 is left, under actions.min_hold_usd."""
+    with pytest.raises(ToolError, match="minimum"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M0",
+                                         "reason": "Hold what is left"})
+
+
+@pytest.mark.parametrize("account", ["HUB", "Y", "NOPE"])
+def test_propose_action_refuses_hubs_and_accounts_off_the_trail(runs, proposals, account):
+    with pytest.raises(ToolError):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": account,
+                                         "reason": "Hold it please"})
+    assert proposals[0] == []
+
+
+def test_a_full_case_comes_back_as_a_tool_error(runs, proposals, monkeypatch):
+    """The cap itself is checked inside the write (service.propose); the registry passes the refusal on."""
+    def full(*a, **k):
+        raise service.ActionError(409, "this case already has 3 open holds (the most is 3)")
+    monkeypatch.setattr(service, "propose", full)
+    with pytest.raises(ToolError, match="already has 3"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M2",
+                                         "reason": "Hold it please"})
+
+
+def test_propose_action_on_an_unknown_case(runs, proposals):
+    with pytest.raises(ToolError, match="no such case"):
+        registry.call("propose_action", {"case_id": "BX-C999", "type": "ESCALATE", "reason": "Looks bad to me"})
+
+
+def test_act_plans_then_proposes_holds_and_the_case_action(runs, proposals):
+    made, _ = proposals
+    out = registry.act(CASE["case_id"])
+    assert [(a["type"], a.get("account")) for a in made] == [("HOLD", "M1"), ("HOLD", "M2"), ("FILE_STR", None)]
+    assert out["plan"]["frozen_now"] == pytest.approx(25000) and store.load_plan(CASE["case_id"]) == out["plan"]
+
+
+def test_read_tools_never_write(runs, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("a read-only tool wrote to the graph")
+    monkeypatch.setattr(client, "rw", boom)
+    monkeypatch.setattr(service, "rw", boom)
+    monkeypatch.setattr(service, "ro", lambda *a, **k: client.QueryResult(rows=[], cypher="", params={}, ms=0))
+    assert registry.call("get_case", {"case_id": CASE["case_id"]})["case"]["case_id"] == CASE["case_id"]
+    assert registry.call("plan_holds", {"case_id": CASE["case_id"]})["holds"]
+    assert registry.call("list_cases", {})[0]["case_id"] == CASE["case_id"]
+
+
+@pytest.mark.parametrize("disposition", ["CLOSE", "REVIEW", None])
+def test_propose_action_refuses_holds_the_investigation_did_not_recommend(runs, proposals, disposition):
+    res = runs / "results" / f"{CASE['case_id']}.json"
+    if disposition is None:
+        res.unlink()
+    else:
+        res.write_text(json.dumps({**result(disposition), "case_id": CASE["case_id"], "report": {}}))
+    with pytest.raises(ToolError, match="investigation"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "HOLD", "account": "M1",
+                                         "reason": "Hold it please"})
+
+
+def test_release_needs_an_approved_hold(runs, proposals):
+    made, open_ = proposals
+    with pytest.raises(ToolError, match="no approved hold"):
+        registry.call("propose_action", {"case_id": CASE["case_id"], "type": "RELEASE", "account": "M1",
+                                         "reason": "Customer explained it"})
+    open_.append({"type": "HOLD", "status": "APPROVED", "account": "M1"})
+    assert registry.call("propose_action", {"case_id": CASE["case_id"], "type": "RELEASE", "account": "M1",
+                                            "reason": "Customer explained it"})["created"]
+
+
+def test_act_plans_once(runs, proposals, monkeypatch):
+    calls = []
+    real = P.plan_holds
+    monkeypatch.setattr(P, "plan_holds", lambda *a, **k: calls.append(1) or real(*a, **k))
+    registry.act(CASE["case_id"])
+    assert len(calls) == 1

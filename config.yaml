@@ -92,6 +92,20 @@ disposition:
   close_min_legit: 0.5
   close_expiry_days: 90
 
+# --- Actions (hold planner + human approval) ------------------------------------------------
+# The agent only proposes; a person approves or rejects with a reason. Set before measuring, not tuned on Sep 9.
+actions:
+  hold_expiry_business_days: 4   # policy setting, not a legal limit. A hold is a lien on the case money in the
+                                 # account, not a freeze of the account (RBI draft KYC Amendment Directions, Sep
+                                 # 2026: debit hold on the suspected amount, at most 60 days). For comparison, UK
+                                 # FCA FG24/6 lets the payer's bank delay ONE outbound payment up to 4 business days.
+  max_holds_per_case: 3          # beyond this the planner keeps the holds that freeze the most money
+  min_hold_usd: 1000             # never propose a hold on less (same floor as the pass-through rule)
+  propose_for: [ESCALATE]        # holds only after ESCALATE (reasonable grounds to suspect); REVIEW is mixed
+                                 # evidence. Decided after seeing the Sep 9 results (it was [ESCALATE, REVIEW])
+  min_reason_chars: 5            # an approval or rejection needs a written reason
+  expiry_check_seconds: 60       # how often the API releases holds whose time is up
+
 # --- Crime hypotheses (interpretation, not a measured label) --------------------------------
 # The dataset labels laundering yes/no only. These map observed shapes to the predicate crimes
 # the generator models (Altman et al. 2023) as analyst hypotheses.

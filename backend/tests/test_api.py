@@ -12,14 +12,19 @@ def test_reupload_forgets_old_cases_results_and_case_nodes(monkeypatch, tmp_path
     for kind in ("cases", "results"):
         (tmp_path / kind).mkdir()
         (tmp_path / kind / "BX-C001.json").write_text(json.dumps({}))
-    calls = []
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "BX-C001.json").write_text(json.dumps({}))
+    calls, withdrawn = [], []
     monkeypatch.setattr(M, "rw", lambda c, p, **k: calls.append((c, p)))
+    monkeypatch.setattr(M.service, "retire_batch", lambda prefix, reason: withdrawn.append(prefix) or {})
 
     M.forget_batch("BX")
 
     assert list(M.CASES) == ["BY-C001"] and M.RESULTS == {}
     assert not (tmp_path / "cases" / "BX-C001.json").exists() and not (tmp_path / "results" / "BX-C001.json").exists()
-    assert calls == [(Q.DELETE_BATCH_CASES, {"prefix": "BX-C"})]
+    assert not (tmp_path / "plans" / "BX-C001.json").exists()
+    assert [(c, p["prefix"]) for c, p in calls] == [(Q.DELETE_BATCH_CASES, "BX-C")]
+    assert withdrawn == ["BX-C"]  # proposals withdrawn; decided actions retired from the renumbered cases
 
 
 def test_save_case_replaces_its_account_links():

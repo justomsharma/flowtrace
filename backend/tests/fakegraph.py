@@ -35,7 +35,7 @@ class World:
 
     def _tx(self, e):
         return {"tx_id": e["tx_id"], "src": e["src"], "dst": e["dst"], "ts": e["ts"], "amount": e["amount"],
-                "fmt": e["fmt"], "cur": "US Dollar", "xcur": False}
+                "fmt": e["fmt"], "cur": e.get("cur", "US Dollar"), "xcur": e.get("xcur", False)}
 
     def answer(self, c: str, p: dict) -> list[dict]:
         acc = self.accounts
@@ -62,6 +62,9 @@ class World:
                     rows.append({"cp": cp, "prior_cnt": len(es), "first_ts": min(e["ts"] for e in es),
                                  "ts_list": [e["ts"] for e in es], "amounts": [e["amount"] for e in es]})
             return rows
+        if c == Q.DEGREES_UNTIL:
+            return [{"id": i, "out_deg": len([e for e in self.out(i) if e["ts"] < p["t1"]]),
+                     "in_deg": len([e for e in self.inc(i) if e["ts"] < p["t1"]])} for i in p["ids"]]
         if c == Q.HUB_DEGREES:
             return [{"id": i, "out_deg": len(self.out(i, p["h0"], p["t0"])), "in_deg": len(self.inc(i, p["h0"], p["t0"]))}
                     for i in p["ids"]]
@@ -109,6 +112,15 @@ class World:
         if c == Q.SIBLING_ACCOUNTS:
             eid = acc.get(p["id"], {}).get("entity_id")
             return [{"id": a, "bank": "1"} for a, v in acc.items() if eid and v.get("entity_id") == eid and a != p["id"]]
+        if c == Q.HOLD_FLOWS:
+            rows = []
+            for f in p["since"]:
+                outs = [e for e in self.out(f["id"], f["ts"], p["t1"])]
+                ins = self.inc(f["id"], f["ts"], p["t1"])
+                rows.append({"id": f["id"], "out_cnt": len(outs), "out_sum": sum(e["amount"] for e in outs),
+                             "exit_sum": sum(e["amount"] for e in outs if e["fmt"] in p["exit_fmts"] or e.get("xcur")),
+                             "in_cnt": len(ins), "in_sum": sum(e["amount"] for e in ins)})
+            return rows
         if c in (Q.CYCLES, Q.PRIOR_CASES, Q.NEAREST_ESCALATED):
             return []
         if c in (A.FAN_OUT, A.FAN_IN):

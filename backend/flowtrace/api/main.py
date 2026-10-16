@@ -5,6 +5,7 @@ Run:  uvicorn flowtrace.api.main:app --port 8000   (from backend/)
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import multiprocessing
@@ -15,11 +16,16 @@ from contextlib import asynccontextmanager
 from functools import partial
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from dotenv import dotenv_values
+from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 
+from flowtrace import store
+from flowtrace.actions import planner, service
+from flowtrace.agent import registry
 from flowtrace.agent.investigate import save_case_memory
 from flowtrace.api import jobs
 from flowtrace.api.overview import build_overview
@@ -27,7 +33,7 @@ from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
-from flowtrace.settings import cfg, settings
+from flowtrace.settings import ROOT, cfg, settings
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -35,7 +41,10 @@ async def lifespan(_app: FastAPI):
         threading.Thread(target=requeue_unfinished, daemon=True).start()
     else:
         log.info("not re-queuing unfinished cases in this process (set FLOWTRACE_REQUEUE=1 to force)")
+    stop = threading.Event()
+    threading.Thread(target=release_due_holds, args=(stop,), daemon=True).start()
     yield
+    stop.set()
     RUNNER.shutdown()  # cancel queued work instead of finishing it (and paying for it) on the way out
 
 
@@ -97,16 +106,31 @@ def is_curated_sample(name: str) -> bool:
     return p.parent == SAMPLES.resolve() and p.exists()
 
 
+def release_due_holds(stop: threading.Event) -> None:
+    """Approved holds end on their own when their time is up, even if nobody opens the app."""
+    while not stop.wait(cfg()["actions"]["expiry_check_seconds"]):
+        try:
+            if n := service.expire_due():
+                log.info("released %d hold(s) whose time was up", n)
+        except Exception as e:  # the graph may be restarting; try again next time
+            log.warning("hold expiry check failed: %s", e)
+
+
 def forget_batch(batch_id: str) -> None:
-    """Drop a batch's earlier cases, investigation results and case memory before it is stored again.
-    Case ids are rank-based (B..-C001), so after a retune an old result would otherwise attach to a
-    different case."""
+    """Drop a batch's earlier cases, investigation results, hold plans and case memory before it is stored
+    again, and withdraw its undecided proposals. Case ids are rank-based (B..-C001), so after a retune an old
+    result would otherwise attach to a different case. Decided actions are retired from the renumbered cases;
+    approved holds keep running (that money is really held), and cases with a person's verdict stay in case
+    memory under a retired id."""
     prefix = f"{batch_id}-C"
-    for kind, store in (("cases", CASES), ("results", RESULTS)):
-        for cid in [c for c in store if c.startswith(prefix)]:
-            del store[cid]
+    for kind, mem in (("cases", CASES), ("results", RESULTS)):
+        for cid in [c for c in mem if c.startswith(prefix)]:
+            del mem[cid]
             (RUNS / kind / f"{cid}.json").unlink(missing_ok=True)
-    rw(Q.DELETE_BATCH_CASES, {"prefix": prefix})
+    for f in (RUNS / "plans").glob(f"{prefix}*.json") if (RUNS / "plans").exists() else []:
+        f.unlink(missing_ok=True)
+    rw(Q.DELETE_BATCH_CASES, {"prefix": prefix, "now": int(time.time() * 1000)})
+    service.retire_batch(prefix, "The file was uploaded again, so its cases were renumbered")
 
 
 @app.get("/api/health")
@@ -220,6 +244,10 @@ def _store_result(case_id: str, result: dict) -> None:
     save_case_memory(result, cfg())
     RESULTS[case_id] = result
     _persist("results", case_id, result)
+    try:  # the agent acts: plan the holds and propose them for a person to decide
+        registry.act(case_id)
+    except Exception as e:
+        log.warning("could not plan holds for %s: %s", case_id, e)
 
 
 def prefetch(batch_id: str) -> list[str]:
@@ -302,6 +330,83 @@ def get_case(case_id: str) -> dict:
         raise HTTPException(404, "no such case")
     c = CASES[case_id]
     return {"case": c, "result": RESULTS.get(case_id), "job": _job_brief(case_id)}
+
+
+# --- actions: the agent proposes, a person decides ------------------------------------------------
+
+class Decision(BaseModel):
+    reason: str
+    by: str  # the approver's name, recorded in the audit log
+
+    @field_validator("by")
+    @classmethod
+    def _named(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("say who is deciding")
+        return v.strip()
+
+
+def approver_token() -> str | None:
+    """APPROVER_TOKEN from the environment or .env. Only this API process reads it; the MCP server drops it."""
+    return os.environ.get("APPROVER_TOKEN") or dotenv_values(ROOT / ".env").get("APPROVER_TOKEN") or None
+
+
+def _check_approver(token: str | None) -> None:
+    expected = approver_token()
+    if not expected:
+        raise HTTPException(403, "approvals are switched off on this server: set APPROVER_TOKEN in .env")
+    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(401, "approver token missing or wrong")
+
+
+@app.post("/api/cases/{case_id}/plan")
+def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
+    """Plan holds for an investigated case and propose them. Safe to repeat: proposals are merged on case,
+    type and account, so a double click adds nothing (the Idempotency-Key header is accepted but not needed)."""
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    if case_id not in RESULTS:
+        raise HTTPException(409, "investigate the case first: holds follow from the investigation")
+    return registry.act(case_id)
+
+
+@app.get("/api/cases/{case_id}/plan")
+def get_plan(case_id: str) -> dict:
+    """The saved plan, the case's current actions, and what the holds still open (proposed or approved) freeze,
+    plus the money on the case's routes they would also stop (an assumption). Recounted after every decision."""
+    plan, actions = store.load_plan(case_id), service.list_actions(case_id=case_id)
+    held = [a["account"] for a in actions if a["type"] == "HOLD" and a["status"] in ("PROPOSED", "APPROVED")]
+    return {"plan": plan, "actions": actions, "open_effect": planner.effect(plan, held) if plan else None}
+
+
+@app.get("/api/actions")
+def list_actions(status: str | None = None, case_id: str | None = None) -> list[dict]:
+    return service.list_actions(case_id=case_id, status=status)
+
+
+def _decide(action_id: str, approve: bool, d: Decision, key: str | None, token: str | None) -> dict:
+    _check_approver(token)
+    try:
+        return service.decide(action_id, approve, d.reason, by=d.by, key=key, auth="approver-token")
+    except service.ActionError as e:
+        raise HTTPException(e.status, str(e)) from e
+
+
+@app.post("/api/actions/{action_id}/approve")
+def approve_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
+                   x_approver_token: str | None = Header(None)) -> dict:
+    return _decide(action_id, True, d, idempotency_key, x_approver_token)
+
+
+@app.post("/api/actions/{action_id}/reject")
+def reject_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
+                  x_approver_token: str | None = Header(None)) -> dict:
+    return _decide(action_id, False, d, idempotency_key, x_approver_token)
+
+
+@app.get("/api/audit")
+def audit_log(case_id: str | None = None, limit: int = 200) -> list[dict]:
+    return service.audit(case_id=case_id, limit=min(max(limit, 1), 2000))
 
 
 # --- job events (SSE) ------------------------------------------------------------------------

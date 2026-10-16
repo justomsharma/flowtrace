@@ -3,9 +3,10 @@ import { useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Loader2, Upload } from 'lucide-react'
 import LiveGraph3D, { type MapLink } from '../components/LiveGraph3D'
 import { ActionBadge } from '../components/badges'
+import HoldPanel from '../components/HoldPanel'
 import {
-  fmtInt, fmtUsd, getJSON, postJSON, streamJob, type BatchSummary, type CaseBrief, type CaseResult, type JobBrief,
-  type JobEvent,
+  fmtInt, fmtUsd, getJSON, postJSON, streamJob, type Action, type BatchSummary, type CaseBrief, type CaseResult,
+  type HoldPlan, type JobBrief, type JobEvent,
 } from '../lib/api'
 import { STAGE_PLAIN, STEP_PLAIN, caseReason, pct, shortAcct, trickName } from '../lib/plain'
 
@@ -51,6 +52,10 @@ export default function Workspace() {
   const [result, setResult] = useState<CaseResult | null>(null)
   const [investigating, setInvestigating] = useState(false)
   const [jobStatus, setJobStatus] = useState<JobBrief['status'] | null>(null)
+  // The hold plan: accounts proposed for a hold (or held) are marked on the map, with the trail payments into them.
+  const [holdPlan, setHoldPlan] = useState<{ plan: HoldPlan | null; actions: Action[] }>({ plan: null, actions: [] })
+  const [planVersion, setPlanVersion] = useState(0)
+  const onPlan = useCallback((plan: HoldPlan | null, actions: Action[]) => setHoldPlan({ plan, actions }), [])
   const stopStream = useRef<(() => void) | null>(null)
   const following = useRef<string | null>(null)  // the job the panel is streaming, so it is never followed twice
   const caseRef = useRef(caseId)
@@ -92,12 +97,15 @@ export default function Workspace() {
   const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
   const lower = useMemo(() => batch?.cases.filter((c, i) => !inToday(c, i, batch.capacity)) ?? [], [batch])
   const [showLower, setShowLower] = useState(false)
+  const marked = useMemo(() => holdPlan.actions.filter((a) => a.type === 'HOLD' && a.account && (a.status === 'PROPOSED' || a.status === 'APPROVED'))
+    .map((a) => a.account as string), [holdPlan])
 
   // Opening a case shows its finished result, or joins its background investigation (replayed, then live).
   useEffect(() => {
     let stale = false
     stopStream.current?.(); stopStream.current = null; following.current = null
     setTraced([]); setSteps([]); setResult(null); setPulse(new Set()); setInvestigating(false); setJobStatus(null); setError(null)
+    setHoldPlan({ plan: null, actions: [] })
     if (caseId) {
       getJSON<{ result: CaseResult | null; job: JobBrief | null }>(`/api/cases/${caseId}`).then((r) => {
         if (stale) return
@@ -220,7 +228,7 @@ export default function Workspace() {
             ? 'The server stopped, so this run was stopped. It is investigated again when the server restarts.'
             : 'This file was uploaded again, so this run was stopped.')
         }
-      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch() })
+      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch(); setPlanVersion((v) => v + 1) })
   }
 
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.
@@ -233,9 +241,18 @@ export default function Workspace() {
     }))
     const have = new Set(out.map((l) => l.tx_id))
     for (const t of traced) if (!have.has(t.tx_id)) out.push(concern.has(t.tx_id) ? { ...t, kind: 'concern' } : t)
+    // Payments that carried case money into an account proposed for a hold.
+    const into = new Set(marked)
+    for (const e of holdPlan.plan?.network.edges ?? []) {
+      if (e.kind !== 'trail' || !into.has(e.dst)) continue
+      const i = out.findIndex((l) => l.tx_id === e.tx_id)
+      const link: MapLink = { tx_id: e.tx_id, source: e.src, target: e.dst, amount: e.amount, kind: 'hold' }
+      if (i >= 0) out[i] = link
+      else out.push(link)
+    }
     return out
-  }, [base, traced, caseId, concern, live, liveKind])
-  const focus = useMemo(() => current?.accounts ?? [], [current])
+  }, [base, traced, caseId, concern, live, liveKind, holdPlan, marked])
+  const focus = useMemo(() => [...(current?.accounts ?? []), ...marked.filter((a) => !current?.accounts.includes(a))], [current, marked])
 
   const d = result?.disposition
   const rep = result?.report
@@ -244,7 +261,7 @@ export default function Workspace() {
 
   return (
     <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 80px)', border: '1px solid var(--border)' }}>
-      <LiveGraph3D links={links} focus={focus} pulse={pulse} />
+      <LiveGraph3D links={links} focus={focus} pulse={pulse} marked={marked} />
 
       {/* Empty state: just the upload */}
       {!batch && !busy && (
@@ -406,6 +423,7 @@ export default function Workspace() {
                     <ActionBadge action={d.action} large />
                     <p className="text-sm leading-relaxed">{rep.executive_summary.text}</p>
                   </div>
+                  <HoldPanel key={result.case_id} caseId={result.case_id} result={result} refreshKey={planVersion} onPlan={onPlan} />
                   {support.length > 0 && (
                     <Reasons title="Why it is suspicious" color="var(--critical)" items={support.map((e) => e.claim)} />
                   )}

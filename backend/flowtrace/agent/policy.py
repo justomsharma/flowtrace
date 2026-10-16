@@ -10,7 +10,7 @@ import json
 
 from flowtrace.agent.context import CaseContext
 from flowtrace.agent.llm import structured
-from flowtrace.agent.tools import TOOLS
+from flowtrace.agent.registry import investigation_tools
 
 Step = dict  # {"action", "args", "reason", "hypothesis", "policy"}
 
@@ -100,7 +100,7 @@ def _schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": list(TOOLS) + ["finish"]},
+            "action": {"type": "string", "enum": list(investigation_tools()) + ["finish"]},
             "account": nullable({"type": "string"}),
             "accounts": nullable({"type": "array", "items": {"type": "string"}}),
             "direction": nullable({"type": "string", "enum": ["out", "in", "forward", "backward"]}),
@@ -121,7 +121,7 @@ class LLMPolicy:
         self.meta: list[dict] = []
 
     def next(self, ctx: CaseContext) -> Step | None:
-        tools = "\n".join(f"- {n}: {doc.strip()}" for n, (_, _, doc) in TOOLS.items())
+        tools = "\n".join(f"- {n}: {s.doc.strip()}" for n, s in investigation_tools().items())
         state = {
             "case": {"primary_account": ctx.primary, "case_accounts": ctx.accounts[:15],
                      "model_score": round(ctx.ml_score, 3), "detector_hits": ctx.detector_hits[:8], "shape": ctx.shape},

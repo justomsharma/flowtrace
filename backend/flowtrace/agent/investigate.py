@@ -14,7 +14,8 @@ from flowtrace.agent.context import DAY_MS, CaseContext
 from flowtrace.agent.disposition import decide
 from flowtrace.agent.policy import FixedPolicy, HeuristicPolicy, LLMPolicy
 from flowtrace.agent.report import write_report
-from flowtrace.agent.tools import ToolError, run_tool
+from flowtrace.agent.registry import call
+from flowtrace.agent.tools import ToolError
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
 
@@ -78,7 +79,7 @@ def investigate(ctx: CaseContext, policy_name: str = "llm", use_llm_report: bool
         before = len(ctx.book.items)
         t0 = time.perf_counter()
         try:
-            summary = run_tool(ctx, step["action"], step["args"])
+            summary = call(step["action"], step["args"], ctx)
             error = None
         except ToolError as e:
             summary, error = {}, str(e)

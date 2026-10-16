@@ -46,7 +46,7 @@ def write_checks(acc: str, cp: str, t1: int) -> int:
             mem[label] = ("SMOKE-C002" in prior, "SMOKE-C002" in near)
     finally:
         rw(Q.DELETE_BATCH, {"batch": "SMOKE"})
-        rw(Q.DELETE_BATCH_CASES, {"prefix": "SMOKE-C"})
+        rw(Q.DELETE_BATCH_CASES, {"prefix": "SMOKE-C", "now": t1})
     print(f"  idempotent insert: {n} edges after inserting 2 payments twice (expected 2)")
     print(f"  case memory: {links} account link(s) after re-saving a case with 1 account (expected 1)")
     if n != 2:
@@ -102,6 +102,12 @@ def main() -> int:
         "CYCLES": {"id": acc, "t0": t0, "t1": t1},
         "NEAREST_ESCALATED": {"id": acc, "batch_prefix": "SMOKE-C", "t0": t1},
         "PRIOR_CASES": {"id": acc, "batch_prefix": "SMOKE-C", "t0": t1},
+        "DEGREES_UNTIL": {"ids": [acc, cp], "t1": t1},
+        "HOLD_FLOWS": {"ids": [acc, cp], "since": [{"id": acc, "ts": t0}, {"id": cp, "ts": t0}], "t1": t1,
+                       "exit_fmts": ["Cash", "Bitcoin"]},
+        "GET_ACTION": {"id": "SMOKE-A"},
+        "LIST_ACTIONS": {"case_id": None, "status": None},
+        "AUDIT_LOG": {"case_id": None},
     }
     detectors = {
         "FAN_OUT": {"ids": [acc], "t0": t0, "t1": t1, "min": 2},
