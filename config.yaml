@@ -138,29 +138,30 @@ ui:
   priority: {high: 0.95, medium: 0.8}              # case score at or above -> High / Medium priority; below -> Low
   flow_max_accounts: 16                            # accounts drawn in the case's flow graph (case + hold accounts always kept)
 
-# --- Crime hypotheses (interpretation, not a measured label) --------------------------------
-# The dataset labels laundering yes/no only. These map observed shapes to the predicate crimes
-# the generator models (Altman et al. 2023) as analyst hypotheses.
+# --- Possible typology (interpretation, not a measured label) -------------------------------
+# The dataset labels laundering yes/no only. These map an observed shape to the money-laundering typology it
+# resembles, as an analyst hint shown for escalated cases only. Laundering typologies only: no guess at the
+# underlying (predicate) crime, which the payments alone cannot show.
 crime_hypotheses:
-  FAN-OUT: [kidnapping/ransom, extortion]
-  FAN-IN: [loan sharking, gambling, prostitution]
-  GATHER-SCATTER: [drugs, smuggling]
-  SCATTER-GATHER: [drugs, smuggling]
-  CYCLE: [embezzlement]
-  STACK: [smuggling, drugs]
-  BIPARTITE: [embezzlement, extortion]
-  PASS-THROUGH: ["money mule (cyber fraud or ransom)"]
-  RANDOM: []              # a chain with no regular shape points to no single crime on its own
+  FAN-OUT: [money mule distribution, layering]      # one account splits the money across many receivers
+  FAN-IN: [funnel account]                          # many senders pay into one account
+  GATHER-SCATTER: [funnel account, money mule distribution]
+  SCATTER-GATHER: [layering]                        # split across intermediaries, then brought back together
+  CYCLE: [round-tripping]
+  STACK: [layering]
+  BIPARTITE: [layering]
+  PASS-THROUGH: [money mule pass-through]
+  RANDOM: []              # a chain with no regular shape points to no single typology on its own
 
-# Indicators with a well-supported link to a predicate crime, used with the shape above (escalated cases only).
-# Money returning to its sender is the cycle typology (as CYCLE above); money forwarded straight on is the
+# Indicators with a well-supported link to a typology, used with the shape above (escalated cases only).
+# Money returning to its sender is round-tripping (as CYCLE above); money forwarded straight on is the
 # money-mule pattern (FATF 2022, "Money laundering from cyber-enabled fraud"). Splits, cash or crypto, many
-# sources and convergence are left out: they are common in normal accounts and point to no single crime.
+# sources and convergence are left out: they are common in normal accounts and point to no single typology.
 crime_by_indicator:
-  CYCLE: [embezzlement]
-  ROUND_TRIP: [embezzlement]
-  PASS_THROUGH: ["money mule (cyber fraud or ransom)"]
-  FAST_ONWARD_TRANSFER: ["money mule (cyber fraud or ransom)"]
+  CYCLE: [round-tripping]
+  ROUND_TRIP: [round-tripping]
+  PASS_THROUGH: [money mule pass-through]
+  FAST_ONWARD_TRANSFER: [money mule pass-through]
 
 # --- LLM spend --------------------------------------------------------------------------------
 # A daily cap on what the LLM may cost (UTC day, counted from the tokens each call reports). Over it, the agent

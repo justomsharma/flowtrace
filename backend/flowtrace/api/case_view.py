@@ -276,7 +276,7 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
         "indicators": [{"key": k, "value": comp[raw], "contribution": comp.get(part, 0.0)}
                        for k, raw, part in INDICATORS if raw in comp],
         "alert_reasons": alert_reasons(case),
-        # A guess at the underlying crime from the laundering shape (the data has no crime label); escalated cases only.
+        # The laundering typology the shape resembles (the data has no such label); escalated cases only.
         "crime_guess": crime_guess(case, evidence, rules) if (result or {}).get("disposition", {}).get("action") == "ESCALATE" else [],
         "summary": _summary(case, rep, evidence, result, names) if rep else None,
         "narrative_note": totals_note(case, evidence, names, rep.get("str_narrative") or "") if rep else None,
@@ -359,13 +359,13 @@ def verdict_basis(result: dict | None, evidence: list[dict], names: dict[str, st
 
 
 def crime_guess(case: dict, evidence: list[dict], rules: dict) -> list[str]:
-    """Possible predicate crimes from the laundering shape (crime_hypotheses), plus the few indicators with a
-    well-supported link (crime_by_indicator). Indicative only: the data has no crime labels. The page shows it
+    """Possible money-laundering typologies from the case's shape (crime_hypotheses), plus the few indicators with
+    a well-supported link (crime_by_indicator). Indicative only: the data has no typology labels. The page shows it
     for escalated cases only. Read from config.yaml each time, so stored cases follow the current mapping."""
     m = rules.get("crime_hypotheses", {})
     by_indicator = rules.get("crime_by_indicator", {})
     out = list(m.get((case.get("shape") or {}).get("typology"), []) or [])
-    # Strongest indicators first, so the most telling crime leads the list.
+    # Strongest indicators first, so the most telling typology leads the list.
     found = sorted((e for e in evidence if e.get("kind") == "support"), key=lambda e: -e.get("weight", 0))
     for e in found:
         out += by_indicator.get(e.get("code"), [])
@@ -490,7 +490,11 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
            "## Summary", "", f"**{clean(rep['headline'])}**", ""]
     f = flow(case, result, plan, actions, {"ui": {"flow_max_accounts": 10_000}})
     names = account_names(f["nodes"], list(case.get("accounts", [])))
-    out += [f"- {p}" for p in summary_points(rep, evidence, result, names, with_ids=True)] + ["",
+    # The totals note sits under the summary, where the AI's window totals first appear, as on the case page.
+    note = totals_note(case, evidence, names, " ".join([rep.get("str_narrative") or "", *summary_points(rep, evidence, result, names)]))
+    out += [f"- {p}" for p in summary_points(rep, evidence, result, names, with_ids=True)]
+    out += [f"- {note}"] if note else []
+    out += ["",
            f"Recommendation: **{d['action'].capitalize()}** (risk {risk_level(d['risk'], rules)}, "
            f"confidence {confidence_level(d.get('confidence') or 0.0, rules)}). "
            f"Case amount {m(case.get('amount', 0.0))} across {len(case.get('accounts', []))} accounts and "
@@ -522,9 +526,7 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     out += [""]
     if rep.get("next_steps"):
         out += ["## Next steps", ""] + [f"- {s}" for s in rep["next_steps"]] + [""]
-    note = totals_note(case, evidence, names, " ".join([rep.get("str_narrative") or "", *summary_points(rep, evidence, result, names)]))
     out += ["## STR narrative", "", rep.get("str_narrative") or "Not written: the rule-based report has no narrative.", ""]
-    out += [f"_{note}_", ""] if note else []
     out += ["## Payments in the case", "", "| Time | From | To | Amount (USD equivalent) | Paid in | Format |",
             "|---|---|---|---|---|---|"]
     out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | "

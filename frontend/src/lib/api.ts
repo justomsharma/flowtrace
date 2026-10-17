@@ -478,8 +478,7 @@ export interface CaseOverview {
   indicators: { key: 'model' | 'red_flags' | 'shape' | 'legitimacy'; value: number; contribution: number }[]
   /** Why the case was flagged before any investigation: detectors that fired, then the model. */
   alert_reasons: string[]
-  /** Likely underlying crime, guessed from the laundering shape (the data records no crime type). */
-  /** Possible predicate crimes (indicative); escalated cases only. */
+  /** Possible money-laundering typologies from the case's shape (indicative; the data has no typology label); escalated cases only. */
   crime_guess: string[]
   auto_hold?: AutoHoldPolicy
   /** Account id -> "Account A", the same names everywhere on the page and in the report. */

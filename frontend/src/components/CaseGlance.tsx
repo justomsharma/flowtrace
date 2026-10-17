@@ -20,7 +20,7 @@ export default function CaseGlance({ caseId, version }: { caseId: string; versio
 
       {o.crime_guess.length > 0 && (
         <div className="flex flex-col gap-1">
-          <span className="text-xs font-semibold" style={label}>Likely crime type (indicative)</span>
+          <span className="text-xs font-semibold" style={label}>Possible typology (indicative)</span>
           <span className="flex flex-wrap gap-1.5">
             {o.crime_guess.slice(0, 3).map((c) => (
               <span key={c} className="px-2 py-0.5 rounded-md text-xs" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>{c.charAt(0).toUpperCase() + c.slice(1)}</span>

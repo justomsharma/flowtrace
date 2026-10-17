@@ -6,8 +6,8 @@ RULES = {
            "flow_max_accounts": 16},
     "cases": {"flag_probability": 0.5},
     "disposition": {"escalate_at": 0.55, "close_below": 0.25, "confidence_labels": {"high": 0.8, "medium": 0.6}},
-    "crime_hypotheses": {"STACK": ["smuggling"]},
-    "crime_by_indicator": {"PASS_THROUGH": ["money mule"]},
+    "crime_hypotheses": {"STACK": ["funnel account"]},
+    "crime_by_indicator": {"PASS_THROUGH": ["money mule pass-through"]},
 }
 H = 3_600_000
 
@@ -182,7 +182,7 @@ def full_result():
                     "money_trail": [{"text": "A paid B, B paid C.", "evidence_ids": []}],
                     "typology_assessment": {"text": "Layered relay.", "evidence_ids": []},
                     "red_flags": [], "mitigating_factors": [], "unknowns": ["KYC not available."]}
-    r["crime_hypotheses"] = [{"crime": "smuggling", "basis": "STACK shape"}]
+    r["crime_hypotheses"] = [{"crime": "funnel account", "basis": "STACK shape"}]
     return r
 
 
@@ -199,7 +199,7 @@ def test_report_md_has_sections():
                  "KYC not available.", "| From | To |"):
         assert part in md, part
     assert "₹" not in md
-    assert "smuggling" not in md and "crime" not in md.lower()   # a crime guess stays on the case page, out of the STR
+    assert "funnel account" not in md and "crime" not in md.lower()   # the typology guess stays on the case page, out of the STR
 
 
 def test_report_md_marks_rules_reports():
@@ -317,11 +317,21 @@ def test_risk_and_confidence_levels_follow_config_and_never_show_a_percentage():
     assert (st["risk_level"], st["confidence"]) == ("Medium", "Medium")
 
 
-def test_crime_types_only_for_escalated_cases():
+def test_possible_typologies_only_for_escalated_cases():
     found = [ev("E1", "support", 0.5, code="PASS_THROUGH")]
     o = lambda action: V.build_overview(case(CHAIN), result(evidence=found, action=action), None, [], None, False, RULES)  # noqa: E731
-    assert o("ESCALATE")["crime_guess"] == ["smuggling", "money mule"]
+    assert o("ESCALATE")["crime_guess"] == ["funnel account", "money mule pass-through"]
     assert o("REVIEW")["crime_guess"] == [] and o("CLOSE")["crime_guess"] == []
+
+
+def test_config_names_laundering_typologies_never_a_crime():
+    from flowtrace.settings import cfg
+    rules = cfg()
+    labels = {x for m in ("crime_hypotheses", "crime_by_indicator") for xs in rules[m].values() for x in xs}
+    assert labels and labels <= {"money mule distribution", "money mule pass-through", "funnel account", "layering",
+                                 "round-tripping"}
+    for shape in ("FAN-OUT", "FAN-IN", "CYCLE"):
+        assert rules["crime_hypotheses"][shape]
 
 
 def test_each_payment_keeps_its_own_currency_next_to_the_usd_equivalent(monkeypatch):
