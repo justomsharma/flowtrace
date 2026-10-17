@@ -59,11 +59,13 @@ OPTIONAL MATCH (a)<-[i:TRANSFER]-()
 RETURN a.id AS id, a.entity_type AS entity_type, a.entity_id AS entity_id, out_deg, count(i) AS in_deg
 """
 
-# Same-owner accounts (the analyst's "who else does this person/company control").
+# Same-owner accounts (the analyst's "who else does this person/company control"). Ordered, so the same 50 come back
+# every time.
 SIBLING_ACCOUNTS = """
 MATCH (a:Account {id: $id})-[:OWNED_BY]->(e:Entity)<-[:OWNED_BY]-(o:Account)
 WHERE o.id <> a.id
 RETURN o.id AS id, o.bank AS bank
+ORDER BY id
 LIMIT 50
 """
 
