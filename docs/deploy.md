@@ -149,7 +149,7 @@ approvals and provisional auto-holds. The history graph stays. Locally, with the
 ## FalkorDB versions
 
 FalkorDB Cloud runs **v4.22**; `docker-compose.yml` runs v6. Three query differences between them were found by
-comparing the cloud with the full graph, and fixed so both give the same answers (README, *Demo history graph*).
+comparing the cloud with the full graph, and fixed so both give the same answers ([demo-history.md](demo-history.md)).
 After loading the demo graph into a new instance, check it:
 
 ```bash
@@ -168,4 +168,4 @@ The data is licensed CDLA-Sharing-1.0 (`data/LICENSE`, `data/NOTICE`). To work w
 - `python -m flowtrace.graph.smoke --demo` runs every query on it.
 - `python -m flowtrace.demo.verify` compares it with the full graph.
 
-See the README, *Demo history graph*.
+See [demo-history.md](demo-history.md).
