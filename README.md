@@ -92,7 +92,7 @@ Measured on Sep 9, a held-out test day.
 |---|---|
 | Finding the right cases (full day, 654,467 payments) | **15 of 15**: the top 15 cases are all laundering |
 | Freezing the money (eval slice, 21 laundering cases) | **98.6%**: the holds freeze $5.59M of the $5.67M of laundering money still in the trail |
-| The LLM agent vs the rules (agent evaluation, eval slice, 19 legitimate cases) | Legitimate cases escalated: **5 of 19** (LLM) vs 16 of 19 (rules) |
+| The LLM agent vs the rules (agent evaluation, eval slice: 21 laundering, 19 legitimate cases) | Legitimate cases escalated: **5 of 19** (LLM) vs 16 of 19 (rules). The trade-off: the LLM escalates 14 of 21 laundering cases and sends the other 7 to review; none is closed |
 
 **Limitation:** choosing *where* to hold is no better than chance. 61% of holds land on real laundering accounts,
 against a 64% base rate. So the agent only proposes, or holds provisionally, and a person always decides. Every
@@ -255,6 +255,8 @@ How the demo graph was reduced to fit FalkorDB Cloud: [docs/demo-history.md](doc
 - **Genga K** ([@Genga28](https://github.com/Genga28))
 
 Built for **GraphHacks** (WeMakeDevs × FalkorDB, Oct 15–18, 2026), **Track 1: Agents That Act on Connected Data**.
+Also entered in **Agent Memory and Coordination**: human verdicts are written back to the graph as case memory, and
+other agents coordinate over MCP (they investigate and propose; only a person approves).
 
 ## AI assistance
 
