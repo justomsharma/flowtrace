@@ -48,11 +48,12 @@ class ListArgs(BaseModel):
 
 
 class ProposeArgs(BaseModel):
-    case_id: str
+    case_id: str = Field(max_length=64)
     type: Literal["HOLD", "RELEASE", "ESCALATE", "FILE_STR", "CLOSE"]
-    account: str | None = Field(None, description="the account to hold or release (HOLD and RELEASE only)")
-    reason: str = Field(min_length=5, description="why, in one plain sentence an analyst can check")
-    evidence_ids: list[str] = Field(default_factory=list, description="evidence ids from the case (E1, E2, ...)")
+    account: str | None = Field(None, max_length=64, description="the account to hold or release (HOLD and RELEASE only)")
+    reason: str = Field(min_length=5, max_length=500, description="why, in one plain sentence an analyst can check")
+    evidence_ids: list[str] = Field(default_factory=list, max_length=50,
+                                    description="evidence ids from the case (E1, E2, ...)")
 
 
 def _case(case_id: str) -> dict:

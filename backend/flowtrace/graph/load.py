@@ -91,7 +91,7 @@ def bulk_insert(paths: dict[str, str]) -> None:
         from falkordb_bulk_loader.bulk_insert import bulk_insert as cli
     finally:
         sys.maxsize = real
-    auth = f":{s.falkordb_password}@" if s.falkordb_password else ""
+    auth = f"{s.falkordb_username or ''}:{s.falkordb_password}@" if s.falkordb_password else ""
     args = [
         s.graph_name, "-u", f"redis://{auth}{s.falkordb_host}:{s.falkordb_port}", "--enforce-schema",
         "-N", "Account", paths["Account"], "-N", "Entity", paths["Entity"],

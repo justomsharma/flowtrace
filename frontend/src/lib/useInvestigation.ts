@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getJSON, postJSON, streamJob, type CaseResult, type JobBrief, type JobEvent } from './api'
+import { getJSON, sendJSON, streamJob, type CaseResult, type JobBrief, type JobEvent } from './api'
+import { approverToken } from './approver'
 
 export interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[]; kinds?: string[] }
 
@@ -73,7 +74,9 @@ export function useInvestigation(caseId: string | null, jobId: string | null) {
     if (!cid) return
     setError(null)
     try {
-      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${cid}/investigate?policy=llm`)
+      // On the public demo the signed-in approver gets the LLM agent; a visitor gets the rule-based one.
+      const { job_id } = await sendJSON<{ job_id: string }>(`/api/cases/${cid}/investigate?policy=llm`, undefined,
+        { approverToken: approverToken() ?? undefined })
       follow(job_id, cid)
     } catch (err) { setError(String(err)) }
   }, [caseId, follow])

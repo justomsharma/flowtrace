@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Orbit, Upload } from 'lucide-react'
 import { ActionBadge } from '../components/badges'
-import { fmtInt, getJSON, postJSON, streamJob, type CaseBrief, type JobEvent } from '../lib/api'
+import { fmtInt, getJSON, postJSON, streamJob, type CaseBrief, type Health, type JobEvent } from '../lib/api'
 import { useBatch } from '../lib/batch'
 import { fmtMoney } from '../lib/money'
 import { SAMPLE_INFO, STAGE_PLAIN, caseReason, caseSentence, inToday, pct, trickName, caseNo } from '../lib/plain'
@@ -22,8 +22,10 @@ export default function Today() {
   const [error, setError] = useState<string | null>(null)
   const [showLower, setShowLower] = useState(false)
 
+  const [demo, setDemo] = useState(false)
   useEffect(() => {
     getJSON<{ name: string }[]>('/api/samples').then((s) => setSamples(s.map((x) => x.name))).catch(() => undefined)
+    getJSON<Health>('/api/health').then((h) => setDemo(!!h.demo)).catch(() => undefined)
   }, [])
 
   const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
@@ -58,6 +60,7 @@ export default function Today() {
         <input type="file" accept=".csv" className="sr-only" disabled={busy}
           onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }); e.target.value = '' }} />
       </label>
+      {demo && <span className="text-xs" style={{ color: 'var(--muted)' }}>Public demo: only the bundled sample files can be uploaded.</span>}
       {sample && (
         <button onClick={() => upload({ sample })} disabled={busy}
           className="px-3.5 py-2 rounded-lg text-sm font-medium disabled:opacity-60"
@@ -75,6 +78,7 @@ export default function Today() {
           <h1 className="text-2xl font-semibold">Today's work</h1>
           <p className="text-sm mt-1" style={{ color: 'var(--ink-2)' }}>
             {batch ? <>Cases from <span className="font-medium">{batch.filename}</span>, highest chance of laundering first.</>
+              : demo ? 'Upload the sample day. FlowTrace scores every payment and groups the suspicious ones into cases; open a case and the agent investigates it live.'
               : 'Upload a day of payments. FlowTrace scores every payment, groups the suspicious ones into cases and investigates the top ones.'}
           </p>
         </div>

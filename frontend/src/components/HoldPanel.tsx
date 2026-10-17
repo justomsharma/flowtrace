@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, Lock, ShieldCheck, XCircle } from 'lucide-react'
 import {
-  approverToken, fmtTime, getJSON, sendJSON, type Action, type AutoHoldPolicy, type CaseResult, type HoldPlan, type OpenEffect,
+  fmtTime, getJSON, sendJSON, type Action, type AutoHoldPolicy, type CaseResult, type HoldPlan, type OpenEffect,
 } from '../lib/api'
+import { useApprover } from '../lib/approver'
 import { holdPromise } from '../lib/holds'
+import ApproverSignIn from './ApproverSignIn'
 import { currencyNote, fmtMoney } from '../lib/money'
 import { ACTION_PLAIN, friendlyError } from '../lib/plain'
 import { useName } from '../lib/names'
@@ -252,6 +254,7 @@ function DecisionBar({ what, selected, name, onName, onDone }: {
     if (!keys.current.has(id)) keys.current.set(id, crypto.randomUUID())
     return keys.current.get(id)!
   }
+  const approverToken = useApprover()
   const n = selected.length
   const ready = n > 0 && reason.trim().length >= MIN_REASON && !!name.trim() && !!approverToken
   const id = `reason-${what}`
@@ -261,7 +264,7 @@ function DecisionBar({ what, selected, name, onName, onDone }: {
     try {
       for (const a of selected) {
         await sendJSON(`/api/actions/${a.id}/${kind}`, { reason: reason.trim(), by: name.trim() },
-          { key: `${key(a.id)}:${kind}`, approverToken })
+          { key: `${key(a.id)}:${kind}`, approverToken: approverToken ?? undefined })
       }
       setReason('')
     } catch (e) { setError(friendlyError(e)) } finally { setBusy(null); onDone() }
@@ -270,13 +273,14 @@ function DecisionBar({ what, selected, name, onName, onDone }: {
   const approveLabel = n === 1
     ? (selected[0].status === 'PROVISIONAL' ? 'Confirm hold' : ACTION_PLAIN[selected[0].type].approve)
     : `Approve ${n} selected`
-  const hint = !approverToken ? 'Approvals are off: set VITE_APPROVER_TOKEN in frontend/.env.development.local.'
+  const hint = !approverToken ? ''
     : n === 0 ? `Tick the ${what === 'hold' ? 'holds' : 'decision'} you agree with.`
     : !name.trim() ? 'Enter your name and a reason.'
     : reason.trim().length < MIN_REASON ? `Enter a reason (at least ${MIN_REASON} characters).` : ''
 
   return (
     <div className="flex flex-col gap-2 rounded-lg p-3" style={{ background: 'var(--surface-2)' }}>
+      {!approverToken && <ApproverSignIn />}
       <div className="grid gap-2 md:grid-cols-[200px_minmax(0,1fr)_auto] md:items-center">
         {editing ? (
           <input value={name} onChange={(e) => onName(e.target.value)} onBlur={() => { if (name.trim()) setEditing(false) }}

@@ -1,8 +1,9 @@
 """Measure the hold planner on an uploaded day: money frozen now, money on the case's routes (an assumption),
 and whether the held accounts really are laundering accounts.
 
-  disposition  the rule-based investigation (heuristic policy: deterministic, no LLM). Holds are planned only
-               for actions.propose_for (ESCALATE), exactly as in the app.
+  disposition  the rule-based investigation by default (heuristic policy: deterministic, no LLM); --policy llm
+               uses the LLM agent's dispositions (not deterministic; costs LLM calls; the report is not written).
+               Holds are planned only for actions.propose_for (ESCALATE), exactly as in the app.
   frozen       the headline: what the holds freeze today (a lien on the traced case money in each account).
   on routes    reported apart: money upstream that would have to pass a held account if the mules keep the
                routes seen so far. An assumption, not money held.
@@ -16,6 +17,7 @@ only reads.
 Run (graph loaded up to the sample's day); --cases N keeps the top N cases of the upload's ranking:
   python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40
   python -m flowtrace.eval.holds --sample demo_mixed_2022-09-09.csv
+  python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40 --policy llm
 """
 from __future__ import annotations
 
@@ -82,6 +84,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", default="eval/day_slice_2022-09-09.csv")
     ap.add_argument("--cases", type=int, default=0, help="top N cases of the upload's ranking (0 = all)")
+    ap.add_argument("--policy", choices=["heuristic", "llm"], default="heuristic", help="whose dispositions gate the holds")
     a = ap.parse_args()
     s, rules = settings(), cfg()
     data = (s.raw_dir.parent / "samples" / a.sample).read_bytes()
@@ -94,16 +97,17 @@ def main() -> None:
         bad = laundering_transfers()
         rows = []
         for c in cases:
-            r = investigate(new_context(c, rules, lambda e: None), policy_name="heuristic", use_llm_report=False,
+            r = investigate(new_context(c, rules, lambda e: None), policy_name=a.policy, use_llm_report=False,
                             save_memory=False)
             p = plan_holds(c, rules, r)
             rows.append(case_row(c, r["disposition"]["action"], p, laundering_before(bad, c["t1"])))
             x = rows[-1]
+            x["policy_used"] = r["stats"]["policy"]  # "llm", or a rule-based fallback for some steps
             print(f"  {x['case_id']} truth={x['truth']} {x['disposition']:8s} motion={x['in_motion']:>12,.0f} "
                   f"frozen={x['frozen_now']:>12,.0f} routes={x['on_routes']:>10,.0f} holds={x['holds']} "
                   f"on_laundering={x['holds_on_laundering']}")
-        out = {"sample": a.sample, "batch": batch_id, "summary": summarise(rows), "rows": rows}
-        name = a.sample.replace("/", "_").removesuffix(".csv")
+        out = {"sample": a.sample, "batch": batch_id, "policy": a.policy, "summary": summarise(rows), "rows": rows}
+        name = a.sample.replace("/", "_").removesuffix(".csv") + ("" if a.policy == "heuristic" else f"_{a.policy}")
         (s.models_dir / f"holds_eval_{name}.json").write_text(json.dumps(out, indent=2))
         print(json.dumps(out["summary"], indent=2))
     finally:

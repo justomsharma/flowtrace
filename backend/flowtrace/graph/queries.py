@@ -14,12 +14,15 @@ FalkorDB notes that shape these queries:
   * Leave the label off the far end when it is filtered with `NOT x.id IN $ids`, or the planner
     starts from a label scan of every account there (2.2 s -> 1.5 ms for SHARED_DESTINATIONS).
   * A variable-length relationship variable is bound to a path, not a list: read the edges
-    with relationships(p). shortestPath() is only allowed in WITH or RETURN.
+    with relationships(p). shortestPath() is only allowed in WITH or RETURN, and FalkorDB v4.22 (the Cloud)
+    supports it only directed: use MATCH p = allShortestPaths(...) for an undirected one.
   * Conditional writes: put the condition in WHERE (`WHERE a.status = 'PROPOSED'`) so a second request
     matches nothing and changes nothing. Writes on one graph are serialised, so this is race-free.
   * MERGE on a key property is how a double click or two callers converge on one node; `ON CREATE SET a += $map`
     sets the rest. A side write only on creation: FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END | ...).
   * Audit entries are only ever CREATEd, in the same query as the change they record.
+  * Every ORDER BY ends on a unique key (tx_id, id) and every LIMIT has an ORDER BY: ties and unordered limits come
+    back in storage order, which differs between FalkorDB versions (v4.22 on FalkorDB Cloud, v6 in Docker).
 """
 
 # --- Account context ----------------------------------------------------------------------
@@ -59,11 +62,13 @@ OPTIONAL MATCH (a)<-[i:TRANSFER]-()
 RETURN a.id AS id, a.entity_type AS entity_type, a.entity_id AS entity_id, out_deg, count(i) AS in_deg
 """
 
-# Same-owner accounts (the analyst's "who else does this person/company control").
+# Same-owner accounts (the analyst's "who else does this person/company control"). Ordered, so the same 50 come back
+# every time.
 SIBLING_ACCOUNTS = """
 MATCH (a:Account {id: $id})-[:OWNED_BY]->(e:Entity)<-[:OWNED_BY]-(o:Account)
 WHERE o.id <> a.id
 RETURN o.id AS id, o.bank AS bank
+ORDER BY id
 LIMIT 50
 """
 
@@ -74,7 +79,7 @@ MATCH (a:Account {id: $id})-[t:TRANSFER]->(b:Account)
 WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1
 RETURN t.tx_id AS tx_id, a.id AS src, b.id AS dst, t.ts AS ts, t.amount AS amount, t.fmt AS fmt,
        t.cur AS cur, t.xcur AS xcur
-ORDER BY t.ts
+ORDER BY ts, tx_id
 LIMIT 300
 """
 
@@ -83,7 +88,7 @@ MATCH (a:Account {id: $id})<-[t:TRANSFER]-(s)
 WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1
 RETURN t.tx_id AS tx_id, s.id AS src, a.id AS dst, t.ts AS ts, t.amount AS amount, t.fmt AS fmt,
        t.cur AS cur, t.xcur AS xcur
-ORDER BY t.ts
+ORDER BY ts, tx_id
 LIMIT 300
 """
 
@@ -98,7 +103,7 @@ MATCH (a)-[t:TRANSFER]->(b:Account)
 WHERE t.ts + 0 >= f.ts AND t.ts + 0 <= f.ts + $max_gap_ms AND NOT b.id IN $visited
 RETURN a.id AS src, b.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt, t.cur AS cur,
        t.xcur AS xcur
-ORDER BY t.amount DESC
+ORDER BY amount DESC, tx_id
 LIMIT 200
 """
 
@@ -110,7 +115,7 @@ MATCH (a)<-[t:TRANSFER]-(b)
 WHERE t.ts + 0 <= f.ts AND t.ts + 0 >= f.ts - $max_gap_ms AND NOT b.id IN $visited
 RETURN b.id AS src, a.id AS dst, t.tx_id AS tx_id, t.ts AS ts, t.amount AS amount, t.fmt AS fmt, t.cur AS cur,
        t.xcur AS xcur
-ORDER BY t.amount DESC
+ORDER BY amount DESC, tx_id
 LIMIT 200
 """
 
@@ -182,7 +187,7 @@ WHERE t.ts + 0 < $before
 WITH b, t, CASE WHEN startNode(t) = a THEN 'out' ELSE 'in' END AS dir
 RETURN b.id AS cp, dir, t.fmt AS fmt, collect(t.ts) AS ts_list, collect(t.amount) AS amounts,
        count(t) AS n
-ORDER BY n DESC
+ORDER BY n DESC, cp, dir, fmt
 LIMIT 100
 """
 
@@ -196,7 +201,7 @@ WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1 AND NOT d.id IN $ids
 WITH d, count(DISTINCT s) AS senders, count(t) AS n, sum(t.amount) AS total, collect(t.tx_id) AS tx_ids
 WHERE senders >= 2
 RETURN d.id AS dst, senders, n, total, tx_ids[0..20] AS tx_ids
-ORDER BY senders DESC, total DESC
+ORDER BY senders DESC, total DESC, dst
 LIMIT 20
 """
 
@@ -207,32 +212,40 @@ WHERE t.ts + 0 >= $t0 AND t.ts + 0 < $t1 AND NOT s.id IN $ids
 WITH s, count(DISTINCT d) AS receivers, count(t) AS n, sum(t.amount) AS total, collect(t.tx_id) AS tx_ids
 WHERE receivers >= 2
 RETURN s.id AS src, receivers, n, total, tx_ids[0..20] AS tx_ids
-ORDER BY receivers DESC, total DESC
+ORDER BY receivers DESC, total DESC, src
 LIMIT 20
 """
 
 # Short time-ordered cycles back to the origin (round-tripping).
+# The transfers are put in path order first, and the accounts read off them: on a closed path FalkorDB v4.22
+# (FalkorDB Cloud) can return relationships(p) or nodes(p) reversed. A list in path order starts at the anchor.
 CYCLES = """
 MATCH p = (a:Account {id: $id})-[:TRANSFER*2..4]->(a)
-WITH p, relationships(p) AS r
+WITH a, relationships(p) AS raw
+WITH a, CASE WHEN startNode(raw[0]) = a THEN raw ELSE reverse(raw) END AS r
 WHERE ALL(x IN r WHERE x.ts >= $t0 AND x.ts < $t1)
   AND ALL(i IN range(0, size(r) - 2) WHERE r[i].ts <= r[i + 1].ts)
-RETURN [x IN r | x.tx_id] AS tx_ids, [n IN nodes(p) | n.id] AS accounts,
+WITH a, r, reduce(k = '', x IN r | k + x.tx_id + ' ') AS key
+RETURN [x IN r | x.tx_id] AS tx_ids, [x IN r | startNode(x).id] + [a.id] AS accounts,
        [x IN r | x.amount] AS amounts, [x IN r | x.ts] AS ts
+ORDER BY size(r), key
 LIMIT 10
 """
 
 # How close is this account to accounts already escalated by earlier cases? (never the case itself)
 # An analyst's verdict replaces the agent's disposition: a human CLOSE removes an agent ESCALATE.
+# Payments count either way. allShortestPaths in MATCH, not shortestPath(): FalkorDB v4.22 (FalkorDB Cloud) has no
+# undirected shortestPath(), and both give the same length on v6. v4.22 needs both ends bound first (WITH).
 NEAREST_ESCALATED = """
 MATCH (a:Account {id: $id}), (c:Case)-[:ABOUT]->(x:Account)
 WHERE coalesce(c.verdict, c.disposition) = 'ESCALATE' AND x.id <> a.id
   AND NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
-WITH a, c, x, shortestPath((a)-[:TRANSFER*1..3]-(x)) AS p
-WHERE p IS NOT NULL
-RETURN x.id AS account, c.id AS case_id, length(p) AS hops,
+WITH a, c, x
+MATCH p = allShortestPaths((a)-[:TRANSFER*1..3]-(x))
+WITH c, x, min(length(p)) AS hops
+RETURN x.id AS account, c.id AS case_id, hops,
        CASE WHEN c.verdict IS NULL THEN 'agent' ELSE 'human' END AS decided_by
-ORDER BY hops, c.verdict IS NULL
+ORDER BY hops, c.verdict IS NULL, account, case_id
 LIMIT 5
 """
 
@@ -248,7 +261,7 @@ WHERE NOT c.id STARTS WITH $batch_prefix AND c.created_ts < $t0
 RETURN c.id AS case_id, coalesce(c.verdict, c.disposition) AS disposition,
        CASE WHEN c.verdict IS NULL THEN 'agent' ELSE 'human' END AS decided_by, c.typology AS typology,
        c.score AS score, c.created_ts AS created_ts, coalesce(c.verdict_reason, c.summary) AS summary
-ORDER BY c.verdict IS NULL, c.created_ts DESC
+ORDER BY c.verdict IS NULL, c.created_ts DESC, case_id
 LIMIT 10
 """
 

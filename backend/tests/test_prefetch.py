@@ -33,6 +33,16 @@ def batch_result(gen, batch="B1", window=(0, 1)):
 
 
 @pytest.fixture
+def graph_up():
+    """Accepting an upload clears the batch's old case memory in the graph."""
+    from flowtrace.graph.client import ro
+    try:
+        ro("RETURN 1 AS ok", timeout=1000)
+    except Exception:
+        pytest.skip("FalkorDB is not running")
+
+
+@pytest.fixture
 def app(monkeypatch, tmp_path):
     rules = real_cfg()
     monkeypatch.setattr(M, "cfg", lambda: {**rules, "agent": {**rules["agent"], "prefetch_top": TOP, "prefetch_parallel": 2}})
@@ -84,7 +94,7 @@ def test_with_a_working_key_the_llm_policy_runs(app, monkeypatch):
     assert set(app["policies"]) == {"llm"}
 
 
-def test_the_queued_jobs_exist_before_the_upload_is_announced(app, monkeypatch):
+def test_the_queued_jobs_exist_before_the_upload_is_announced(graph_up, app, monkeypatch):
     slow = threading.Event()
     monkeypatch.setattr(llm, "available", lambda: slow.wait(5) or False)   # a slow key check must not delay them
     app["gate"].clear()
@@ -130,7 +140,7 @@ def test_a_failed_case_is_counted_and_can_be_run_again(app):
     assert c.get("/api/batches/B1").json()["prefetch"]["failed"] == 0
 
 
-def test_reupload_during_a_run_never_attaches_old_results_to_renumbered_cases(app):
+def test_reupload_during_a_run_never_attaches_old_results_to_renumbered_cases(graph_up, app):
     app["gate"].clear()
     M.prefetch("B1")
     wait(lambda: app["policies"])
@@ -198,6 +208,6 @@ def test_requeue_orders_by_upload_time_not_data_window(app, monkeypatch):
     wait(lambda: len(M.RESULTS) == 2 * TOP)
 
 
-def test_accepted_uploads_record_their_upload_time(app):
+def test_accepted_uploads_record_their_upload_time(graph_up, app):
     M.accept_batch(batch_result(1), "file.csv")
     assert M.BATCHES["B1"]["uploaded_at"] > 0

@@ -159,3 +159,28 @@ crime_by_indicator:
   ROUND_TRIP: [embezzlement]
   PASS_THROUGH: ["money mule (cyber fraud or ransom)"]
   FAST_ONWARD_TRANSFER: ["money mule (cyber fraud or ransom)"]
+
+# --- LLM spend --------------------------------------------------------------------------------
+# A daily cap on what the LLM may cost (UTC day, counted from the tokens each call reports). Over it, the agent
+# and the reports fall back to the rule-based policy until midnight UTC. 0 = no cap. Prices are USD per million
+# tokens (gpt-6-luna list price, Oct 2026); a model not listed is counted at the expensive default, so the cap
+# errs on the safe side.
+llm:
+  daily_budget_usd: 2.0
+  price_per_mtok:
+    gpt-6-luna: {input: 0.10, output: 0.50}
+    default: {input: 5.0, output: 25.0}
+
+# --- Public demo (DEMO_MODE=1 on the server) --------------------------------------------------
+# Only the bundled sample files can be uploaded, and a sample already uploaded opens as it is (nobody's demo
+# is renumbered under them). Anonymous investigations use the rule-based agent and never auto-hold; the signed-in
+# approver gets the LLM agent. Limits count per visitor (Fly-Client-IP; an IPv6 address by its /64) and in total.
+demo:
+  prefetch: false            # no background investigations after an upload: a person starts each one, so LLM spend
+                             # follows real clicks only (and only the approver's runs may auto-hold)
+  investigations_per_ip: {count: 6, minutes: 60}
+  investigations_total: {count: 60, minutes: 60}
+  uploads_per_ip: {count: 4, minutes: 10}
+  plans_per_ip: {count: 20, minutes: 10}
+  mcp_per_ip: {count: 120, minutes: 10}       # every MCP request, read tools too
+  approver_failures_per_ip: {count: 5, minutes: 15}   # wrong approver tokens before a visitor is locked out

@@ -11,10 +11,13 @@ profiled in the next call (the same rule as in the app: only accounts already se
 
 Run (from backend/):  python -m flowtrace.mcp.server              stdio, for Claude Desktop and most clients
                       python -m flowtrace.mcp.server --http       streamable HTTP on 127.0.0.1:8765/mcp
+The API also serves it at /mcp (streamable HTTP), so a client can use the deployed app's tools directly.
 """
 # No `from __future__ import annotations`: the MCP SDK reads these signatures to build the tool schemas.
 import argparse
 import os
+import time
+from collections import OrderedDict
 from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -44,21 +47,45 @@ def _run(name: str, args: dict, ctx: CaseContext | None = None):
         raise MCPToolError(str(e)) from e
 
 
-def build_server() -> MCPServer:
-    # Only the API approves, with APPROVER_TOKEN. This process must never hold it, even if a client config
-    # passes it in the environment.
-    os.environ.pop("APPROVER_TOKEN", None)
+class CaseSessions:
+    """One investigation context per case, shared by the clients of this process: an account found by trace_funds
+    can be profiled next. At most `cap` contexts are kept (the least recently used goes first); a context unused
+    for ttl_s, or used for max_steps tool calls, starts again; a case renumbered by a re-upload gets a new one."""
+
+    def __init__(self, make, cap: int = 64, ttl_s: float = 1800, max_steps: int = 200, clock=time.monotonic) -> None:
+        self.make, self.cap, self.ttl_s, self.max_steps, self.clock = make, cap, ttl_s, max_steps, clock
+        self.items: OrderedDict[str, tuple[dict, Any, float]] = OrderedDict()
+
+    def get(self, case_id: str, case: dict):
+        now = self.clock()
+        for k in [k for k, (_, _, used) in self.items.items() if now - used > self.ttl_s]:
+            del self.items[k]
+        hit = self.items.pop(case_id, None)
+        if hit is None or hit[0] != case or hit[1].step >= self.max_steps:
+            hit = (case, self.make(case), now)
+        self.items[case_id] = (hit[0], hit[1], now)
+        while len(self.items) > self.cap:
+            self.items.popitem(last=False)
+        return hit[1]
+
+
+def build_server(drop_approver_token: bool = True) -> MCPServer:
+    # Only the API approves, with APPROVER_TOKEN. A standalone MCP process must never hold it, even if a client
+    # config passes it in the environment. Mounted inside the API (/mcp), the API keeps it: no tool approves.
+    if drop_approver_token:
+        os.environ.pop("APPROVER_TOKEN", None)
     server = MCPServer("flowtrace", instructions=INSTRUCTIONS)
-    sessions: dict[str, tuple[dict, CaseContext]] = {}
+    def make(case: dict) -> CaseContext:
+        from flowtrace.agent.investigate import new_context  # imports the policies, which import the registry
+        return new_context(case, cfg(), emit=lambda e: None)
+
+    sessions = CaseSessions(make)
 
     def session(case_id: str) -> CaseContext:
         case = store.load_case(case_id)
         if case is None:
             raise MCPToolError(f"no such case {case_id}")
-        if case_id not in sessions or sessions[case_id][0] != case:  # new, or renumbered by a re-upload
-            from flowtrace.agent.investigate import new_context  # imports the policies, which import the registry
-            sessions[case_id] = (case, new_context(case, cfg(), emit=lambda e: None))
-        return sessions[case_id][1]
+        return sessions.get(case_id, case)
 
     def case_tool(name: str, model: type[BaseModel]):
         def tool(case_id: str, args: model) -> dict[str, Any]:

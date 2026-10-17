@@ -3,18 +3,24 @@
 Both providers are asked for output that matches a strict JSON schema. Callers always have a
 deterministic fallback path, so any failure here (no key, refusal, truncation, rate limit, API or
 connection error, invalid JSON) returns None with meta["error"] instead of raising.
+
+Spend: every call's tokens are priced (config.yaml llm.price_per_mtok) and added to today's total (UTC), kept in
+data/runs/llm_spend.json so a restart does not reset it. Once the total reaches llm.daily_budget_usd, calls return
+None ("daily LLM budget used") and available() is False, so the agent runs its rule-based policy until midnight UTC.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import threading
 import time
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import openai
 
-from flowtrace.settings import settings
+from flowtrace.settings import cfg, settings
 
 log = logging.getLogger(__name__)
 
@@ -58,13 +64,63 @@ def _client():
     return _anthropic(s.anthropic_api_key)
 
 
+# --- daily spend cap -----------------------------------------------------------------------------
+
+_spend_lock = threading.Lock()
+
+
+def _spend_file():
+    return settings().raw_dir.parent / "runs" / "llm_spend.json"
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def spend() -> dict:
+    """Today's LLM spend (UTC day) and the cap: {"day", "usd", "calls", "budget_usd", "over"}."""
+    budget = float((cfg().get("llm") or {}).get("daily_budget_usd") or 0)
+    with _spend_lock:
+        try:
+            d = json.loads(_spend_file().read_text())
+        except (OSError, ValueError):
+            d = {}
+    if d.get("day") != _today():
+        d = {"day": _today(), "usd": 0.0, "calls": 0}
+    return d | {"budget_usd": budget, "over": bool(budget) and d["usd"] >= budget}
+
+
+def cost_usd(model: str, input_tokens: int | None, output_tokens: int | None) -> float:
+    prices = (cfg().get("llm") or {}).get("price_per_mtok") or {}
+    p = prices.get(model) or prices.get("default") or {"input": 0.0, "output": 0.0}
+    return ((input_tokens or 0) * p["input"] + (output_tokens or 0) * p["output"]) / 1e6
+
+
+def _add_spend(meta: dict) -> None:
+    usd = cost_usd(meta.get("model", ""), meta.get("input_tokens"), meta.get("output_tokens"))
+    meta["cost_usd"] = round(usd, 6)
+    with _spend_lock:
+        f = _spend_file()
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            d = {}
+        if d.get("day") != _today():
+            d = {"day": _today(), "usd": 0.0, "calls": 0}
+        d["usd"] = round(d["usd"] + usd, 6)
+        d["calls"] += 1
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(d))
+
+
 def available() -> bool:
-    """True only when the key is accepted by the API (cheap model lookup, no tokens; cached).
+    """True only when the key is accepted by the API (cheap model lookup, no tokens; cached) and today's spend is
+    under the daily budget.
 
     A rate-limited key still counts as working. Note: an OpenAI restricted key without the
     "Models: Read" permission fails this lookup even though it can call the Responses API."""
     c, model = _client(), model_name()
-    if c is None:
+    if c is None or spend()["over"]:
         return False
     k = (settings().llm_provider, model, id(c))
     hit = _probe_cache.get(k)
@@ -107,10 +163,15 @@ def structured(system: str, user: str, schema: dict, effort: str = "medium", max
     """Return (parsed JSON or None, call metadata)."""
     s = settings()
     meta: dict = {"provider": s.llm_provider, "model": model_name()}
+    if spend()["over"]:
+        meta["error"] = "daily LLM budget used"
+        return None, meta
     call = _openai_structured if s.llm_provider == "openai" else _anthropic_structured
     t0 = time.perf_counter()
     out, meta = call(system, user, schema, effort, max_tokens, meta)
     meta["ms"] = round((time.perf_counter() - t0) * 1000)
+    if meta.get("input_tokens") or meta.get("output_tokens"):
+        _add_spend(meta)
     return out, meta
 
 

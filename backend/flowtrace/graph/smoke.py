@@ -2,6 +2,8 @@
 
 Run after `python -m flowtrace.graph.load`:   python -m flowtrace.graph.smoke            read-only
                                               python -m flowtrace.graph.smoke --write    also checks writes
+On the demo history graph (flowtrace.demo.history):  python -m flowtrace.graph.smoke --demo
+  (the probe is an account whose whole history the demo graph keeps; needs data/processed for the counts)
 The --write checks use their own SMOKE ids and always remove them, even when a check fails.
 """
 from __future__ import annotations
@@ -67,13 +69,23 @@ def write_checks(acc: str, cp: str, t1: int) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true", help="also run the write checks (cleaned up afterwards)")
+    ap.add_argument("--demo", action="store_true", help="the graph is the demo history graph (data/demo)")
     args = ap.parse_args()
     s, rules = settings(), cfg()
     tx = pl.read_parquet(s.processed_dir / "transactions.parquet", columns=["tx_id", "src", "dst", "ts"])
     cutoff = int(datetime(2022, 9, 9, tzinfo=timezone.utc).timestamp() * 1000)
     hist = tx.filter((pl.col("ts") < cutoff) & (pl.col("src") != pl.col("dst")))
+    if args.demo:  # probe only accounts whose every history transfer is in the demo graph
+        from flowtrace.demo.history import HISTORY
+        kept = pl.read_csv(HISTORY / "transfers.csv.gz", columns=["tx_id"])["tx_id"]
+        deg = lambda df: pl.concat([df.select(pl.col("src").alias("a")), df.select(pl.col("dst").alias("a"))]).group_by("a").len()
+        full, demo = deg(hist), deg(hist.filter(pl.col("tx_id").is_in(kept.to_list())))
+        whole = full.join(demo, on="a", suffix="_demo").filter(pl.col("len") == pl.col("len_demo"))["a"].to_list()
+    else:
+        whole = None
+    cand = hist if whole is None else hist.filter(pl.col("src").is_in(whole) & pl.col("dst").is_in(whole))
     # A busy-but-not-huge account with repeated transfers to the same receiver (parallel edges).
-    pick = (hist.group_by("src", "dst").len().filter(pl.col("len") >= 3)
+    pick = (cand.group_by("src", "dst").len().filter(pl.col("len") >= 3)
             .join(hist.group_by("src").len().rename({"len": "deg"}), on="src")
             .filter(pl.col("deg").is_between(10, 60)).sort("deg").row(0, named=True))
     acc, cp = pick["src"], pick["dst"]

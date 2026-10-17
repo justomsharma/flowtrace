@@ -1,6 +1,45 @@
 # FlowTrace
 
-FlowTrace is an AML (anti-money-laundering) investigation agent built on a FalkorDB transaction graph. It scores a batch of payments, finds laundering shapes with graph queries, and then investigates each alert the way an analyst would. It follows the money, checks relationship history and recurring payments, and looks for both suspicious *and* legitimate explanations. Each case ends in an evidence-backed report with a recommended action for a human analyst.
+**Live demo: https://flowtrace.omsharma.dev**. Anyone can look around and investigate with the rule-based agent.
+The LLM agent and approvals need the demo approver token (ask the team). [3-minute demo script](docs/demo.md) · MCP endpoint: `https://flowtrace.omsharma.dev/mcp`
+(streamable HTTP) · [How it is deployed](docs/deploy.md). The graph runs on FalkorDB Cloud's free tier, which has
+**no TLS** (`FALKORDB_TLS=false`): the connection needs a password but is not encrypted.
+
+FlowTrace is an AML (anti-money-laundering) agent that acts on a FalkorDB transaction graph. Upload a day of
+payments, and it does five things:
+
+1. scores every payment;
+2. finds laundering shapes with Cypher;
+3. groups the suspicious payments into cases, ranked for one analyst's day;
+4. investigates a case the way an analyst would. The agent picks its own graph queries: it follows the money hop
+   by hop, checks whether two accounts ever paid each other before, and looks for salary or rent patterns that would
+   explain the payments;
+5. **acts**. It plans which accounts to hold, freezing only the case money that is still in the trail. When it is
+   confident, it holds that money provisionally. A person confirms or releases every hold, with a written reason,
+   and an append-only audit log records each step.
+
+The same tools are an MCP server, so any agent can investigate a case. An agent can propose actions; only a person
+can approve them.
+
+| Case page: the agent's hold, waiting for a person | Holds & audit |
+|---|---|
+| ![Case overview](docs/screenshots/case-overview.png) | ![Holds and audit log](docs/screenshots/results.png) |
+
+**Run it locally** with Docker, on the demo history (no dataset download needed):
+
+```bash
+git clone https://github.com/justomsharma/flowtrace
+cd flowtrace
+cp .env.example .env                        # optional: OPENAI_API_KEY (else the rule-based agent), APPROVER_TOKEN (to approve)
+docker compose --profile app up -d --build  # FalkorDB + the app; loads the demo history graph on first start
+start http://localhost:8000                 # macOS: open, Linux: xdg-open. Then Today's work, Try the sample day
+```
+
+The full setup (the IBM dataset, training, the full 3.6M-transfer graph and every evaluation) is under *Setup*.
+
+---
+
+## About
 
 The main idea: **rules catch patterns; FlowTrace explains them, and closes the ones a human analyst would close.** A salary that is split into EMIs, rent and card bills looks like "fan-out + pass-through" to a rule. FlowTrace recognises it from the graph.
 
@@ -70,7 +109,7 @@ Every amount is the **USD equivalent** (the dataset's payments in other currenci
 | Case funnel, **full test day** (Sep 10, 208,325 payments, 0.21% laundering) | **262 flagged → 180 cases**, largest 7 accounts; **15 of the top 15 cases are laundering**; of 124 schemes active that day, 18 are in the top 15, 51 in the top 50, 86 in some case | `python -m flowtrace.eval.fullday --day 2022-09-10`: same offline method as Sep 9 |
 | Case funnel, **curated demo sample** (Sep 9, 2,271 payments, 2.3% laundering, ~29× a real day) | 40 flagged → 17 cases, largest 6 accounts; 14 of the top 15 cases are laundering; 18 of 26 schemes in the top 15 | `python -m flowtrace.eval.funnel ../data/samples/demo_mixed_2022-09-09.csv`. The sample is hand-picked around known schemes for the demo, so it reads far better than a real day |
 | Adaptive agent vs fixed workflow, **Sep 9 eval slice** (40 cases: 21 laundering, 19 legitimate) | Escalate recall **1.00 / 1.00 / 0.67** and precision **0.58 / 0.57 / 0.74** (fixed / heuristic / llm); legitimate cases escalated 15 / 16 / 5 of 19; no laundering case closed; 0.5% of the LLM report's claims unsupported | Same alerts, same query budget, final test after the scoring was chosen on Sep 7–8; see *Evaluation* |
-| Hold planner, **Sep 9 eval slice** (top 40 ranked cases), laundering cases (21) | Holds **freeze $5.59M** of the $5.67M of case money still in the trail; 61% of the 41 holds are on accounts that really launder, against a **64% base rate**; on legitimate cases the proposals would wrongly freeze $98.3M if approved | `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40`, with dispositions from the rule-based investigation. Full table and caveats in *Acting on a case* |
+| Hold planner, **Sep 9 eval slice** (top 40 ranked cases), laundering cases (21) | With rule-based dispositions, holds **freeze $5.59M** of the $5.67M of case money still in the trail; 61% of the 41 holds are on accounts that really launder, against a **64% base rate**; on legitimate cases the proposals would wrongly freeze **$98.3M** if approved. With the LLM's dispositions: **$5.51M** frozen, 57% vs 64%, and **$47,796** wrongly frozen | `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40 [--policy llm]`. Full table and caveats in *Acting on a case* |
 
 For comparison, published results on HI-Small are 62.9 F1 for GFP+LightGBM and 68.2 for Multi-PNA, on a different split that includes the Sep 11–18 tail. We exclude that tail (see *Data*).
 
@@ -253,7 +292,8 @@ How FlowTrace holds money, and what it is based on:
 [`backend/flowtrace/mcp/server.py`](backend/flowtrace/mcp/server.py) uses the official Python SDK (`mcp` 2.x, `MCPServer`).
 - **Read-only tools:** `account_profile`, `counterparty_history`, `recurring_flows`, `trace_funds`, `shared_counterparties`, `find_cycles`, `owner_network`, `case_memory`, `get_case`, `list_cases`, `plan_holds`. They are annotated `read_only_hint`, and their Cypher runs through GRAPH.RO_QUERY, so FalkorDB itself rejects a write.
 - **One write tool:** `propose_action`. Its proposals are recorded as `proposed_by: "mcp"`, and the confirm panel shows "Proposed by an outside AI client (MCP)".
-- **It can't approve.** There is no approve tool, and the process drops `APPROVER_TOKEN` from its environment at startup, so it never holds the approver token.
+- **It can't approve.** There is no approve tool, and the standalone process drops `APPROVER_TOKEN` from its environment at startup, so it never holds the approver token.
+- **Hosted.** The API also serves the same server at `/mcp` (streamable HTTP), so a client can use the live demo's tools: `https://flowtrace.omsharma.dev/mcp` (for example in the MCP Inspector: `npx @modelcontextprotocol/inspector`, transport *Streamable HTTP*). Mounted there, no tool approves either; only the API's approve endpoints, behind the approver token, do. On the public demo every MCP request counts toward a per-visitor limit, and `propose_action` also needs the approver token in an `X-Approver-Token` header.
 - **Sessions.** Investigation tools keep one context per case for the session, so an account found by `trace_funds` can be profiled next.
 
 ```bash
@@ -281,13 +321,13 @@ The server needs FalkorDB and the cases the app saved (`data/runs`), but not the
 }
 ```
 
-**Any other MCP client.** Run the same command over stdio, or point the client at the HTTP endpoint. Try: "list the cases, then plan holds for the top one".
+**Any other MCP client.** Run the same command over stdio, or point the client at an HTTP endpoint (local or the live demo's). Try: "list the cases, then plan holds for the top one".
 
 ### Measurement (honest)
 
 How the measurement works:
 - **Which cases.** The **top 40 ranked cases** of the Sep 9 eval slice, and every case of the curated sample.
-- **Dispositions** come from the rule-based investigation (deterministic, no LLM). Holds are planned only after ESCALATE, as in the app.
+- **Dispositions** come from the rule-based investigation (deterministic, no LLM), or with `--policy llm` from the LLM agent (one run; it is not deterministic). Holds are planned only after ESCALATE, as in the app.
 - **Correct hold.** A hold counts as correct when its account sent or received a labelled laundering payment **before the decision time**.
 - **Base rate.** The same share among *every* account a hold could have gone on (the planner's candidates), shown next to the precision.
 - **Fixed in advance.** The config values (cap, minimum, expiry) were set before the first run. The two later method changes were decided after seeing Sep 9:
@@ -305,13 +345,29 @@ How the measurement works:
 | Holds on accounts that really launder | 25 of 41 (61%) | 10 of 16 (62.5%) |
 | Base rate among accounts a hold could go on | 37 of 58 (64%) | 15 of 21 (71%) |
 
-**Cost: money wrongly frozen on legitimate cases** (Sep 9 slice, 19 legitimate cases):
-- The rule-based investigation escalates 16 of them.
-- The planner proposes 15 holds that would freeze **$98,331,468** if a person approved them.
+**Cost: money wrongly frozen on legitimate cases** (Sep 9 slice, 19 legitimate cases), rule-based dispositions:
+- The rule-based investigation escalates 15 of them.
+- The planner proposes 14 holds that would freeze **$98,329,255** if a person approved them.
 - $98.2M of that comes from two cases (C024 and C025). In each, the *flagged payment itself* is a single ACH of $77.3M or $20.9M into the case account. So a lien limited to the flagged amount is still that large, and only a person rejecting it prevents the cost.
-- The other 13 holds come to $104,502.
+- The other 12 holds come to $102,289.
 
-To reproduce, run `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40` and `--sample demo_mixed_2022-09-09.csv`.
+**Rules vs LLM: whose escalation gates the holds** (Sep 9 slice, top 40 cases; the planner and the full graph are the same, only the disposition differs; measured from a clean graph on Oct 17):
+
+| Dispositions from | Laundering cases escalated | **Frozen now** (laundering; $5,669,216 still in the trail) | Holds on accounts that really launder vs **base rate** | Legitimate cases escalated | **Wrongly frozen** if approved (legitimate) |
+|---|---|---|---|---|---|
+| rules (heuristic) | 21 of 21 | **$5,588,222** (98.6%), 41 holds in 17 cases | 25 of 41 (61%) vs 64% | 15 of 19 | **$98,329,255** (14 holds) |
+| llm (gpt-6-luna) | 16 of 21 (5 sent to REVIEW) | **$5,505,124** (97.1%), 35 holds in 14 cases | 20 of 35 (57%) vs 64% | 7 of 19 | **$47,796** (7 holds) |
+
+- **The LLM cuts the cost by more than 2,000×** ($98.3M to $47.8K) because it does not escalate C024 and C025, the two
+  legitimate cases with one huge ACH payment each. It still freezes 97% of the laundering money still in the trail.
+- **The 5 laundering cases it sends to REVIEW lose their holds** (holds follow ESCALATE only). This costs $83,098 of
+  money that could have been frozen, and a person still sees each case.
+- **Picking which account to hold is no better than the base rate under either policy** (61% and 57% vs 64%). The
+  disposition decides *whether* to hold; the planner decides *where*, by amount.
+- **Read with care:** one LLM run on 40 cases. The earlier agent eval of the same slice escalated 14 of 21 laundering
+  and 5 of 19 legitimate cases, so expect a few cases to move between runs.
+
+To reproduce, run `python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40` (add `--policy llm` for the LLM row) and `--sample demo_mixed_2022-09-09.csv`.
 - Each run writes `data/models/holds_eval_*.json`.
 - The planner only reads.
 - The slice batch is uploaded and then deleted. The demo batch is left alone if the UI already uploaded it.
@@ -330,13 +386,74 @@ So auto-hold is on by default. Read it with care: 11 of 11 still leaves a 95% lo
 What the numbers say:
 - **The holds freeze most of the case money still in the trail** (98.6% and 86.6%), with at most 3 holds per case.
 - **Picking by amount is no better than picking at random** among the holdable accounts: 61% vs a 64% base rate, and 62.5% vs 71%. The planner finds where the money is. It doesn't tell a mule from an innocent receiver.
-- **The decision before the holds sets their cost.** The rule-based investigation escalated 16 of 19 legitimate cases on this slice. This is why every hold waits for a person.
+- **The decision before the holds sets their cost.** The rule-based investigation escalated 15 of 19 legitimate cases on this slice, the LLM 7. This is why every hold waits for a person.
 - **The hub rule costs some laundering.** In 2 slice cases and 3 curated cases, every case account is a hub (70+ payments in 6 days before the case), so those cases get no hold.
 - **The samples are small and inflated.** About 50% of the slice's cases are laundering, and 94% of the curated sample's, against well under 1% of payments on a real day. With n = 40 and n = 17, one case moves a share by several points.
 
+---
+
+## Demo history graph (what the live demo runs on)
+
+The full history graph (515,088 accounts, 3,641,261 transfers before Sep 9) takes about **2.7 GB** in FalkorDB.
+FalkorDB Cloud's free tier has **100 MB**. Every query reads the history of only a few accounts, so the demo runs on
+a reduced graph that keeps exactly that history: **25,916 accounts and 57,010 transfers, 54 MB** in FalkorDB
+([`demo/history.py`](backend/flowtrace/demo/history.py), files in `data/demo/`).
+
+**How it is built.** Each bundled sample and the Sep 9 eval slice are uploaded into the **full** graph, and every
+query is recorded while:
+- every case is investigated with the rule-based and fixed policies, and its holds are planned;
+- for the bundled samples (what the public demo can upload), every agent tool runs at its widest on every case
+  account: traces both ways at 4 hops, plus all account tools. The LLM picks its own steps; in 63 recorded LLM
+  investigations every tool call was on a case account.
+
+The demo graph keeps:
+- every history transfer of every account a tool, the tracer or the planner asked about;
+- every transfer a query returned;
+- every transfer a detector matched.
+
+Hub checks only compare a count with a threshold, so for a hub (for example three bank accounts with 7K–139K
+transfers) it keeps just enough transfers to stay over each threshold. Scoring needs no graph: it reads the earlier
+payments of the samples' accounts (`data/demo/processed`, 502K rows) with the same model (`data/demo/model`).
+
+**Checked against the full graph** ([`demo/verify.py`](backend/flowtrace/demo/verify.py)). Both graphs start clean.
+The samples are uploaded one after another, case memory is saved, every case is investigated, and every hold is
+planned. Everything except timings is compared. The demo side also uses the demo scoring files and model.
+
+| | Result |
+|---|---|
+| Cases for all 4 files (ids, accounts, payments, scores, shapes) | **identical** (63 cases) |
+| Rule-based and fixed-workflow investigations, and their hold plans | **identical** for the bundled samples (44 of 44). On the eval slice, 81 of 82 match. In the other one (C024), the *case memory* step finds a *nearest escalated account* 3 hops away through history on the full graph, and not on the demo graph. No evidence, decision or hold changes. It happens only when the slice is uploaded after the samples, and the public demo can't upload the slice. |
+| LLM investigations, replayed step by step on both graphs | **identical** for the bundled samples (22 of 22: evidence, decision, hold plan). On the eval slice, 37 of 41 match exactly. In the other 4, a backward trace or the case-memory lookup reaches history the demo graph doesn't keep. **No decision or hold plan differs.** |
+
+**On FalkorDB Cloud (v4.22).** The live graph runs FalkorDB v4.22; the full graph and Docker run v6. The demo graph
+takes 32 MB there. The same comparison found three differences, now fixed in the queries, with tests that run on
+both versions:
+- v4.22 has no undirected `shortestPath()`. The *nearest escalated account* lookup now uses `allShortestPaths` in a
+  `MATCH`, and gives the same answers on v6.
+- On a loop, v4.22 can return a path's transfers or accounts reversed. Loops are now put in path order first.
+- Results with ties, or under a `LIMIT` with no `ORDER BY`, came back in each version's storage order. Every
+  ordering now ends on a unique key.
+
+After the fixes, the cloud graph gives the same 63 cases and the same 126 investigations as the full graph. The one
+exception is the C024 case-memory step above. The read-only smoke (`graph.smoke --demo`) passes on the cloud.
+
+So the live demo gives the same cases and investigations as the full graph for everything it can upload. The
+evaluation numbers in this README come from the full graph.
+
+```bash
+cd backend
+python -m flowtrace.demo.history build     # needs the full graph and data/processed (see Setup); ~3 minutes
+python -m flowtrace.demo.history load      # into GRAPH_NAME (plain Cypher, works on any FalkorDB, Cloud included)
+GRAPH_NAME=flowtrace python -m flowtrace.demo.verify run full.json
+GRAPH_NAME=flowtrace_demo PROCESSED_DIR=<data/demo/processed + fx_rates, overview, signal_rates json> \
+  MODELS_DIR=../data/demo/model python -m flowtrace.demo.verify run demo.json
+python -m flowtrace.demo.verify compare full.json demo.json
+python -m flowtrace.demo.reset             # clean demo state on this machine (API stopped); --url for a server
+```
+
 ## Data
 
-- **Source:** IBM *Transactions for Anti Money Laundering* (HI-Small), licence CDLA-Sharing-1.0. It is **synthetic**: no real customer data is used, as the hackathon rules require.
+- **Source:** IBM *Transactions for Anti Money Laundering* (HI-Small) by Altman et al. (NeurIPS 2023), [Kaggle](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml), licence CDLA-Sharing-1.0. The data in this repository (`data/samples`, `data/demo`) is derived from it and shared under the same licence: [`data/LICENSE`](data/LICENSE), [`data/NOTICE`](data/NOTICE). It is **synthetic**: no real customer data is used, as the hackathon rules require.
 - **Size:** 5,078,345 transfers; 515,088 accounts (key = bank + account); 5,177 laundering transfers (0.10%). The patterns file links 3,209 transfers to 370 known schemes.
 - **Split** (by day, the way a bank's nightly monitoring run works):
   - train: Sep 1–6
@@ -387,10 +504,12 @@ python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 
 # 5. Hold planner measurement (no LLM; uploads the slice and deletes it afterwards)
 python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40
 python -m flowtrace.eval.holds --sample demo_mixed_2022-09-09.csv
+python -m flowtrace.eval.holds --sample eval/day_slice_2022-09-09.csv --cases 40 --policy llm   # LLM dispositions
 
 # 6. Run the app (and, optionally, the MCP server for Claude Desktop or any MCP client).
-#    Approve/reject needs APPROVER_TOKEN in .env and the same value as VITE_APPROVER_TOKEN in
-#    frontend/.env.development.local (see the .env.example files). Never give it to the MCP server.
+#    Approve/reject needs APPROVER_TOKEN in .env: sign in as the approver in the app with it (sidebar), or put the
+#    same value in frontend/.env.development.local as VITE_APPROVER_TOKEN to be signed in automatically in dev.
+#    Never give it to the MCP server. DEMO_MODE=1 turns on the public-demo rules (docs/deploy.md).
 python -m uvicorn flowtrace.api.main:app --port 8000
 python -m flowtrace.mcp.server
 cd ../frontend && npm install && npm run dev  # http://localhost:5173
@@ -532,4 +651,4 @@ This project was built with help from an AI coding assistant (Claude Code). At r
 
 ## License
 
-MIT
+Code: MIT ([LICENSE](LICENSE)). Data in `data/`: CDLA-Sharing-1.0, derived from IBM's synthetic AML dataset ([data/LICENSE](data/LICENSE), [data/NOTICE](data/NOTICE)).
