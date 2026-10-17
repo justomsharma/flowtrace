@@ -1,29 +1,26 @@
-# FlowTrace
+# FlowTrace catches mule money in a payment graph and freezes it before the money is cashed out
 
-**Live demo: https://flowtrace.omsharma.dev**. Anyone can look around and investigate with the rule-based agent.
-The LLM agent and approvals need the demo approver token (ask the team). [3-minute demo script](docs/demo.md) · MCP endpoint: `https://flowtrace.omsharma.dev/mcp`
-(streamable HTTP) · [How it is deployed](docs/deploy.md). The graph runs on FalkorDB Cloud's free tier, which has
-**no TLS** (`FALKORDB_TLS=false`): the connection needs a password but is not encrypted.
+**Live demo:** https://flowtrace.omsharma.dev · **Demo video:** <VIDEO_LINK> · [3-minute demo script](docs/demo.md) ·
+MCP: `https://flowtrace.omsharma.dev/mcp` · [How it is deployed](docs/deploy.md)
+
+**Three numbers, measured on Sep 9 (a held-out test day):**
+- **15 of 15**: on the full day (654,467 payments), the top 15 cases are all laundering.
+- **98.6%**: of the laundering money still in the trail, the holds freeze $5.59M of $5.67M (eval slice, 21 laundering cases).
+- **61% vs 64%**: where to hold is no better than chance. 61% of holds land on real laundering accounts, against a 64%
+  base rate. So the agent only proposes, or holds provisionally, and a person decides.
+
+![Case 1: the agent has held $16,468 provisionally; a person confirms or releases it](docs/screenshots/hero-c001.png)
 
 FlowTrace is an AML (anti-money-laundering) agent that acts on a FalkorDB transaction graph. Upload a day of
-payments, and it does five things:
+payments, and it:
+1. scores every payment and finds laundering shapes with Cypher;
+2. groups the suspicious payments into cases, ranked for one analyst's day;
+3. investigates a case: the agent picks its own graph queries, follows the money hop by hop, and looks for salary
+   or rent patterns that would explain it;
+4. **acts**: it holds only the case money still in the trail (provisionally, when it is confident), and a person
+   confirms or releases every hold, with a written reason, in an append-only audit log.
 
-1. scores every payment;
-2. finds laundering shapes with Cypher;
-3. groups the suspicious payments into cases, ranked for one analyst's day;
-4. investigates a case the way an analyst would. The agent picks its own graph queries: it follows the money hop
-   by hop, checks whether two accounts ever paid each other before, and looks for salary or rent patterns that would
-   explain the payments;
-5. **acts**. It plans which accounts to hold, freezing only the case money that is still in the trail. When it is
-   confident, it holds that money provisionally. A person confirms or releases every hold, with a written reason,
-   and an append-only audit log records each step.
-
-The same tools are an MCP server, so any agent can investigate a case. An agent can propose actions; only a person
-can approve them.
-
-| Case page: the agent's hold, waiting for a person | Holds & audit |
-|---|---|
-| ![Case overview](docs/screenshots/case-overview.png) | ![Holds and audit log](docs/screenshots/results.png) |
+The same tools are an MCP server: any agent can investigate and propose; only a person can approve.
 
 **Run it locally** with Docker, on the demo history (no dataset download needed):
 
@@ -254,7 +251,8 @@ An investigation ends with a recommendation. Then the agent acts: it plans which
 The hold is **PROVISIONAL**, audited as `agent (auto-hold)`. A person confirms it (it then runs its normal term) or rejects it (released now). If nobody confirms it within **1 business day** (`confirm_business_days`) it is released automatically. It never files an STR or escalates. The UI states this exception wherever it says "Nothing is frozen until you approve", and only when it is active on the server.
 
 How FlowTrace holds money, and what it is based on:
-- **A hold freezes an amount, never a whole account.** It is a lien on the case money traced into an account. This follows the RBI [draft KYC Amendment Directions, Sep 2026](https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=63587), which allow a debit hold on the suspected amount for at most 60 days. Indian High Courts have also limited liens to the disputed amount.
+- **India framing.** FlowTrace is set up for an Indian bank: STRs go to FIU-IND, and holds follow the RBI draft below. The FIU name is one setting (`actions.str_fiu` in `config.yaml`).
+- **A hold freezes an amount, never a whole account.** It is a lien on the case money traced into an account. The RBI [draft KYC Amendment Directions, Sep 2026](https://rbi.org.in/scripts/BS_PressReleaseDisplay.aspx?prid=63587) propose "temporary debit holds on amounts or accounts linked to money-mule activity"; FlowTrace holds amounts only. Indian High Courts have also limited liens to the disputed amount.
 - **How long a hold lasts is a policy setting:** `actions.hold_expiry_business_days`, 4 business days by default. After that the hold is released automatically.
 - **For comparison only:** the UK FCA's [FG24/6](https://www.fca.org.uk/publication/finalised-guidance/fg24-6.pdf) lets the payer's bank delay **one outbound payment** for up to 4 business days. That rule is about single payments. It is not an account hold, and FlowTrace does not cite it as one.
 - **AML vendors** (Unit21, Lucinity, Feedzai) show the same split: the AI recommends, a person decides, and an audit trail records every decision.
@@ -365,16 +363,16 @@ How the measurement works:
 | Base rate among accounts a hold could go on | 37 of 58 (64%) | 15 of 21 (71%) |
 
 **Cost: money wrongly frozen on legitimate cases** (Sep 9 slice, 19 legitimate cases), rule-based dispositions:
-- The rule-based investigation escalates 15 of them.
-- The planner proposes 14 holds that would freeze **$98,329,255** if a person approved them.
+- The rule-based investigation escalates 16 of them.
+- The planner proposes 15 holds that would freeze **$98,331,467** if a person approved them.
 - $98.2M of that comes from two cases (C024 and C025). In each, the *flagged payment itself* is a single ACH of $77.3M or $20.9M into the case account. So a lien limited to the flagged amount is still that large, and only a person rejecting it prevents the cost.
-- The other 12 holds come to $102,289.
+- The other 13 holds come to $104,501.
 
-**Rules vs LLM: whose escalation gates the holds** (Sep 9 slice, top 40 cases; the planner and the full graph are the same, only the disposition differs; measured from a clean graph on Oct 17):
+**Rules vs LLM: whose escalation gates the holds** (Sep 9 slice, top 40 cases; the planner and the full graph are the same, only the disposition differs; measured from a clean graph on Oct 17; the rules row rerun after the forwarded-share fix, the llm row from before it):
 
 | Dispositions from | Laundering cases escalated | **Frozen now** (laundering; $5,669,216 still in the trail) | Holds on accounts that really launder vs **base rate** | Legitimate cases escalated | **Wrongly frozen** if approved (legitimate) |
 |---|---|---|---|---|---|
-| rules (heuristic) | 21 of 21 | **$5,588,222** (98.6%), 41 holds in 17 cases | 25 of 41 (61%) vs 64% | 15 of 19 | **$98,329,255** (14 holds) |
+| rules (heuristic) | 21 of 21 | **$5,588,222** (98.6%), 41 holds in 17 cases | 25 of 41 (61%) vs 64% | 16 of 19 | **$98,331,467** (15 holds) |
 | llm (gpt-6-luna) | 16 of 21 (5 sent to REVIEW) | **$5,505,124** (97.1%), 35 holds in 14 cases | 20 of 35 (57%) vs 64% | 7 of 19 | **$47,796** (7 holds) |
 
 - **The LLM cuts the cost by more than 2,000×** ($98.3M to $47.8K) because it does not escalate C024 and C025, the two
@@ -405,7 +403,7 @@ So auto-hold is on by default. Read it with care: 11 of 11 still leaves a 95% lo
 What the numbers say:
 - **The holds freeze most of the case money still in the trail** (98.6% and 86.6%), with at most 3 holds per case.
 - **Picking by amount is no better than picking at random** among the holdable accounts: 61% vs a 64% base rate, and 62.5% vs 71%. The planner finds where the money is. It doesn't tell a mule from an innocent receiver.
-- **The decision before the holds sets their cost.** The rule-based investigation escalated 15 of 19 legitimate cases on this slice, the LLM 7. This is why every hold waits for a person.
+- **The decision before the holds sets their cost.** The rule-based investigation escalated 16 of 19 legitimate cases on this slice, the LLM 7. This is why every hold waits for a person.
 - **The hub rule costs some laundering.** In 2 slice cases and 3 curated cases, every case account is a hub (70+ payments in 6 days before the case), so those cases get no hold.
 - **The samples are small and inflated.** About 50% of the slice's cases are laundering, and 94% of the curated sample's, against well under 1% of payments on a real day. With n = 40 and n = 17, one case moves a share by several points.
 
@@ -590,7 +588,7 @@ python -m flowtrace.eval.slice --day 2022-09-09 --pos 20 --neg 20      # writes 
 python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 40
 ```
 
-**Sep 9 eval slice, top 40 cases (21 laundering, 19 legitimate), dev scoring (variant A below), gpt-6-luna:**
+**Sep 9 eval slice, top 40 cases (21 laundering, 19 legitimate), dev scoring (variant A below), gpt-6-luna.** The fixed and heuristic columns were rerun on Oct 17 after the forwarded-share fix (each receiver counts only up to what it received); the llm column is from the run before it.
 
 | | fixed | heuristic | llm |
 |---|---|---|---|
@@ -599,9 +597,9 @@ python -m flowtrace.eval.compare --sample eval/day_slice_2022-09-09.csv --cases 
 | Escalate precision | 0.58 | 0.57 | 0.74 |
 | Legitimate cases escalated | 15 of 19 | 16 of 19 | 5 of 19 |
 | Legitimate cases auto-closed | 0 | 0 | 0 |
-| Evidence coverage | 0.22 | 0.30 | 0.30 |
+| Evidence coverage | 0.21 | 0.30 | 0.30 |
 | Unsupported-claim rate | 0 | 0 | 0.005 |
-| Cypher queries / seconds per case | 14.7 / 0.02 | 15.2 / 0.02 | 17.2 / 30.2 |
+| Cypher queries / seconds per case | 14.7 / 0.09 | 15.2 / 0.08 | 17.2 / 30.2 |
 
 The LLM sends the 7 laundering cases it does not escalate to REVIEW, so a person still sees them; it escalates far fewer legitimate cases. No LLM step fell back to the rules and no report fell back to the template.
 

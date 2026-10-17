@@ -158,6 +158,13 @@ def test_escalated_case_proposes_filing_an_str(world):
     assert P.plan_holds(CASE, cfg(), result("ESCALATE"))["case_action"]["type"] == "FILE_STR"
 
 
+def test_the_str_goes_to_the_fiu_named_in_config(world):
+    world(mule_world())
+    rules = {**cfg(), "actions": {**cfg()["actions"], "str_fiu": "FIU-TEST"}}
+    assert "with FIU-TEST" in P.plan_holds(CASE, rules, result("ESCALATE"))["case_action"]["why"]
+    assert "with FIU-IND" in P.plan_holds(CASE, cfg(), result("ESCALATE"))["case_action"]["why"]   # the default
+
+
 def test_busy_only_after_the_decision_is_not_a_hub(world):
     """Hub degrees count only payments before the decision time."""
     later = [(f"L{i}", f"late{i}", "M1", T0 + 3 * DAY + i, 10.0) for i in range(600)]
@@ -184,3 +191,13 @@ def test_effect_of_the_open_holds_is_recomputed_from_the_plan(world):
     assert P.effect(plan, ["M1", "M2"]) == {"frozen": pytest.approx(25000), "on_routes": 0}
     assert P.effect(plan, ["M1"]) == {"frozen": pytest.approx(20000), "on_routes": 0}
     assert P.effect(plan, []) == {"frozen": 0, "on_routes": 0}
+
+
+def test_hold_reason_says_when_the_money_was_still_there(world):
+    """The balance is read at the last flagged payment, so the reason says so, with its time."""
+    world(mule_world())
+    case = {**CASE, "t1": T0 + 9 * H + 30 * 60_000 + 1}       # t1 = last flagged payment + 1 ms
+    plan = P.plan_holds(case, cfg(), result("ESCALATE"))
+    why = plan["holds"][0]["why"]
+    assert "had not left by the last flagged payment (21 Jan 09:30 UTC)" in why
+    assert "has not left yet" not in why

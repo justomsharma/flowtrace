@@ -253,6 +253,24 @@ def recurring_flows(ctx: CaseContext, a: AccountArgs) -> dict:
     return {"series": len(series), "recurring": [{k: f[k] for k in ("cp", "dir", "purpose", "cadence")} for f in found[:10]]}
 
 
+def fast_forward_share(hop1: list[dict], hop2: list[dict], window_ms: int) -> tuple[float, list[dict]]:
+    """Share of the money the receivers passed on within the window. Each receiver counts for at most what it
+    received, so one busy account cannot make the whole case look forwarded."""
+    arrivals: dict[str, list[dict]] = {}
+    for e in hop1:
+        arrivals.setdefault(e["dst"], []).append(e)
+    sent: dict[str, float] = {}
+    fast = []
+    for e in hop2:
+        if any(0 <= e["ts"] - x["ts"] <= window_ms for x in arrivals.get(e["src"], [])):
+            sent[e["src"]] = sent.get(e["src"], 0.0) + e["amount"]
+            fast.append(e)
+    received = {v: sum(x["amount"] for x in xs) for v, xs in arrivals.items()}
+    total_in = sum(received.values())
+    passed_on = sum(min(out, received[v]) for v, out in sent.items())
+    return (passed_on / total_in if total_in else 0.0), fast
+
+
 def trace_funds(ctx: CaseContext, a: TraceArgs) -> dict:
     """Follow the money hop by hop in time order (forward = where it went, backward = where it came from)."""
     tr = ctx.rules["trace"]
@@ -273,16 +291,8 @@ def trace_funds(ctx: CaseContext, a: TraceArgs) -> dict:
     if a.direction == "forward":
         hop1 = [e for e in edges if e["hop"] == 1]
         hop2 = [e for e in edges if e["hop"] == 2]
-        recv = {}
-        for e in hop1:
-            recv.setdefault(e["dst"], []).append(e)
-        fwd_amt, recv_amt, fast = 0.0, sum(e["amount"] for e in hop1), []
-        for e in hop2:
-            arrivals = recv.get(e["src"], [])
-            if arrivals and any(0 <= e["ts"] - x["ts"] <= esc["fast_forward_hours"] * HOUR_MS for x in arrivals):
-                fwd_amt += e["amount"]
-                fast.append(e)
-        share = min(fwd_amt / recv_amt, 1.0) if recv_amt else 0.0
+        recv = {e["dst"] for e in hop1}
+        share, fast = fast_forward_share(hop1, hop2, esc["fast_forward_hours"] * HOUR_MS)
         summary["forwarded_share_fast"] = round(share, 2)
         if fast and share >= esc["fast_forward_share"]:
             ctx.book.add(kind="support", code="FAST_ONWARD_TRANSFER", tool="trace_funds", step=ctx.step,

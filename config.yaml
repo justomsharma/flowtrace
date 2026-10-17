@@ -110,8 +110,10 @@ disposition:
 actions:
   hold_expiry_business_days: 4   # policy setting, not a legal limit. A hold is a lien on the case money in the
                                  # account, not a freeze of the account (RBI draft KYC Amendment Directions, Sep
-                                 # 2026: debit hold on the suspected amount, at most 60 days). For comparison, UK
-                                 # FCA FG24/6 lets the payer's bank delay ONE outbound payment up to 4 business days.
+                                 # 2026: "temporary debit holds on amounts or accounts linked to money-mule
+                                 # activity"). For comparison, UK FCA FG24/6 lets the payer's bank delay ONE
+                                 # outbound payment up to 4 business days.
+  str_fiu: FIU-IND               # where an STR is filed (India: FIU-IND); set your country's FIU here
   max_holds_per_case: 3          # beyond this the planner keeps the holds that freeze the most money
   min_hold_usd: 1000             # never propose a hold on less (same floor as the pass-through rule)
   propose_for: [ESCALATE]        # holds only after ESCALATE (reasonable grounds to suspect); REVIEW is mixed

@@ -86,7 +86,7 @@ export const GLOSSARY: Record<string, string> = {
   close: 'The activity is explained by normal behaviour (for example, regular salary or bill payments). Closed with reasons; reopened if anything new appears.',
   'red flag': 'A fact from the payment graph that points towards laundering.',
   'legitimate explanation': 'A fact from the payment graph that points towards normal activity.',
-  STR: 'Suspicious Transaction Report, filed by the bank with FIU-IND (India’s Financial Intelligence Unit).',
+  STR: 'Suspicious Transaction Report, filed by the bank with its country’s Financial Intelligence Unit (FIU).',
   graph: 'A map of accounts (dots) and payments between them (arrows). FlowTrace stores it in FalkorDB, a graph database.',
 }
 
@@ -157,7 +157,7 @@ export const ACTION_PLAIN: Record<ActionType, { title: string; approve: string }
   HOLD: { title: 'Hold', approve: 'Approve hold' },
   RELEASE: { title: 'Release the hold', approve: 'Approve release' },
   ESCALATE: { title: 'Send to a senior analyst', approve: 'Approve escalation' },
-  FILE_STR: { title: 'File an STR with FIU-IND', approve: 'Approve filing' },
+  FILE_STR: { title: 'File an STR', approve: 'Approve filing' },
   CLOSE: { title: 'Close as normal activity', approve: 'Approve closing' },
 }
 

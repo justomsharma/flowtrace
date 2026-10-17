@@ -502,9 +502,6 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
         out += ["## Money trail", ""] + [f"- {t['text']}{ids(t)}" for t in rep["money_trail"]] + [""]
     if rep.get("typology_assessment"):
         out += ["## Typology", "", rep["typology_assessment"]["text"] + ids(rep["typology_assessment"]), ""]
-        if d["action"] == "ESCALATE" and (hyp := result.get("crime_hypotheses")):
-            out += ["Possible predicate crime (a hypothesis from the shape, not a finding): "
-                    + "; ".join(f"{h['crime']} ({h['basis']})" for h in hyp) + ".", ""]
     for title, kind in (("Red flags", "support"), ("Legitimate explanations", "counter")):
         items = sorted((e for e in evidence if e["kind"] == kind), key=lambda e: -e["weight"])
         out += [f"## {title}", ""]

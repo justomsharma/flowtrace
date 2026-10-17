@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import networkx as nx
@@ -35,7 +36,7 @@ DAY_MS = 86_400_000
 
 # Case-level proposal for each disposition: the agent's recommendation a person confirms.
 CASE_ACTION = {
-    "ESCALATE": ("FILE_STR", "The evidence points to laundering: file a suspicious transaction report (STR) with FIU-IND."),
+    "ESCALATE": ("FILE_STR", "The evidence points to laundering: file a suspicious transaction report (STR) with {fiu}."),
     "REVIEW": ("ESCALATE", "The evidence is mixed: send the case to a senior analyst."),
     "CLOSE": ("CLOSE", "Legitimate explanations outweigh the red flags: close the case as normal activity."),
 }
@@ -174,8 +175,10 @@ def _hubs(ids: list[str], t0: int, t1: int, rules: dict) -> set[str]:
     return hubs
 
 
-def _why(hold: float, routed_from: int, has_exit: bool, n_in: int) -> str:
-    parts = [f"Case money reached this account in {n_in} payment{'s' if n_in != 1 else ''} and has not left yet."]
+def _why(hold: float, routed_from: int, has_exit: bool, n_in: int, t1: int) -> str:
+    last = datetime.fromtimestamp((t1 - 1) / 1000, tz=timezone.utc).strftime("%d %b %H:%M").lstrip("0")
+    parts = [f"Case money reached this account in {n_in} payment{'s' if n_in != 1 else ''} and had not left by the "
+             f"last flagged payment ({last} UTC)."]
     if routed_from:
         parts.append(f"If the mules keep to the routes seen so far, money resting in {routed_from} other account"
                      f"{'s' if routed_from != 1 else ''} would also have to pass through it.")
@@ -256,7 +259,7 @@ def plan_holds(case: dict, rules: dict, result: dict | None = None) -> dict:
         pays = sorted(into[a].values(), key=lambda e: -e["amount"])
         has_exit = any(x["src"] == a for x in exit_edges) or flows.get(a, {}).get("exit_sum", 0.0) > 0
         holds.append({
-            **h, "why": _why(h["hold"], sum(1 for u in via_route if _reaches(u, a, routes)), has_exit, len(pays) or 1),
+            **h, "why": _why(h["hold"], sum(1 for u in via_route if _reaches(u, a, routes)), has_exit, len(pays) or 1, t1),
             "evidence_ids": [x["id"] for x in evidence if x.get("kind") == "support" and a in x.get("accounts", [])],
             "tx_ids": [e["tx_id"] for e in pays[:10]],
             "expiry_days": act["hold_expiry_business_days"],
@@ -277,7 +280,7 @@ def plan_holds(case: dict, rules: dict, result: dict | None = None) -> dict:
         "already_out": round(sum(e["amount"] for e in exit_edges + hub_edges), 2),
         "route_cut_size": cut, "holds": holds,
         "candidates": sorted(a for a, v in supply.items() if v >= act["min_hold_usd"]),
-        "case_action": {"type": ca[0], "why": ca[1]} if ca else None,
+        "case_action": {"type": ca[0], "why": ca[1].format(fiu=act.get("str_fiu", "FIU-IND"))} if ca else None,
         "skipped_hubs": sorted(hubs & ({e["dst"] for e in hub_edges} | set(seeds))),
         "currency": currency, "rate": rate, "note": note,
         "network": {
