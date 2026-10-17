@@ -5,9 +5,8 @@ import { ActionBadge } from '../components/badges'
 import { fmtInt, getJSON, postJSON, streamJob, type CaseBrief, type JobEvent } from '../lib/api'
 import { useBatch } from '../lib/batch'
 import { fmtMoney } from '../lib/money'
-import { SAMPLE_INFO, STAGE_PLAIN, caseReason, caseSentence, inToday, pct, trickName } from '../lib/plain'
+import { SAMPLE_INFO, STAGE_PLAIN, caseReason, caseSentence, inToday, pct, trickName, caseNo } from '../lib/plain'
 
-const caseNo = (id: string) => id.slice(id.lastIndexOf('-') + 1)
 
 export default function Today() {
   const { batch, batchId, caseId, ready, query, refresh } = useBatch()
@@ -45,7 +44,7 @@ export default function Today() {
         if (e.type === 'error') setError(e.error)
         if (e.type === 'done' && id) {
           if (id === batchId) refresh()
-          else if (here.current) navigate({ pathname: '/', search: `?batch=${id}` })
+          else if (here.current) navigate({ pathname: '/today', search: `?batch=${id}` })
         }
       }, () => setBusy(false))
     } catch (err) { setError(String(err)); setBusy(false) }
@@ -70,7 +69,7 @@ export default function Today() {
   )
 
   return (
-    <div className="px-6 py-5 flex flex-col gap-5 max-w-[1240px]">
+    <div className="px-6 py-5 flex flex-col gap-5">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Today's work</h1>
@@ -96,7 +95,7 @@ export default function Today() {
             ))}
           </ol>
           <p className="text-xs mt-3" style={{ color: 'var(--muted)' }}>
-            To watch the payments being drawn as they load, upload from the <Link to="/network" className="underline">Live Network</Link> instead.
+            To watch the payments being drawn as they load, upload from the <Link to="/" className="underline">Live Network</Link> instead.
           </p>
         </section>
       )}
@@ -112,7 +111,14 @@ export default function Today() {
       {batch && (
         <>
           <section aria-label="How the day narrowed down" className="card px-5 py-4 flex flex-wrap items-center gap-x-8 gap-y-3">
-            <Funnel steps={[[batch.rows, 'payments'], [batch.flagged_tx, 'flagged'], [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'], [today.length, 'for today']]} />
+            <Funnel steps={[[batch.rows, 'payments checked'], [batch.flagged_tx, `flagged (${batch.rows ? Math.round((100 * batch.flagged_tx) / batch.rows) : 0}%)`],
+              [batch.cases.length, batch.cases.length === 1 ? 'case for analysts' : 'cases for analysts']]} />
+            <span className="flex items-center gap-1.5 text-sm tabular font-medium" style={{ color: 'var(--good)' }}>
+              <CheckCircle2 size={15} aria-hidden />{(batch.rows - batch.flagged_tx).toLocaleString('en-US')} passed as normal
+            </span>
+            {today.length < batch.cases.length && (
+              <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{today.length} in today's queue (capacity) · amounts in USD equivalent</span>
+            )}
             {batch.prefetch && batch.prefetch.total > 0 && (
               <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">
                 {batch.prefetch.done + batch.prefetch.failed < batch.prefetch.total
@@ -122,14 +128,9 @@ export default function Today() {
                 {batch.prefetch.failed > 0 && <span style={{ color: 'var(--critical)' }}>, {batch.prefetch.failed} failed</span>}
               </span>
             )}
-            <Link to={{ pathname: '/network', search: query(null) }} className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium" style={{ color: 'var(--brand)' }}>
+            <Link to={{ pathname: '/', search: query(null) }} className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium" style={{ color: 'var(--brand)' }}>
               <Orbit size={16} aria-hidden /> See the day on the Live Network
             </Link>
-            {batch.curated && (
-              <p className="basis-full text-xs" style={{ color: 'var(--muted)' }}>
-                Curated demo sample: picked around known schemes, so it holds about 29 times more laundering than a real day.
-              </p>
-            )}
           </section>
 
           {batch.cases.length === 0 ? (
@@ -189,7 +190,7 @@ function CaseTable({ cases, start, query, quiet = false }: { cases: CaseBrief[];
             className="cursor-pointer hover:bg-[var(--surface-2)]" style={{ borderTop: '1px solid var(--border)', opacity: quiet ? 0.8 : 1 }}>
             <td className="py-3 pl-5 pr-3 tabular" style={{ color: 'var(--muted)' }}>{start + i}</td>
             <td className="pr-3 font-semibold tabular">
-              <Link to={{ pathname: '/case', search: query(c.case_id) }} onClick={(e) => e.stopPropagation()}>{caseNo(c.case_id)}</Link>
+              <Link to={{ pathname: '/case', search: query(c.case_id) }} onClick={(e) => e.stopPropagation()}>Case {caseNo(c.case_id)}</Link>
             </td>
             <td className="pr-3">
               <span className="block">{caseSentence(c.shape.typology, fmtMoney(c.amount, c.currency, c.rate), c.accounts.length)}</span>

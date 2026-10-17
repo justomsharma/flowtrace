@@ -13,6 +13,7 @@ which ground-truth laundering transfers exist. Reported per policy:
   * cost: tool steps, Cypher queries, seconds
 
 Run (needs FalkorDB loaded):  python -m flowtrace.eval.compare --sample demo_mixed_2022-09-09.csv --cases 25
+The batch is deleted from the graph afterwards unless it was already there (uploaded from the UI).
 """
 from __future__ import annotations
 
@@ -23,7 +24,9 @@ import statistics as st
 import polars as pl
 
 from flowtrace.agent.investigate import investigate, new_context
-from flowtrace.pipeline.batch import process_batch
+from flowtrace.eval.funnel import cleanup
+from flowtrace.graph.client import ro
+from flowtrace.pipeline.batch import batch_id_for, process_batch
 from flowtrace.settings import cfg, settings
 
 
@@ -86,7 +89,16 @@ def main() -> None:
     s, rules = settings(), cfg()
 
     data = (s.raw_dir.parent / "samples" / a.sample).read_bytes()
+    batch_id = batch_id_for(data)
+    existed = ro("MATCH ()-[t:TRANSFER {batch: $b}]->() RETURN count(t) AS n", {"b": batch_id}).rows[0]["n"] > 0
     batch = process_batch(data, a.sample, emit=lambda e: None)
+    try:
+        run(a, s, rules, batch)
+    finally:
+        cleanup(batch_id, existed)
+
+
+def run(a, s, rules, batch) -> None:
     cases = list(batch["cases"].values())[: a.cases]
     gt = ground_truth_paths()
     print(f"{len(cases)} cases from {a.sample}; {sum(1 for c in cases if c['ground_truth'])} contain labelled laundering")

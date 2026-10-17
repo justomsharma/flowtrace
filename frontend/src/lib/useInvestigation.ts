@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getJSON, postJSON, streamJob, type CaseResult, type JobBrief, type JobEvent } from './api'
 
-export interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[] }
+export interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[]; kinds?: string[] }
 
 /** A case's investigation: its stored result, and the agent's steps live while a job runs. Events are replayed
  *  from the start, so joining a running job late loses nothing. Events from a stream that belongs to a case the
@@ -25,7 +25,8 @@ export function useInvestigation(caseId: string | null, jobId: string | null) {
       if (current.current !== cid) return
       if (e.type === 'step_start') setSteps((s) => [...s, { step: e.step, tool: e.tool, reason: e.reason, done: false, found: [] }])
       if (e.type === 'step_done') setSteps((s) => s.map((x) => x.step === e.step
-        ? { ...x, done: true, found: (e.evidence ?? []).filter((v: { kind: string }) => v.kind !== 'context').map((v: { claim: string }) => v.claim) } : x))
+        ? { ...x, done: true, found: (e.evidence ?? []).filter((v: { kind: string }) => v.kind !== 'context').map((v: { claim: string }) => v.claim),
+          kinds: (e.evidence ?? []).filter((v: { kind: string }) => v.kind !== 'context').map((v: { kind: string }) => v.kind) } : x))
       if (e.type === 'error') setError(e.error)
       if (e.type === 'cancelled') setError(e.reason === 'shutdown'
         ? 'The server stopped, so this run was stopped. It is investigated again when the server restarts.'

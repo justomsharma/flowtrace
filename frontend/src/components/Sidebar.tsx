@@ -3,12 +3,12 @@ import { Link, NavLink, useLocation } from 'react-router-dom'
 import { FileText, LayoutDashboard, ListChecks, Lock, Orbit, Waypoints } from 'lucide-react'
 import { getJSON, type CaseBrief, type Health } from '../lib/api'
 import { useBatch } from '../lib/batch'
-import { inToday } from '../lib/plain'
+import { inToday, caseNo } from '../lib/plain'
 
 const NAV = [
-  { to: '/', label: "Today's work", Icon: ListChecks, keepCase: false },
+  { to: '/', label: 'Live Network', Icon: Orbit, keepCase: true },
+  { to: '/today', label: "Today's work", Icon: ListChecks, keepCase: false },
   { to: '/case', label: 'Case overview', Icon: LayoutDashboard, keepCase: true },
-  { to: '/network', label: 'Live Network', Icon: Orbit, keepCase: true },
   { to: '/results', label: 'Holds & audit', Icon: Lock, keepCase: false },
   { to: '/reports', label: 'Reports', Icon: FileText, keepCase: true },
 ]
@@ -25,7 +25,6 @@ function dot(c: CaseBrief): { color: string; label: string; pulse?: boolean } {
   return { color: 'var(--axis)', label: 'Not investigated' }
 }
 
-const caseNo = (id: string) => id.slice(id.lastIndexOf('-') + 1)
 
 export default function Sidebar() {
   const { batch, caseId, query } = useBatch()
@@ -68,7 +67,7 @@ export default function Sidebar() {
                     className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm tabular"
                     style={{ background: active ? 'var(--surface-2)' : 'transparent', color: active ? 'var(--ink)' : 'var(--ink-2)', fontWeight: active ? 600 : 400 }}>
                     <span className={`w-2 h-2 rounded-full ${d.pulse ? 'animate-pulse' : ''}`} style={{ background: d.color }} aria-hidden />
-                    {caseNo(c.case_id)}
+                    Case {caseNo(c.case_id)}
                     <span className="sr-only">: {d.label}</span>
                     <span className="ml-auto text-xs" style={{ color: 'var(--muted)' }} aria-hidden>{d.label === 'Not investigated' ? '' : d.label}</span>
                   </Link>

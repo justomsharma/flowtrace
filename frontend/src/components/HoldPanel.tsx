@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, Lock, ShieldCheck, XCircle } from 'lucide-react'
-import { approverToken, fmtTime, getJSON, sendJSON, type Action, type CaseResult, type HoldPlan, type OpenEffect } from '../lib/api'
+import {
+  approverToken, fmtTime, getJSON, sendJSON, type Action, type AutoHoldPolicy, type CaseResult, type HoldPlan, type OpenEffect,
+} from '../lib/api'
+import { holdPromise } from '../lib/holds'
 import { currencyNote, fmtMoney } from '../lib/money'
-import { ACTION_PLAIN, shortAcct } from '../lib/plain'
-import { useNow, timeLeft, untilLabel } from '../lib/time'
+import { ACTION_PLAIN, friendlyError } from '../lib/plain'
+import { useName } from '../lib/names'
+import { businessEnd, useNow, timeLeft, untilLabel } from '../lib/time'
 
 const MIN_REASON = 5
 const NAME_KEY = 'flowtrace.analyst'
+/** A person can still decide these: a proposal, or an auto-hold waiting to be confirmed. */
+const DECIDABLE = new Set<Action['status']>(['PROPOSED', 'PROVISIONAL'])
+const IN_PLACE = new Set<Action['status']>(['APPROVED', 'PROVISIONAL'])
 
 function readName(): string {
   try { return localStorage.getItem(NAME_KEY) ?? '' } catch { return '' }
@@ -17,33 +24,38 @@ const ORIGIN: Record<Action['proposed_by'], string> = {
   mcp: 'Proposed by an outside AI client (MCP)',
 }
 
-/** The agent's proposed holds and case decision for one case. Nothing happens until a person approves.
- *  Mount it with key={caseId}: each case starts from a fresh panel. */
-export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
+interface PlanReply { plan: HoldPlan | null; actions: Action[]; held_effect: OpenEffect | null; open_effect: OpenEffect | null; auto_hold?: AutoHoldPolicy }
+
+/** The agent's proposed holds and case decision for one case. Holds and the case decision (STR, escalate, close)
+ *  are decided apart, and nothing is ticked until the analyst ticks it. Mount it with key={caseId}. */
+export default function HoldPanel({ caseId, result, refreshKey, onPlan, briefs = {} }: {
   caseId: string
   result: CaseResult
   refreshKey: number
   onPlan: (plan: HoldPlan | null, actions: Action[]) => void
+  /** evidence id -> short reason line, from the case overview */
+  briefs?: Record<string, string>
 }) {
-  const [plan, setPlan] = useState<HoldPlan | null>(null)
-  const [actions, setActions] = useState<Action[]>([])
-  const [effect, setEffect] = useState<OpenEffect | null>(null)
+  const [reply, setReply] = useState<PlanReply | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState(readName)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
   const planKey = useRef(crypto.randomUUID())
   // A reply that lands after the analyst opened another case must not paint that case's map.
   const alive = useRef(true)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
 
   const load = useCallback(() => {
-    getJSON<{ plan: HoldPlan | null; actions: Action[]; open_effect: OpenEffect | null }>(`/api/cases/${caseId}/plan`)
+    getJSON<PlanReply>(`/api/cases/${caseId}/plan`)
       .then((r) => {
         if (!alive.current) return
-        setPlan(r.plan); setActions(r.actions); setEffect(r.open_effect); setLoaded(true); onPlan(r.plan, r.actions)
+        setReply(r); setLoaded(true); onPlan(r.plan, r.actions)
+        // A ticked action that someone (or the clock) has since decided drops out of the selection.
+        setPicked((p) => new Set([...p].filter((id) => r.actions.some((a) => a.id === id && DECIDABLE.has(a.status)))))
       })
-      .catch((e) => { if (alive.current) { setError(String(e)); setLoaded(true) } })
+      .catch((e) => { if (alive.current) { setError(friendlyError(e)); setLoaded(true) } })
   }, [caseId, onPlan])
 
   useEffect(() => { load() }, [load, refreshKey])
@@ -53,17 +65,30 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
     try {
       const r = await sendJSON<{ plan: HoldPlan; actions: Action[] }>(`/api/cases/${caseId}/plan`, undefined, { key: planKey.current })
       if (!alive.current) return
-      setPlan(r.plan); onPlan(r.plan, r.actions); load()
-    } catch (e) { setError((e as Error).message) } finally { setPlanning(false) }
+      onPlan(r.plan, r.actions); load()
+    } catch (e) { setError(friendlyError(e)) } finally { setPlanning(false) }
   }
 
+  const plan = reply?.plan ?? null
+  const actions = reply?.actions ?? []
   const saveName = (v: string) => { setName(v); try { localStorage.setItem(NAME_KEY, v) } catch { /* private window */ } }
   const holds = actions.filter((a) => a.type === 'HOLD' || a.type === 'RELEASE')
     .sort((x, y) => (y.hold_amount ?? 0) - (x.hold_amount ?? 0))
   const decisions = actions.filter((a) => a.type !== 'HOLD' && a.type !== 'RELEASE')
-  const evidence = Object.fromEntries(result.evidence.map((e) => [e.id, e.claim]))
+  const evidence = Object.fromEntries(result.evidence.map((e) => [e.id, briefs[e.id] ?? e.claim]))
   const payments = Object.fromEntries((plan?.network.edges ?? []).map((e) => [e.tx_id, e]))
-  const deciding = actions.some((a) => a.status === 'PROPOSED')
+  // Holds can be ticked together; the case decision is one choice (approving one withdraws the others).
+  const toggle = (id: string) => setPicked((u) => {
+    const n = new Set(u)
+    if (n.has(id)) { n.delete(id); return n }
+    if (decisions.some((d) => d.id === id)) decisions.forEach((d) => n.delete(d.id))
+    n.add(id)
+    return n
+  })
+  const bar = (list: Action[], what: 'hold' | 'decision') => list.some((a) => DECIDABLE.has(a.status)) && (
+    <DecisionBar what={what} selected={list.filter((a) => DECIDABLE.has(a.status) && picked.has(a.id))}
+      name={name} onName={saveName} onDone={load} />
+  )
 
   return (
     <section aria-labelledby="hold-title" className="flex flex-col gap-3 rounded-lg p-3"
@@ -84,35 +109,29 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
         </div>
       )}
 
-      {plan && <Effect plan={plan} effect={effect}
-        open={holds.filter((a) => a.type === 'HOLD' && (a.status === 'PROPOSED' || a.status === 'APPROVED')).length} />}
-
-      {deciding && (
-        <label className="flex items-center gap-2 text-xs" style={{ color: 'var(--ink-2)' }}>
-          Deciding as
-          <input value={name} onChange={(e) => saveName(e.target.value)} placeholder="your name (asked once)"
-            className="flex-1 min-w-0 rounded-md px-2 py-1 text-xs"
-            style={{ background: 'var(--surface-2)', border: `1px solid ${name.trim() ? 'var(--border)' : 'var(--s4)'}`, color: 'var(--ink)' }} />
-        </label>
-      )}
-      {deciding && !approverToken && (
-        <p className="text-xs" style={{ color: 'var(--critical)' }}>
-          Approvals are off in this browser: set VITE_APPROVER_TOKEN in frontend/.env.development.local (the same value as APPROVER_TOKEN in .env).
-        </p>
-      )}
+      {plan && <Effect plan={plan} held={reply?.held_effect ?? null} all={reply?.open_effect ?? null} holds={holds}
+        policy={reply?.auto_hold} />}
 
       {holds.length > 0 && (
-        <ul className="flex flex-col gap-2.5">
-          {holds.map((a) => <ActionRow key={a.id} action={a} evidence={evidence} payments={payments} name={name} onChange={load} />)}
-        </ul>
+        <div className="flex flex-col gap-1.5">
+          <h4 className="text-xs font-semibold" style={{ color: 'var(--ink-2)' }}>Holds</h4>
+          <ul className="flex flex-col gap-1.5">
+            {holds.map((a) => <ActionRow key={a.id} action={a} evidence={evidence} payments={payments}
+              picked={picked.has(a.id)} onPick={() => toggle(a.id)} />)}
+          </ul>
+          {bar(holds, 'hold')}
+        </div>
       )}
 
       {decisions.length > 0 && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
           <h4 className="text-xs font-semibold" style={{ color: 'var(--ink-2)' }}>Case decision</h4>
-          <ul className="flex flex-col gap-2.5">
-            {decisions.map((a) => <ActionRow key={a.id} action={a} evidence={evidence} payments={payments} name={name} onChange={load} />)}
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>Decided on its own: approving a hold never files an STR, and filing one never holds money.</p>
+          <ul className="flex flex-col gap-1.5">
+            {decisions.map((a) => <ActionRow key={a.id} action={a} evidence={evidence} payments={payments}
+              picked={picked.has(a.id)} onPick={() => toggle(a.id)} />)}
           </ul>
+          {bar(decisions, 'decision')}
         </div>
       )}
       {error && <p className="text-xs" style={{ color: 'var(--critical)' }}>{error}</p>}
@@ -120,32 +139,33 @@ export default function HoldPanel({ caseId, result, refreshKey, onPlan }: {
   )
 }
 
-/** "Holding 2 accounts freezes X now": only the case money that is really in the held accounts. Money on the
- *  case's routes is an assumption and is said apart, in words, never added to the frozen amount. */
-function Effect({ plan, effect, open }: { plan: HoldPlan; effect: OpenEffect | null; open: number }) {
+/** What is frozen now (approved or provisional holds) and, said apart, what approving the proposals would add.
+ *  Money on the case's routes is an assumption and is never added to the frozen amount. */
+function Effect({ plan, held, all, holds, policy }: {
+  plan: HoldPlan; held: OpenEffect | null; all: OpenEffect | null; holds: Action[]; policy?: AutoHoldPolicy
+}) {
   const m = (v: number) => fmtMoney(v, plan.currency, plan.rate)
-  const frozen = Math.min(effect?.frozen ?? 0, plan.in_motion)
-  const routes = effect?.on_routes ?? 0
+  const frozen = Math.min(held?.frozen ?? 0, plan.in_motion)
+  const more = Math.max(Math.min(all?.frozen ?? 0, plan.in_motion) - frozen, 0)
+  const nHeld = holds.filter((a) => a.type === 'HOLD' && IN_PLACE.has(a.status)).length
+  const nProposed = holds.filter((a) => a.type === 'HOLD' && a.status === 'PROPOSED').length
   const notHeld = Math.max(plan.in_motion - frozen, 0)
   const total = plan.in_motion + plan.already_out
-  let line: string
-  if (open > 0) {
-    line = `Holding ${open} account${open === 1 ? '' : 's'} freezes ${m(frozen)} of case money now.`
-  } else if (plan.holds.length > 0) {
-    line = `No hold is open, so nothing is frozen. ${m(plan.in_motion)} of case money is still in the trail.`
-  } else if (plan.in_motion <= 0) {
-    line = 'No case money is still sitting in the trail, so there is nothing to hold.'
-  } else {
-    line = `${m(plan.in_motion)} of case money is still in the trail, but none of it can be held here.`
-  }
+  const parts: string[] = []
+  if (nHeld > 0) parts.push(`${nHeld} hold${nHeld === 1 ? '' : 's'} in place freeze${nHeld === 1 ? 's' : ''} ${m(frozen)} of case money now.`)
+  else if (holds.some((a) => a.type === 'HOLD' && a.released_at)) parts.push('Nothing is frozen now: the holds were released.')
+  else if (plan.holds.length > 0 || nProposed > 0) parts.push('Nothing is frozen yet.')
+  if (nProposed > 0) parts.push(`Approving the ${nProposed} proposed hold${nProposed === 1 ? '' : 's'} would freeze ${m(more)}${nHeld ? ' more' : ''}.`)
+  if (!parts.length) parts.push(plan.in_motion <= 0 ? 'The case money has already moved on, so there is nothing to hold.'
+    : `${m(plan.in_motion)} of case money is still moving, but none of it can be held here.`)
   const seg = [
     { v: frozen, c: 'var(--s4)', label: 'Frozen now' },
-    { v: notHeld, c: 'var(--axis)', label: 'In the trail, not held' },
-    { v: plan.already_out, c: 'var(--s8)', label: 'Already gone' },
+    { v: notHeld, c: 'var(--axis)', label: 'Still moving, not held' },
+    { v: plan.already_out, c: 'var(--s8)', label: 'Already gone (cash, crypto, shops)' },
   ]
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[15px] leading-snug font-medium tabular">{line}</p>
+      <p className="text-[15px] leading-snug font-medium tabular">{parts.join(' ')}</p>
       {total > 0 && (
         <>
           <div className="flex h-2.5 w-full overflow-hidden rounded-full" style={{ background: 'var(--surface-2)' }}
@@ -162,129 +182,159 @@ function Effect({ plan, effect, open }: { plan: HoldPlan; effect: OpenEffect | n
           </ul>
         </>
       )}
-      {routes > 0 && (
-        <p className="text-xs" style={{ color: 'var(--ink-2)' }}>
-          On the case's routes: {m(routes)} more would have to pass these accounts, but only if the mules keep paying the same accounts. That is an assumption, not money held.
-        </p>
-      )}
       <p className="text-xs" style={{ color: 'var(--muted)' }}>
-        A hold freezes only the case money traced into an account, never its whole balance.
-        {plan.already_out > 0 && ' Already gone means it left in cash, crypto or another currency, or reached a merchant.'}
+        {holdPromise(policy)} Only the case money is frozen, never the whole account.
+        {plan.skipped_hubs.length > 0 && ` ${plan.skipped_hubs.length} busy account${plan.skipped_hubs.length === 1 ? ' is' : 's are'} never held (shops, processors).`}
+        {' '}{currencyNote()}
       </p>
-      {plan.note && <p className="text-xs" style={{ color: 'var(--ink-2)' }}>{plan.note}</p>}
-      {plan.skipped_hubs.length > 0 && (
-        <p className="text-xs" style={{ color: 'var(--muted)' }}>
-          Not held: {plan.skipped_hubs.length} busy account{plan.skipped_hubs.length === 1 ? '' : 's'} (merchant or processor). FlowTrace never holds those.
-        </p>
-      )}
-      <p className="text-xs" style={{ color: 'var(--muted)' }}>{currencyNote(plan.currency)}</p>
     </div>
   )
 }
 
-function ActionRow({ action: a, evidence, payments, name, onChange }: {
+function ActionRow({ action: a, evidence, payments, picked, onPick }: {
   action: Action
   evidence: Record<string, string>
   payments: Record<string, HoldPlan['network']['edges'][number]>
-  name: string
-  onChange: () => void
+  picked: boolean
+  onPick: () => void
 }) {
-  const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState<'approve' | 'reject' | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const key = useRef(crypto.randomUUID())  // one per decision: a double click returns the first answer
-  const now = useNow(a.status === 'APPROVED' ? 1000 : 0)
+  const now = useNow(a.status === 'APPROVED' || a.status === 'PROVISIONAL' || (a.type === 'HOLD' && a.status === 'PROPOSED') ? 1000 : 0)
   const m = (v = 0) => fmtMoney(v, a.currency, a.rate)
+  const acctName = useName()
   const isHold = a.type === 'HOLD'
+  const decidable = DECIDABLE.has(a.status)
+  const firstSentence = (t: string) => t.split(/(?<=\.)\s/)[0]
   const claims = (a.evidence_ids ?? []).map((id) => evidence[id]).filter(Boolean)
   const into = (a.tx_ids ?? []).map((t) => payments[t]).filter(Boolean)
-  const ready = reason.trim().length >= MIN_REASON && !!name.trim() && !!approverToken
+  const title = isHold ? `Freeze ${m(a.hold_amount)} in ${a.account ? acctName(a.account) : 'the account'}`
+    : `${ACTION_PLAIN[a.type].title}${a.account ? ` ${acctName(a.account)}` : ''}`
+
+  return (
+    <li className="rounded-lg px-3 py-2.5 flex items-start gap-2.5" style={{ background: 'var(--surface-2)' }}>
+      {decidable ? (
+        <input type="checkbox" checked={picked} onChange={onPick} aria-label={`Select: ${title}`}
+          className="mt-0.5 w-4 h-4 shrink-0 accent-[var(--brand)]" />
+      ) : <span className="w-4 shrink-0" aria-hidden />}
+      <div className="min-w-0 flex-1 flex flex-col gap-1">
+        <div className="text-sm font-semibold">{title}</div>
+        <dl className="grid grid-cols-[96px_1fr] gap-x-2 gap-y-0.5 text-xs leading-snug">
+          {a.why && (<><dt className="font-semibold" style={{ color: 'var(--muted)' }}>{isHold ? 'Basis for hold' : 'Basis'}</dt><dd>{firstSentence(a.why)}</dd></>)}
+          {claims.length > 0 && (<><dt className="font-semibold" style={{ color: 'var(--muted)' }}>Indicators</dt>
+            <dd><ul className="flex flex-col gap-0.5">{claims.slice(0, 2).map((c, i) => <li key={i}>{c}</li>)}</ul></dd></>)}
+          {into.length > 0 && (<><dt className="font-semibold" style={{ color: 'var(--muted)' }}>Funds received</dt>
+            <dd className="tabular">
+              {into.slice(0, 2).map((e) => `${m(e.amount)} from ${acctName(e.src)}, ${fmtTime(e.ts)}`).join('; ')}
+              {into.length > 2 && <span style={{ color: 'var(--muted)' }}> and {into.length - 2} more</span>}
+            </dd></>)}
+          {isHold && a.status === 'PROPOSED' && a.expiry_days != null && (<><dt className="font-semibold" style={{ color: 'var(--muted)' }}>If approved</dt>
+            <dd className="tabular">Held until {untilLabel(businessEnd(now, a.expiry_days))} ({a.expiry_days} business days), then released automatically.</dd></>)}
+        </dl>
+        {a.status !== 'PROPOSED' && <Status a={a} now={now} />}
+      </div>
+    </li>
+  )
+}
+
+/** One name, one reason, one click for the ticked items of one section. Each decision is still logged on its own. */
+function DecisionBar({ what, selected, name, onName, onDone }: {
+  what: 'hold' | 'decision'
+  selected: Action[]
+  name: string
+  onName: (v: string) => void
+  onDone: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [editing, setEditing] = useState(!name.trim())
+  const [busy, setBusy] = useState<'approve' | 'reject' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const keys = useRef(new Map<string, string>())  // one key per decision: a double click returns the first answer
+  const key = (id: string) => {
+    if (!keys.current.has(id)) keys.current.set(id, crypto.randomUUID())
+    return keys.current.get(id)!
+  }
+  const n = selected.length
+  const ready = n > 0 && reason.trim().length >= MIN_REASON && !!name.trim() && !!approverToken
+  const id = `reason-${what}`
 
   async function decide(kind: 'approve' | 'reject') {
     setBusy(kind); setError(null)
     try {
-      await sendJSON(`/api/actions/${a.id}/${kind}`, { reason: reason.trim(), by: name.trim() },
-        { key: `${key.current}:${kind}`, approverToken })
-      onChange()
-    } catch (e) { setError((e as Error).message); onChange() } finally { setBusy(null) }
+      for (const a of selected) {
+        await sendJSON(`/api/actions/${a.id}/${kind}`, { reason: reason.trim(), by: name.trim() },
+          { key: `${key(a.id)}:${kind}`, approverToken })
+      }
+      setReason('')
+    } catch (e) { setError(friendlyError(e)) } finally { setBusy(null); onDone() }
   }
 
+  const approveLabel = n === 1
+    ? (selected[0].status === 'PROVISIONAL' ? 'Confirm hold' : ACTION_PLAIN[selected[0].type].approve)
+    : `Approve ${n} selected`
+  const hint = !approverToken ? 'Approvals are off: set VITE_APPROVER_TOKEN in frontend/.env.development.local.'
+    : n === 0 ? `Tick the ${what === 'hold' ? 'holds' : 'decision'} you agree with.`
+    : !name.trim() ? 'Enter your name and a reason.'
+    : reason.trim().length < MIN_REASON ? `Enter a reason (at least ${MIN_REASON} characters).` : ''
+
   return (
-    <li className="rounded-lg p-3 flex flex-col gap-2" style={{ background: 'var(--surface-2)' }}>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-sm font-medium">
-          {ACTION_PLAIN[a.type].title}{a.account ? ` account ${shortAcct(a.account)}` : ''}
-        </span>
-        {isHold && <span className="text-base font-semibold tabular" style={{ color: 'var(--s4)' }}>{m(a.hold_amount)}</span>}
-      </div>
-      {isHold && (
-        <p className="text-xs tabular" style={{ color: 'var(--ink-2)' }}>
-          Freezes {m(a.hold_amount)} of case money in this account, not its whole balance.
-          {(a.on_routes ?? 0) > 0 && <> If the mules keep their routes, {m(a.on_routes)} more would have to pass through it (an assumption).</>}
-        </p>
-      )}
-      {a.why && <p className="text-sm leading-snug">{a.why}</p>}
-      {claims.length > 0 && (
-        <ul className="flex flex-col gap-1 pl-3" style={{ borderLeft: '2px solid var(--critical)' }}>
-          {claims.slice(0, 3).map((c, i) => <li key={i} className="text-xs" style={{ color: 'var(--ink-2)' }}>{c}</li>)}
-        </ul>
-      )}
-      {into.length > 0 && (
-        <ul className="flex flex-col gap-0.5 text-xs tabular" style={{ color: 'var(--ink-2)' }} aria-label="Case payments into this account">
-          {into.slice(0, 3).map((e) => (
-            <li key={e.tx_id}>Received {m(e.amount)} from account {shortAcct(e.src)} on {fmtTime(e.ts)}</li>
-          ))}
-          {into.length > 3 && <li>and {into.length - 3} more payments</li>}
-        </ul>
-      )}
-
-      <Status a={a} now={now} />
-
-      {a.status === 'PROPOSED' && (
-        <div className="flex flex-col gap-2">
-          <label className="sr-only" htmlFor={`reason-${a.id}`}>Reason for your decision</label>
-          <textarea id={`reason-${a.id}`} value={reason} onChange={(e) => setReason(e.target.value)} rows={2}
-            placeholder="Reason for your decision (kept in the audit log)"
-            className="w-full rounded-md px-2 py-1.5 text-sm resize-y"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
-          <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => decide('approve')} disabled={!!busy || !ready}
-              className="px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
-              style={{ background: 'var(--good)', color: '#fff' }}>
-              {busy === 'approve' ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} aria-hidden />}
-              {ACTION_PLAIN[a.type].approve}
-            </button>
-            <button onClick={() => decide('reject')} disabled={!!busy || !ready}
-              className="px-3 py-1.5 rounded-md text-sm flex items-center gap-1.5 disabled:opacity-50"
-              style={{ border: '1px solid var(--border)', color: 'var(--ink)' }}>
-              {busy === 'reject' ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} aria-hidden />}
-              Reject
-            </button>
-          </div>
-          {!ready && (
-            <span className="text-xs" style={{ color: 'var(--muted)' }}>
-              {!name.trim() ? 'Write your name above, and a reason, to approve or reject.' : 'Write a reason to approve or reject.'}
-            </span>
-          )}
-          {error && <p className="text-xs" style={{ color: 'var(--critical)' }}>{error}</p>}
+    <div className="flex flex-col gap-2 rounded-lg p-3" style={{ background: 'var(--surface-2)' }}>
+      <div className="grid gap-2 md:grid-cols-[200px_minmax(0,1fr)_auto] md:items-center">
+        {editing ? (
+          <input value={name} onChange={(e) => onName(e.target.value)} onBlur={() => { if (name.trim()) setEditing(false) }}
+            placeholder="Your name (asked once)" aria-label="Your name"
+            className="rounded-md px-2 py-1.5 text-sm"
+            style={{ background: 'var(--surface)', border: `1px solid ${name.trim() ? 'var(--border)' : 'var(--s4)'}`, color: 'var(--ink)' }} />
+        ) : (
+          <span className="text-xs" style={{ color: 'var(--ink-2)' }}>
+            Deciding as <b style={{ color: 'var(--ink)' }}>{name}</b>{' '}
+            <button onClick={() => setEditing(true)} className="underline underline-offset-2">change</button>
+          </span>
+        )}
+        <label className="sr-only" htmlFor={id}>Reason for your {what === 'hold' ? 'hold' : 'case'} decision</label>
+        <input id={id} value={reason} onChange={(e) => setReason(e.target.value)}
+          placeholder="Reason for your decision (kept in the audit log)"
+          className="rounded-md px-2 py-1.5 text-sm min-w-0"
+          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
+        <div className="flex items-center gap-2">
+          <button onClick={() => decide('approve')} disabled={!!busy || !ready}
+            className="px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+            style={{ background: 'var(--good)', color: '#fff' }}>
+            {busy === 'approve' ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} aria-hidden />}
+            {n === 0 ? 'Approve' : approveLabel}
+          </button>
+          <button onClick={() => decide('reject')} disabled={!!busy || !ready}
+            className="px-3 py-1.5 rounded-md text-sm flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+            style={{ border: '1px solid var(--border)', color: 'var(--ink)', background: 'var(--surface)' }}>
+            {busy === 'reject' ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} aria-hidden />}
+            {n <= 1 ? 'Reject' : `Reject ${n} selected`}
+          </button>
         </div>
-      )}
-    </li>
+      </div>
+      {hint && <span className="text-xs" style={{ color: 'var(--muted)' }}>{hint}</span>}
+      {error && <p className="text-xs" style={{ color: 'var(--critical)' }}>{error}</p>}
+    </div>
   )
 }
 
 function Status({ a, now }: { a: Action; now: number }) {
   const muted = { color: 'var(--ink-2)' }
   const origin = ORIGIN[a.proposed_by] ?? ORIGIN.agent
-  if (a.status === 'PROPOSED') {
-    return a.type === 'HOLD'
-      ? <p className="text-xs" style={muted}>{origin}. Ends {a.expiry_days} business days after approval.</p>
-      : <p className="text-xs" style={muted}>{origin}.</p>
+  if (a.status === 'PROVISIONAL') {
+    return (
+      <div className="flex flex-col gap-0.5 text-xs">
+        <span style={{ color: 'var(--s4)' }}>Held provisionally by {a.held_by ?? 'the agent (auto-hold)'}. {a.hold_reason}</span>
+        {a.provisional_until && (
+          <span className="tabular" style={muted}>
+            Released {untilLabel(a.provisional_until)} unless you confirm it. <span className="font-semibold" style={{ color: 'var(--ink)' }}>{timeLeft(a.provisional_until, now)}</span>.
+            {' '}Confirming keeps it for {a.expiry_days} business days; rejecting releases it now.
+          </span>
+        )}
+      </div>
+    )
   }
   if (a.status === 'APPROVED') {
     return (
       <div className="flex flex-col gap-0.5 text-xs">
-        <span style={muted}>{origin}.</span>
+        <span style={muted}>{a.held_by ? `Held by ${a.held_by}, then confirmed.` : `${origin}.`}</span>
         <span style={{ color: 'var(--good)' }}>Approved by {a.decided_by}: {a.reason}</span>
         {a.type === 'HOLD' && a.expires_ts && (
           <span className="tabular" style={muted}>
@@ -294,6 +344,6 @@ function Status({ a, now }: { a: Action; now: number }) {
       </div>
     )
   }
-  if (a.status === 'REJECTED') return <p className="text-xs" style={muted}>{origin}. Rejected by {a.decided_by}: {a.reason}</p>
+  if (a.status === 'REJECTED') return <p className="text-xs" style={muted}>{origin}. Rejected by {a.decided_by}: {a.reason}{a.released_at ? ' (released)' : ''}</p>
   return <p className="text-xs" style={muted}>{a.released_at ? `Released ${untilLabel(a.released_at)}.` : 'Withdrawn.'}</p>
 }

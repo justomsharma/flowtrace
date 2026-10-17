@@ -81,6 +81,16 @@ escalators:
 # --- Disposition (Stage C) -----------------------------------------------------------------
 # Case-level decision. Computed in code from the evidence ledger, never by the LLM.
 disposition:
+  # Weight each indicator by its measured strength (data/processed/signal_rates.json, built by
+  # python -m flowtrace.ml.signal_rates on Sep 1-6). Off = every indicator counts at its tool weight.
+  # A lift is used only with min_laundering labelled laundering payments behind it, and is shrunk toward 1
+  # by prior_laundering pseudo laundering payments at the base rate. It never switches off an escalator.
+  # Off by measurement (flowtrace.eval.variants on Sep 7-8, rule written before measuring): on, it escalated
+  # 3 more legitimate cases for the same recall bar. The case page still uses the measurement for its tags.
+  measured_weights:
+    enabled: false
+    min_laundering: 30
+    prior_laundering: 10
   # risk = w_ml * model score + w_red * red-flag strength + w_shape * shape confidence
   #        - w_legit * legitimacy strength (halved when any escalator fired), clipped to [0, 1]
   w_ml: 0.45
@@ -90,6 +100,9 @@ disposition:
   escalate_at: 0.55         # risk at or above -> ESCALATE (human review + draft STR)
   close_below: 0.25         # risk below, with legitimacy >= close_min_legit and no escalator -> CLOSE
   close_min_legit: 0.5
+  # The confidence score (distance from the nearest threshold, plus how much evidence was gathered) is not a
+  # calibrated probability, so it is only shown as High / Medium / Low, at these cut-offs.
+  confidence_labels: {high: 0.8, medium: 0.6}
   close_expiry_days: 90
 
 # --- Actions (hold planner + human approval) ------------------------------------------------
@@ -103,6 +116,17 @@ actions:
   min_hold_usd: 1000             # never propose a hold on less (same floor as the pass-through rule)
   propose_for: [ESCALATE]        # holds only after ESCALATE (reasonable grounds to suspect); REVIEW is mixed
                                  # evidence. Decided after seeing the Sep 9 results (it was [ESCALATE, REVIEW])
+  auto_hold:                     # a provisional hold, placed by the agent, that a person confirms or it is released
+    # It acts only when ALL hold: enabled here, APPROVER_TOKEN set on the API server, an investigation a person
+    # started (never a background prefetch or re-queue) recommends ESCALATE with a confidence score >=
+    # min_confidence (a score, not a probability),
+    # the planner found a hold, and no hold of the case was ever decided (approved, rejected, released) and no
+    # analyst gave the case a verdict. The hold is PROVISIONAL: released at the end of confirm_business_days
+    # unless a person confirms it. Filing an STR is never automatic. On by measurement (Sep 7-8, rule written
+    # before measuring): 11 of 11 cases it would hold were laundering, $0 frozen on legitimate cases.
+    enabled: true
+    min_confidence: 0.9
+    confirm_business_days: 1
   min_reason_chars: 5            # an approval or rejection needs a written reason
   expiry_check_seconds: 60       # how often the API releases holds whose time is up
 
@@ -123,4 +147,15 @@ crime_hypotheses:
   CYCLE: [embezzlement]
   STACK: [smuggling, drugs]
   BIPARTITE: [embezzlement, extortion]
-  PASS-THROUGH: [money mule (cyber fraud, kidnapping/ransom)]
+  PASS-THROUGH: ["money mule (cyber fraud or ransom)"]
+  RANDOM: []              # a chain with no regular shape points to no single crime on its own
+
+# Indicators with a well-supported link to a predicate crime, used with the shape above (escalated cases only).
+# Money returning to its sender is the cycle typology (as CYCLE above); money forwarded straight on is the
+# money-mule pattern (FATF 2022, "Money laundering from cyber-enabled fraud"). Splits, cash or crypto, many
+# sources and convergence are left out: they are common in normal accounts and point to no single crime.
+crime_by_indicator:
+  CYCLE: [embezzlement]
+  ROUND_TRIP: [embezzlement]
+  PASS_THROUGH: ["money mule (cyber fraud or ransom)"]
+  FAST_ONWARD_TRANSFER: ["money mule (cyber fraud or ransom)"]

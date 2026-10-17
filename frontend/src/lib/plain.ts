@@ -68,9 +68,9 @@ export const TRICKS: Record<string, TrickInfo> = {
 
 export const trickName = (t?: string) => (t && TRICKS[t]?.name) || t || 'Unclassified'
 
-/** Why a case is on the list, in plain words: its two strongest signals, e.g. "Model 92%, Collect 5%". */
+/** Why a case is on the list, in plain words: its two strongest signals, e.g. "Unusual payments, Collect". */
 export const caseReason = (signals: { signal: string; p: number }[]) =>
-  signals.slice(0, 2).map((s) => `${s.signal === 'model' ? 'Model' : trickName(s.signal)} ${pct(s.p)}`).join(', ')
+  signals.slice(0, 2).map((s) => (s.signal === 'model' ? 'Unusual payments' : trickName(s.signal))).join(', ')
 
 /** Percent with one decimal below 10% so small detector precisions don't all read as "0%",
  *  and never "100%": a model score is not certainty. */
@@ -118,6 +118,33 @@ export const STAGE_PLAIN: Record<string, string> = {
   graph: 'Adding payments to the money map',
   detect: 'Looking for suspicious shapes',
   cases: 'Grouping into cases',
+}
+
+/** A sentence cut to its first 12 words, without bracketed asides or evidence IDs ("(E1, E3)"). */
+export function shortText(text: string, words = 12): string {
+  const clean = text.replace(/\s*[([]\s*E\d+(?:\s*,\s*E\d+)*\s*[)\]]|\bE\d+\b/g, '').replace(/\s*\([^)]*\)/g, '').trim()
+  const w = clean.split(/\s+/)
+  return w.length <= words ? clean : `${w.slice(0, words).join(' ').replace(/[,;:]$/, '')}…`
+}
+
+/** "B1A2B3-C007" -> "7": the case's number in its upload. */
+export function caseNo(id: string): string {
+  const tail = id.slice(id.lastIndexOf('-') + 1)
+  const n = Number(tail.replace(/^\D+/, ''))
+  return Number.isFinite(n) && n > 0 ? String(n) : tail
+}
+
+/** An error a person can act on, instead of "…: 500 Internal Server Error". */
+export function friendlyError(e: unknown): string {
+  const s = e instanceof Error ? e.message : String(e)
+  if (/: 5\d\d\b/.test(s) || /Failed to fetch|NetworkError/i.test(s)) return 'This could not be done right now (the graph database may be offline). Try again in a moment.'
+  const m = s.match(/: \d{3} ([\s\S]*)$/)
+  if (!m) return s
+  try {
+    const j = JSON.parse(m[1])
+    if (j && typeof j.detail === 'string') return j.detail
+  } catch { /* not JSON */ }
+  return m[1]
 }
 
 export const shortAcct = (id: string) => {

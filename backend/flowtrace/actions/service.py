@@ -8,6 +8,9 @@
             first answer; any other second decision is a conflict (409).
   expire    an approved HOLD ends at the end of its Nth business day (UTC, Mon-Fri) and is released
             automatically, with its own audit entry.
+  auto-hold the agent may place a proposed HOLD PROVISIONALLY (actions.auto_hold, only from the API's act step).
+            A person confirms it (approve: it then runs its normal term) or rejects it (released). Unconfirmed, it
+            is released at the end of actions.auto_hold.confirm_business_days. Audited as "agent (auto-hold)".
   verdict   approving FILE_STR / ESCALATE / CLOSE writes the analyst's verdict on the Case node; case
             memory then prefers it over the agent's disposition.
 
@@ -28,6 +31,8 @@ PROPOSERS = ("agent", "mcp")
 ACTION_TYPES = ("HOLD", "RELEASE", "ESCALATE", "FILE_STR", "CLOSE")
 NEEDS_ACCOUNT = ("HOLD", "RELEASE")
 VERDICT = {"FILE_STR": "ESCALATE", "ESCALATE": "ESCALATE", "CLOSE": "CLOSE"}
+DECIDABLE = ("PROPOSED", "PROVISIONAL")  # PROVISIONAL: an auto-hold waiting for a person to confirm it
+AUTO_HOLD_ACTOR = "agent (auto-hold)"
 
 
 class ActionError(Exception):
@@ -102,9 +107,12 @@ def decide(action_id: str, approve: bool, reason: str, by: str = "analyst", key:
     a = get(action_id)
     if a is None:
         raise ActionError(404, "no such action")
-    if a["status"] != "PROPOSED":
-        return _already(a, key)
     now = now or now_ms()
+    if a["status"] == "PROVISIONAL" and a.get("provisional_until", now + 1) <= now:
+        expire_due(now)  # its time is up: it is released, not confirmed late
+        a = get(action_id)
+    if a["status"] not in DECIDABLE:
+        return _already(a, key)
     to = "APPROVED" if approve else "REJECTED"
     expires = add_business_days(now, a["expiry_days"]) if approve and a["type"] == "HOLD" else None
     # One query: the decision, its audit entry, the verdict, the release and withdrawn alternatives.
@@ -122,9 +130,36 @@ def _already(a: dict, key: str | None) -> dict:
     raise ActionError(409, f"already {a['status'].lower()} by {a.get('decided_by') or 'the system'}")
 
 
+def provisional_hold(action_id: str, reason: str, now: int | None = None) -> dict:
+    """The auto-hold policy places a proposed HOLD provisionally. Only the API's act step calls this, after
+    checking the policy (agent.registry.auto_hold); a person still confirms or rejects it. Refused (409) when the
+    case has an analyst verdict or a hold that already left PROPOSED (other than one placed with the same now),
+    checked inside the write."""
+    now = now or now_ms()
+    until = add_business_days(now, cfg()["actions"]["auto_hold"]["confirm_business_days"])
+    rows = rw(Q.PROVISIONAL_HOLD, {"id": action_id, "now": now, "until": until, "reason": reason,
+                                   "actor": AUTO_HOLD_ACTOR, "audit_id": _id("AU")}).rows
+    if rows:
+        return dict(rows[0]["action"])
+    a = get(action_id)
+    if a is None:
+        raise ActionError(404, "no such action")
+    if a["status"] != "PROPOSED":
+        raise ActionError(409, f"only a proposed hold can be auto-held; this one is {a['status'].lower()}")
+    raise ActionError(409, "a person already decided on this case's holds or the case itself: no auto-hold")
+
+
+def hold_history(case_id: str) -> dict:
+    """verdict: a person's verdict on the case; decided_holds: holds of the case that left PROPOSED."""
+    r = ro(Q.HOLD_HISTORY, {"case_id": case_id}).rows
+    return {"verdict": r[0]["verdict"] if r else None, "decided_holds": r[0]["decided_holds"] if r else 0}
+
+
 def expire_due(now: int | None = None) -> int:
-    """Release approved holds whose time is up. Safe to call from anywhere, any number of times."""
-    return rw(Q.EXPIRE_DUE, {"now": now or now_ms()}).rows[0]["n"]
+    """Release approved holds whose time is up, and auto-holds nobody confirmed in time. Safe to call from
+    anywhere, any number of times."""
+    now = now or now_ms()
+    return rw(Q.EXPIRE_DUE, {"now": now}).rows[0]["n"] + rw(Q.EXPIRE_PROVISIONAL, {"now": now}).rows[0]["n"]
 
 
 def retire_batch(case_prefix: str, reason: str, now: int | None = None) -> dict:

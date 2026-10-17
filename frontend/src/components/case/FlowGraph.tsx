@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Landmark, Lock, User, type LucideIcon } from 'lucide-react'
 import type { FlowEdge, FlowNode, Role } from '../../lib/api'
 import { fmtUtc } from '../../lib/api'
 import { edgeKey, layoutFlow } from '../../lib/flowLayout'
 import { fmtMoney } from '../../lib/money'
-import { shortAcct } from '../../lib/plain'
+import { fullId, useName } from '../../lib/names'
 
 const R = 26
 const ROLE: Record<Role, { fill: string; ink: string; Icon: LucideIcon; pillBg: string }> = {
@@ -12,15 +12,20 @@ const ROLE: Record<Role, { fill: string; ink: string; Icon: LucideIcon; pillBg: 
   Intermediary: { fill: 'var(--violet-tint)', ink: 'var(--s7)', Icon: Landmark, pillBg: 'var(--violet-tint)' },
   Destination: { fill: '#fdece4', ink: 'var(--s2)', Icon: User, pillBg: '#fdece4' },
 }
+/** Plain names for the roles: what the account did with the money. */
+export const ROLE_NAME: Record<Role, string> = { Sender: 'Sender', Intermediary: 'Middle', Destination: 'Receiver' }
+const STATUS_NAME = { flagged: 'Suspicious', trail: 'Followed by the investigation', normal: 'Normal' }
 const FLOW_COLOR = { flagged: 'var(--critical)', trail: 'var(--s1)', normal: '#9aa7b8', hold: 'var(--hold)' }
 const edgeColor = (e: FlowEdge) => (e.hold ? 'hold' : e.status) as keyof typeof FLOW_COLOR
 
-interface Tip { x: number; y: number; lines: string[] }
+interface Tip { x: number; y: number; below: boolean; lines: string[] }
 
 export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: FlowNode[]; edges: FlowEdge[]; currency: string; rate: number }) {
   const m = (v: number) => fmtMoney(v, currency, rate)
+  const name = useName()
   const L = useMemo(() => layoutFlow(nodes, edges, { colGap: 220, rowGap: 142, padX: 90, padY: 70 }), [nodes, edges])
   const [tip, setTip] = useState<Tip | null>(null)
+  const box = useRef<HTMLDivElement>(null)
   const max = Math.max(1, ...edges.map((e) => e.amount))
   const W = Math.max(L.width, 360)
   const H = L.height + 64  // room for the labels under the bottom row
@@ -45,25 +50,36 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
     const x1 = a.x + R, x2 = b.x - gapAt(e.dst), mx = (x1 + x2) / 2
     return `M ${x1} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${x2} ${b.y}`
   }
-  const span = (e: FlowEdge) => e.first_ts === e.last_ts ? fmtUtc(e.first_ts) : `${fmtUtc(e.first_ts)} to ${fmtUtc(e.last_ts, false)}`
   const edgeLines = (e: FlowEdge) => [
-    `${shortAcct(e.src)} → ${shortAcct(e.dst)}`,
-    `${m(e.amount)} in ${e.count} payment${e.count === 1 ? '' : 's'}`,
-    span(e),
-    e.hold ? 'Carried case money into a hold account' : e.status === 'flagged' ? 'Flagged' : e.status === 'trail' ? 'Followed by the investigation' : 'Normal',
+    `${name(e.src)} → ${name(e.dst)}`,
+    `${m(e.amount)} · ${e.count} payment${e.count === 1 ? '' : 's'} · ${fmtUtc(e.first_ts)}`,
+    e.hold ? 'Into an account with a hold' : STATUS_NAME[e.status],
   ]
   const nodeLines = (n: FlowNode) => [
-    `Account ${n.id}${n.entity_type ? ` (${n.entity_type})` : ''}`,
-    `${n.role}: received ${m(n.received)}, sent ${m(n.sent)} in this flow`,
-    n.in_case ? 'In the case' : 'Found by following the money',
-    ...(n.hold ? [n.hold === 'approved' ? 'Hold approved' : 'Hold proposed, waiting for a decision'] : []),
+    `${name(n.id)} · ${ROLE_NAME[n.role]}${n.entity_type ? ` · ${n.entity_type}` : ''}`,
+    fullId(n.id),
+    n.role === 'Sender' ? `Sent ${m(n.sent)}` : n.role === 'Destination' ? `Received ${m(n.received)}` : `Received ${m(n.received)} · Sent ${m(n.sent)}`,
+    ...(n.hold ? [HOLD_LINE[n.hold]] : n.in_case ? [] : ['Found by following the money']),
   ]
-  const show = (x: number, y: number, lines: string[]) => setTip({ x: (x / W) * 100, y: (y / H) * 100, lines })
+  // The tooltip follows the pointer and goes below it near the top edge, so it never covers what you point at.
+  const show = (ev: MouseEvent, lines: string[]) => {
+    const r = box.current?.getBoundingClientRect()
+    if (!r) return
+    const x = Math.min(Math.max(ev.clientX - r.left, 120), r.width - 120)
+    const y = ev.clientY - r.top
+    setTip({ x, y, below: y < 90, lines })
+  }
+  const showAt = (x: number, y: number, lines: string[]) => {
+    const r = box.current?.getBoundingClientRect()
+    if (!r) return
+    setTip({ x: (x / W) * r.width, y: (y / H) * r.height, below: (y / H) * r.height < 90, lines })
+  }
+  const hide = () => setTip(null)
 
   return (
-    <div className="relative mx-auto w-full" style={{ maxWidth: Math.min(W, (W * 720) / H) }} onMouseLeave={() => setTip(null)}>
+    <div ref={box} className="relative mx-auto w-full" style={{ maxWidth: Math.min(W, (W * 720) / H) }} onMouseLeave={hide}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto block" role="group"
-        aria-label={`Money flow between ${nodes.length} accounts: ${nodes.map((n) => `${shortAcct(n.id)} ${n.role}`).join(', ')}`}>
+        aria-label={`Money flow between ${nodes.length} accounts: ${nodes.map((n) => `${name(n.id)} ${ROLE_NAME[n.role]}`).join(', ')}`}>
         <defs>
           {Object.entries(FLOW_COLOR).map(([k, c]) => (
             <marker key={k} id={`arrow-${k}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
@@ -77,7 +93,8 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
           const d = path(e)
           const mid = { x: (pos(e.src).x + pos(e.dst).x) / 2, y: (pos(e.src).y + pos(e.dst).y) / 2 }
           return (
-            <g key={edgeKey(e.src, e.dst)} onMouseEnter={() => show(mid.x, mid.y, edgeLines(e))}>
+            <g key={edgeKey(e.src, e.dst)} onMouseMove={(ev) => show(ev, edgeLines(e))} onMouseLeave={hide}
+              onFocus={() => showAt(mid.x, mid.y, edgeLines(e))} onBlur={hide}>
               <path d={d} fill="none" stroke="transparent" strokeWidth={14} />
               <path d={d} fill="none" stroke={FLOW_COLOR[k]} strokeWidth={1.5 + 2.5 * Math.sqrt(e.amount / max)}
                 strokeDasharray={e.status === 'normal' && !e.hold ? '4 4' : undefined} markerEnd={`url(#arrow-${k})`} strokeLinecap="round" />
@@ -91,7 +108,8 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
           const label = nodeLines(n).join('. ')
           return (
             <g key={n.id} tabIndex={0} role="img" aria-label={label} className="outline-none focus-visible:[&>circle:first-child]:stroke-[var(--focus)]"
-              onMouseEnter={() => show(p.x, p.y - R, nodeLines(n))} onFocus={() => show(p.x, p.y - R, nodeLines(n))} onBlur={() => setTip(null)}>
+              onMouseMove={(ev) => show(ev, nodeLines(n))} onMouseLeave={hide}
+              onFocus={() => showAt(p.x, p.y - R, nodeLines(n))} onBlur={hide}>
               <circle cx={p.x} cy={p.y} r={R + 7} fill="none" stroke="transparent" strokeWidth={3} />
               {n.hold && (
                 <circle cx={p.x} cy={p.y} r={R + 5} fill="none" stroke="var(--hold)" strokeWidth={3}
@@ -105,7 +123,7 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
                   <Lock x={p.x + R - 8} y={p.y - R - 4} width={12} height={12} color="#fff" />
                 </g>
               )}
-              <text x={p.x} y={p.y + R + 18} textAnchor="middle" fontSize={14} fontWeight={600} fill="var(--ink)">{shortAcct(n.id)}</text>
+              <text x={p.x} y={p.y + R + 18} textAnchor="middle" fontSize={14} fontWeight={600} fill="var(--ink)">{name(n.id).replace('Account ', '')}</text>
               <text x={p.x} y={p.y + R + 35} textAnchor="middle" fontSize={13} fill="var(--ink-2)" className="tabular">{m(n.amount)}</text>
               <RolePill x={p.x} y={p.y + R + 44} role={n.role} hold={n.hold} />
             </g>
@@ -114,8 +132,8 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
       </svg>
 
       {tip && (
-        <div role="tooltip" className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-lg px-3 py-2 text-xs shadow-lg max-w-[280px]"
-          style={{ left: `${tip.x}%`, top: `calc(${tip.y}% - 8px)`, background: 'var(--ink)', color: '#fff' }}>
+        <div role="tooltip" className={`pointer-events-none absolute z-10 -translate-x-1/2 rounded-lg px-3 py-2 text-xs shadow-lg w-max max-w-[240px] ${tip.below ? '' : '-translate-y-full'}`}
+          style={{ left: tip.x, top: tip.below ? tip.y + 18 : tip.y - 12, background: 'var(--ink)', color: '#fff' }}>
           {tip.lines.map((l, i) => <div key={i} className={i === 0 ? 'font-semibold' : ''} style={{ opacity: i === 0 ? 1 : 0.85 }}>{l}</div>)}
         </div>
       )}
@@ -123,8 +141,11 @@ export default function FlowGraph({ nodes, edges, currency, rate }: { nodes: Flo
   )
 }
 
+const HOLD_LINE = { approved: 'Hold approved', provisional: 'Held provisionally (auto-hold), waiting for a person', proposed: 'Hold proposed' }
+const HOLD_PILL = { approved: 'held', provisional: 'held?', proposed: 'hold?' }
+
 function RolePill({ x, y, role, hold }: { x: number; y: number; role: Role; hold: FlowNode['hold'] }) {
-  const text = hold ? `${role} · ${hold === 'approved' ? 'held' : 'hold proposed'}` : role
+  const text = hold ? `${ROLE_NAME[role]} · ${HOLD_PILL[hold]}` : ROLE_NAME[role]
   const w = text.length * 6.6 + 16
   const r = ROLE[role]
   return (
@@ -136,23 +157,23 @@ function RolePill({ x, y, role, hold }: { x: number; y: number; role: Role; hold
 }
 
 export function FlowLegend() {
-  const roles: [Role, string][] = [['Sender', 'no money in'], ['Intermediary', 'in and out'], ['Destination', 'no money out']]
-  const lines: [keyof typeof FLOW_COLOR, string][] = [['flagged', 'Suspicious flow'], ['hold', 'Into a proposed hold'], ['trail', 'Money followed onward']]
+  const roles: [Role, string][] = [['Sender', ''], ['Intermediary', ''], ['Destination', '']]
+  const lines: [keyof typeof FLOW_COLOR, string][] = [['flagged', 'Suspicious'], ['trail', 'Followed'], ['normal', 'Normal'], ['hold', 'Into a hold']]
   return (
     <ul className="flex flex-wrap gap-x-5 gap-y-2 text-xs" style={{ color: 'var(--ink-2)' }} aria-label="Legend">
       {roles.map(([r, note]) => (
         <li key={r} className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full" style={{ background: ROLE[r].ink }} aria-hidden />{r} <span style={{ color: 'var(--muted)' }}>({note})</span>
+          <span className="w-3 h-3 rounded-full" style={{ background: ROLE[r].ink }} aria-hidden />{ROLE_NAME[r]}{note}
         </li>
       ))}
       {lines.map(([k, l]) => (
         <li key={k} className="flex items-center gap-1.5">
-          <svg width="22" height="8" aria-hidden><line x1="1" y1="4" x2="21" y2="4" stroke={FLOW_COLOR[k]} strokeWidth="2.5" strokeLinecap="round" /></svg>{l}
+          <svg width="22" height="8" aria-hidden><line x1="1" y1="4" x2="21" y2="4" stroke={FLOW_COLOR[k]} strokeWidth="2.5" strokeLinecap="round" strokeDasharray={k === 'normal' ? '4 4' : undefined} /></svg>{l}
         </li>
       ))}
       <li className="flex items-center gap-1.5">
         <svg width="16" height="16" aria-hidden><circle cx="8" cy="8" r="6" fill="none" stroke="var(--hold)" strokeWidth="2.5" strokeDasharray="3 2.5" /></svg>
-        Hold proposed (solid when approved)
+        Hold
       </li>
     </ul>
   )

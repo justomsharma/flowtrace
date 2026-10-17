@@ -1,3 +1,4 @@
+import { caseNo } from '../lib/plain'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Download, FileText } from 'lucide-react'
@@ -5,7 +6,6 @@ import { ActionBadge } from '../components/badges'
 import { useBatch } from '../lib/batch'
 import { renderMarkdown, type Block, type Seg } from '../lib/markdown'
 
-const caseNo = (id: string) => id.slice(id.lastIndexOf('-') + 1)
 
 /** STR drafts: one per investigated case, written from the investigation, for a person to review before filing. */
 export default function Reports() {
@@ -28,7 +28,7 @@ export default function Reports() {
   }, [openId])
 
   return (
-    <div className="px-6 py-5 flex flex-col gap-5 max-w-[1240px]">
+    <div className="px-6 py-5 flex flex-col gap-5">
       <header>
         <h1 className="text-2xl font-semibold">Reports</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--ink-2)' }}>
@@ -38,7 +38,7 @@ export default function Reports() {
 
       {done.length === 0 ? (
         <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
-          No case has been investigated yet. <Link to={{ pathname: '/', search: query(null) }} className="font-medium underline" style={{ color: 'var(--brand)' }}>Open Today's work</Link>.
+          No case has been investigated yet. <Link to={{ pathname: '/today', search: query(null) }} className="font-medium underline" style={{ color: 'var(--brand)' }}>Open Today's work</Link>.
         </p>
       ) : (
         <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)] items-start">
@@ -49,7 +49,7 @@ export default function Reports() {
                   <Link to={{ pathname: '/reports', search: query(c.case_id) }} aria-current={c.case_id === open?.case_id ? 'page' : undefined}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm tabular"
                     style={{ background: c.case_id === open?.case_id ? 'var(--brand-tint)' : 'transparent', fontWeight: c.case_id === open?.case_id ? 600 : 400 }}>
-                    <FileText size={15} style={{ color: 'var(--muted)' }} aria-hidden />{caseNo(c.case_id)}
+                    <FileText size={15} style={{ color: 'var(--muted)' }} aria-hidden />Case {caseNo(c.case_id)}
                     <span className="ml-auto">{c.result && <ActionBadge action={c.result.action} />}</span>
                   </Link>
                 </li>
@@ -89,7 +89,7 @@ function Draft({ blocks }: { blocks: Block[] }) {
     if (b.type === 'h1') out.push(<h2 key={i} className="text-xl font-semibold">{<Text segs={b.text} />}</h2>)
     else if (b.type === 'h2') out.push(<h3 key={i} className="text-base font-semibold mt-3">{<Text segs={b.text} />}</h3>)
     else if (b.type === 'h3') out.push(<h4 key={i} className="text-sm font-semibold mt-2">{<Text segs={b.text} />}</h4>)
-    else if (b.type === 'p') out.push(<p key={i} className="text-sm leading-relaxed max-w-[75ch]" style={{ color: 'var(--ink-2)' }}><Text segs={b.text} /></p>)
+    else if (b.type === 'p') out.push(<p key={i} className="text-sm leading-relaxed" style={{ color: 'var(--ink-2)' }}><Text segs={b.text} /></p>)
     else if (b.type === 'table') out.push(
       <div key={i} className="overflow-x-auto">
         <table className="text-sm tabular whitespace-nowrap">

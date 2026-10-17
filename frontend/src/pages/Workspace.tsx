@@ -1,21 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Loader2, Upload } from 'lucide-react'
 import LiveGraph3D, { type MapLink } from '../components/LiveGraph3D'
 import { ActionBadge } from '../components/badges'
-import HoldPanel from '../components/HoldPanel'
+import CaseGlance from '../components/CaseGlance'
 import {
   fmtInt, fmtUsd, getJSON, postJSON, streamJob, type Action, type BatchSummary, type CaseBrief, type CaseResult,
   type HoldPlan, type JobBrief, type JobEvent,
 } from '../lib/api'
-import { STAGE_PLAIN, STEP_PLAIN, caseReason, pct, shortAcct, trickName } from '../lib/plain'
+import { STAGE_PLAIN, caseReason, pct, shortAcct, trickName } from '../lib/plain'
 
 interface GraphLink { tx_id: string; source: string; target: string; amount: number; p: number; case: string | null }
-interface LiveStep { step: number; tool: string; reason: string; done: boolean; found: string[] }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-const panel = { background: 'color-mix(in srgb, var(--surface) 88%, transparent)', border: '1px solid var(--border)', backdropFilter: 'blur(6px)' }
+const panel = { background: 'var(--surface-2)', border: '1px solid var(--border)', boxShadow: '0 1px 3px rgba(15, 29, 51, 0.08)' }
 
 /** Today's work = within the team's daily capacity. Batches saved before tiers existed fall back to rank. */
 const inToday = (c: CaseBrief, i: number, capacity?: number) => (c.tier ? c.tier === 'today' : i < (capacity ?? 15))
@@ -37,6 +36,8 @@ function caseLine(c: CaseBrief): string {
 
 export default function Workspace() {
   const [params, setParams] = useSearchParams()
+  const navigate = useNavigate()
+  const openCase = (batchId: string, caseId: string) => navigate({ pathname: '/case', search: `?batch=${batchId}&case=${caseId}` })
   const batchId = params.get('batch')
   const caseId = params.get('case')
 
@@ -48,14 +49,10 @@ export default function Workspace() {
   const [base, setBase] = useState<GraphLink[]>([])
   const [traced, setTraced] = useState<MapLink[]>([])
   const [pulse, setPulse] = useState<Set<string>>(new Set())
-  const [steps, setSteps] = useState<LiveStep[]>([])
   const [result, setResult] = useState<CaseResult | null>(null)
   const [investigating, setInvestigating] = useState(false)
-  const [jobStatus, setJobStatus] = useState<JobBrief['status'] | null>(null)
   // The hold plan: accounts proposed for a hold (or held) are marked on the map, with the trail payments into them.
   const [holdPlan, setHoldPlan] = useState<{ plan: HoldPlan | null; actions: Action[] }>({ plan: null, actions: [] })
-  const [planVersion, setPlanVersion] = useState(0)
-  const onPlan = useCallback((plan: HoldPlan | null, actions: Action[]) => setHoldPlan({ plan, actions }), [])
   const stopStream = useRef<(() => void) | null>(null)
   const following = useRef<string | null>(null)  // the job the panel is streaming, so it is never followed twice
   const caseRef = useRef(caseId)
@@ -97,20 +94,20 @@ export default function Workspace() {
   const today = useMemo(() => batch?.cases.filter((c, i) => inToday(c, i, batch.capacity)) ?? [], [batch])
   const lower = useMemo(() => batch?.cases.filter((c, i) => !inToday(c, i, batch.capacity)) ?? [], [batch])
   const [showLower, setShowLower] = useState(false)
-  const marked = useMemo(() => holdPlan.actions.filter((a) => a.type === 'HOLD' && a.account && (a.status === 'PROPOSED' || a.status === 'APPROVED'))
+  const marked = useMemo(() => holdPlan.actions.filter((a) => a.type === 'HOLD' && a.account && (a.status === 'PROPOSED' || a.status === 'PROVISIONAL' || a.status === 'APPROVED'))
     .map((a) => a.account as string), [holdPlan])
 
   // Opening a case shows its finished result, or joins its background investigation (replayed, then live).
   useEffect(() => {
     let stale = false
     stopStream.current?.(); stopStream.current = null; following.current = null
-    setTraced([]); setSteps([]); setResult(null); setPulse(new Set()); setInvestigating(false); setJobStatus(null); setError(null)
+    setTraced([]); setResult(null); setPulse(new Set()); setInvestigating(false); setError(null)
     setHoldPlan({ plan: null, actions: [] })
     if (caseId) {
       getJSON<{ result: CaseResult | null; job: JobBrief | null }>(`/api/cases/${caseId}`).then((r) => {
         if (stale) return
         if (r.result) setResult(r.result)
-        else if (r.job) { setJobStatus(r.job.status); follow(r.job.id) }
+        else if (r.job) follow(r.job.id)
       }).catch(() => undefined)
     }
     return () => { stale = true; stopStream.current?.(); stopStream.current = null; following.current = null }
@@ -119,14 +116,14 @@ export default function Workspace() {
   // A case opened before its background job existed (or whose run was replaced): join the job once the list shows it.
   const currentJob = current?.job?.id
   useEffect(() => {
-    if (current?.job && !result && !investigating) { setJobStatus(current.job.status); follow(current.job.id) }
+    if (current?.job && !result && !investigating) follow(current.job.id)
   }, [currentJob])
 
   async function upload(opts: { sample?: string; file?: File }) {
     setError(null); setStages({}); setBusy(true)
     setLive([]); setLiveKind({}); setBase([]); setBatch(null); setCaption('Reading the file…')
     queue.current = Promise.resolve()
-    setParams({}, { replace: true })
+    setParams({ fresh: '1' }, { replace: true })  // no batch selected while this one runs: the sidebar must not list the previous upload
     const fd = new FormData()
     if (opts.sample) fd.append('sample', opts.sample)
     if (opts.file) fd.append('file', opts.file)
@@ -185,15 +182,6 @@ export default function Workspace() {
     } catch (err) { setError(String(err)); setBusy(false) }
   }
 
-  async function investigate() {
-    const id = caseId
-    if (!id) return
-    try {
-      const { job_id } = await postJSON<{ job_id: string }>(`/api/cases/${id}/investigate?policy=llm`)
-      if (caseRef.current === id) follow(job_id)  // the analyst may have opened another case meanwhile
-    } catch (err) { setError(String(err)) }
-  }
-
   const refreshBatch = () => {
     const id = batchId
     if (id) getJSON<BatchSummary>(`/api/batches/${id}`).then((b) => { if (b.batch_id === id) setBatch(b) }).catch(() => undefined)
@@ -204,14 +192,8 @@ export default function Workspace() {
     if (following.current === jobId) return  // already streaming it (the case-open fetch and the list can both see it)
     stopStream.current?.()
     following.current = jobId
-    setInvestigating(true); setSteps([]); setTraced([]); setResult(null); setError(null)
+    setInvestigating(true); setTraced([]); setResult(null); setError(null)
     stopStream.current = streamJob(jobId, (e: JobEvent) => {
-        if (e.type === 'step_start') {
-          setJobStatus('running')
-          setSteps((s) => [...s, { step: e.step, tool: e.tool, reason: e.reason, done: false, found: [] }])
-        }
-        if (e.type === 'step_done') setSteps((s) => s.map((x) => x.step === e.step
-          ? { ...x, done: true, found: (e.evidence ?? []).filter((v: { kind: string }) => v.kind !== 'context').map((v: { claim: string }) => v.claim) } : x))
         if (e.type === 'trace_wave' || e.type === 'graph') {
           const add: MapLink[] = (e.edges ?? []).map((x: { tx_id: string; src: string; dst: string; amount: number }) => ({
             tx_id: x.tx_id, source: x.src, target: x.dst, amount: x.amount, kind: 'traced' as const }))
@@ -228,7 +210,7 @@ export default function Workspace() {
             ? 'The server stopped, so this run was stopped. It is investigated again when the server restarts.'
             : 'This file was uploaded again, so this run was stopped.')
         }
-      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch(); setPlanVersion((v) => v + 1) })
+      }, () => { setInvestigating(false); stopStream.current = null; following.current = null; refreshBatch() })
   }
 
   // Map colours: case payments orange; the open case highlighted; traced money blue; red where evidence points.
@@ -254,13 +236,9 @@ export default function Workspace() {
   }, [base, traced, caseId, concern, live, liveKind, holdPlan, marked])
   const focus = useMemo(() => [...(current?.accounts ?? []), ...marked.filter((a) => !current?.accounts.includes(a))], [current, marked])
 
-  const d = result?.disposition
-  const rep = result?.report
-  const support = result?.evidence.filter((e) => e.kind === 'support') ?? []
-  const counter = result?.evidence.filter((e) => e.kind === 'counter') ?? []
 
   return (
-    <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 24px)', border: '1px solid var(--border)' }}>
+    <div className="relative overflow-hidden rounded-xl" style={{ height: 'calc(100vh - 24px)', border: '1px solid var(--border)', background: 'var(--surface)' }}>
       <LiveGraph3D links={links} focus={focus} pulse={pulse} marked={marked} />
 
       {/* Empty state: just the upload */}
@@ -291,15 +269,20 @@ export default function Workspace() {
 
       {/* Top strip */}
       {(batch || busy) && (
-        <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl px-5 py-3" style={panel}>
+        <div className="absolute top-3 left-3 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl px-5 py-3 md:max-w-[calc(100%-416px)]" style={panel}>
           {batch ? (
             <>
               <Funnel steps={[
-                [batch.rows, 'payments'],
-                [batch.flagged_tx, 'flagged'],
-                [batch.cases.length, batch.cases.length === 1 ? 'case' : 'cases'],
-                [today.length, 'for today'],
+                [batch.rows, 'payments checked'],
+                [batch.flagged_tx, `flagged (${batch.rows ? Math.round((100 * batch.flagged_tx) / batch.rows) : 0}%)`],
+                [batch.cases.length, batch.cases.length === 1 ? 'case for analysts' : 'cases for analysts'],
               ]} />
+              <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--good)' }}>
+                <CheckCircle2 size={14} aria-hidden />{fmtInt(batch.rows - batch.flagged_tx)} passed as normal
+              </span>
+              {today.length < batch.cases.length && (
+                <span className="text-sm tabular" style={{ color: 'var(--ink-2)' }}>{today.length} in today's queue (capacity)</span>
+              )}
               {batch.prefetch && batch.prefetch.total > 0 && (
                 <span className="flex items-center gap-1.5 text-sm tabular" style={{ color: 'var(--ink-2)' }} aria-live="polite">
                   {batch.prefetch.done + batch.prefetch.failed < batch.prefetch.total
@@ -309,15 +292,14 @@ export default function Workspace() {
                   {batch.prefetch.failed > 0 && <span style={{ color: 'var(--critical)' }}>· {batch.prefetch.failed} failed</span>}
                 </span>
               )}
+              <button onClick={() => navigate('/?fresh=1')} className="text-xs underline underline-offset-2" style={{ color: 'var(--ink-2)' }}
+                title="Clear the screen and start with a new upload. Past uploads stay saved in Today's work.">
+                Start fresh
+              </button>
               <label className="text-xs cursor-pointer underline underline-offset-2" style={{ color: 'var(--ink-2)' }}>
                 New file
                 <input type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload({ file: f }) }} />
               </label>
-              {batch.curated && (
-                <p className="basis-full text-xs" style={{ color: 'var(--muted)' }}>
-                  Curated demo sample: picked around known schemes, so it holds about 29 times more laundering than a real day.
-                </p>
-              )}
             </>
           ) : (
             <span className="text-sm">Checking payments…</span>
@@ -327,7 +309,7 @@ export default function Workspace() {
 
       {/* Right panel */}
       {(batch || busy) && (
-        <aside className="absolute top-3 right-3 bottom-3 w-[380px] max-w-[calc(100%-24px)] rounded-xl flex flex-col overflow-hidden" style={panel}>
+        <aside className={`absolute top-3 right-3 w-[380px] max-w-[calc(100%-24px)] rounded-xl flex flex-col overflow-hidden ${busy || current ? 'max-h-[calc(100%-24px)]' : 'bottom-3'}`} style={panel}>
           {busy && (
             <ol className="p-4 flex flex-col gap-2.5">
               {Object.keys(STAGE_PLAIN).map((k) => (
@@ -345,6 +327,9 @@ export default function Workspace() {
             <div className="flex-1 overflow-y-auto pb-2">
               <div className="px-4 pt-4 pb-1">
                 <h2 className="text-sm font-semibold">Today's work</h2>
+                <p className="text-xs mt-1 flex items-center gap-1.5 tabular" style={{ color: 'var(--good)' }}>
+                  <CheckCircle2 size={13} aria-hidden />{fmtInt(batch.rows - batch.flagged_tx)} of {fmtInt(batch.rows)} payments passed as normal: no action needed
+                </p>
                 <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
                   {batch.cases.length === 0
                     ? 'No payment in this file reached the review bar.'
@@ -352,7 +337,7 @@ export default function Workspace() {
                 </p>
               </div>
               <ul className="px-2">
-                {today.map((c, i) => <CaseRow key={c.case_id} c={c} rank={i + 1} onOpen={() => setParams({ batch: batch.batch_id, case: c.case_id })} />)}
+                {today.map((c, i) => <CaseRow key={c.case_id} c={c} rank={i + 1} onOpen={() => openCase(batch.batch_id, c.case_id)} />)}
               </ul>
               {lower.length > 0 && (
                 <>
@@ -364,7 +349,7 @@ export default function Workspace() {
                   {showLower && (
                     <ul className="px-2">
                       {lower.map((c, i) => <CaseRow key={c.case_id} c={c} rank={today.length + i + 1} quiet
-                        onOpen={() => setParams({ batch: batch.batch_id, case: c.case_id })} />)}
+                        onOpen={() => openCase(batch.batch_id, c.case_id)} />)}
                     </ul>
                   )}
                 </>
@@ -373,7 +358,7 @@ export default function Workspace() {
           )}
 
           {current && (
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+            <div className="p-4 flex flex-col gap-3">
               <button onClick={() => setParams({ batch: batchId! })} className="flex items-center gap-1 text-xs self-start" style={{ color: 'var(--ink-2)' }}>
                 <ArrowLeft size={14} /> All cases
               </button>
@@ -381,65 +366,12 @@ export default function Workspace() {
                 <div className="text-base font-semibold">{caseLine(current)}</div>
                 <div className="text-xs" style={{ color: 'var(--muted)' }}>Looks like: {trickName(current.shape.typology)}</div>
               </div>
-
-              {!result && !investigating && current.failed && (
-                <p className="text-xs" style={{ color: 'var(--critical)' }}>The background investigation failed. Try again:</p>
-              )}
-              {!result && !investigating && (
-                <button onClick={investigate} className="px-4 py-2.5 rounded-lg text-sm font-medium" style={{ background: 'var(--s1)', color: '#fff' }}>
-                  Investigate this case
-                </button>
-              )}
-
-              {investigating && (
-                <ol className="flex flex-col gap-3">
-                  {steps.length === 0 && (
-                    <li className="text-sm flex items-center gap-2" style={{ color: 'var(--ink-2)' }}>
-                      <Loader2 size={14} className="animate-spin" />
-                      {jobStatus === 'queued' ? 'Queued: the investigation starts in a moment' : 'Starting the investigation…'}
-                    </li>
-                  )}
-                  {steps.map((s) => (
-                    <li key={s.step} className="text-sm">
-                      <div className="flex items-center gap-2">
-                        {s.done ? <CheckCircle2 size={14} style={{ color: 'var(--good)' }} /> : <Loader2 size={14} className="animate-spin" style={{ color: 'var(--s1)' }} />}
-                        <span className="font-medium">{STEP_PLAIN[s.tool]?.label ?? s.tool}</span>
-                      </div>
-                      {s.found.map((f, i) => <p key={i} className="text-xs mt-1 ml-6" style={{ color: 'var(--ink-2)' }}>{f}</p>)}
-                    </li>
-                  ))}
-                  {steps.length > 0 && steps.every((s) => s.done) && (
-                    <li className="text-sm flex items-center gap-2" style={{ color: 'var(--ink-2)' }}>
-                      <Loader2 size={14} className="animate-spin" /> Writing the report…
-                    </li>
-                  )}
-                  {error && <li className="text-sm" style={{ color: 'var(--critical)' }}>{error}</li>}
-                </ol>
-              )}
-
-              {result && d && rep && (
-                <>
-                  <div className="rounded-lg p-3 flex flex-col gap-2" style={{ border: '1px solid var(--border)' }}>
-                    <ActionBadge action={d.action} large />
-                    <p className="text-sm leading-relaxed">{rep.executive_summary.text}</p>
-                  </div>
-                  <HoldPanel key={result.case_id} caseId={result.case_id} result={result} refreshKey={planVersion} onPlan={onPlan} />
-                  {support.length > 0 && (
-                    <Reasons title="Why it is suspicious" color="var(--critical)" items={support.map((e) => e.claim)} />
-                  )}
-                  {counter.length > 0 && (
-                    <Reasons title="Why it may be normal" color="var(--good)" items={counter.map((e) => e.claim)} />
-                  )}
-                  {rep.next_steps.length > 0 && <Reasons title="What to do next" color="var(--s1)" items={rep.next_steps} />}
-                  {rep.str_narrative && (
-                    <details className="text-sm">
-                      <summary className="cursor-pointer font-medium">Draft report for FIU-IND (STR)</summary>
-                      <p className="mt-2 text-xs leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--ink-2)' }}>{rep.str_narrative}</p>
-                    </details>
-                  )}
-                  <button onClick={investigate} className="text-xs self-start underline underline-offset-2" style={{ color: 'var(--muted)' }}>Run again</button>
-                </>
-              )}
+              {current.result && <span className="self-start"><ActionBadge action={current.result.action} large /></span>}
+              {current.result && <CaseGlance caseId={current.case_id} version={current.result.action} />}
+              <button onClick={() => openCase(batch!.batch_id, current.case_id)} className="px-4 py-2.5 rounded-lg text-sm font-medium"
+                style={{ background: 'var(--s1)', color: '#fff' }}>
+                Open the case report
+              </button>
             </div>
           )}
         </aside>
@@ -466,15 +398,15 @@ function Funnel({ steps }: { steps: [number, string][] }) {
 function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: number; quiet?: boolean; onOpen: () => void }) {
   return (
     <li>
-      <button onClick={onOpen} className="w-full text-left px-2 py-2.5 rounded-lg flex items-center gap-3 hover:brightness-125"
+      <button onClick={onOpen} className="w-full text-left px-2 py-2.5 rounded-lg flex items-center gap-3 hover:bg-[var(--surface)]"
         style={{ borderBottom: '1px solid var(--border)', opacity: quiet ? 0.75 : 1 }}>
         <span className="text-xs tabular w-6 self-stretch flex items-center pl-1.5"
           style={{ color: 'var(--muted)', borderLeft: quiet ? '2px solid transparent' : '2px solid var(--s2)' }}>{rank}</span>
         <span className="flex-1 min-w-0">
-          <span className="block text-sm truncate">{caseLine(c)}</span>
+          <span className="block text-sm leading-snug">{caseLine(c)}</span>
           <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{caseReason(c.signals ?? [])}</span>
         </span>
-        {c.result ? <ActionBadge action={c.result.action} />
+        {c.result ? <span className="shrink-0"><ActionBadge action={c.result.action} /></span>
           : c.failed ? <span className="text-xs" style={{ color: 'var(--critical)' }}>Failed</span>
           : c.job ? (
             <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ink-2)' }}>
@@ -487,18 +419,5 @@ function CaseRow({ c, rank, quiet = false, onOpen }: { c: CaseBrief; rank: numbe
               style={{ color: quiet ? 'var(--ink-2)' : 'var(--ink)' }}>{pct(c.case_score ?? c.ml_score)}</span>}
       </button>
     </li>
-  )
-}
-
-function Reasons({ title, color, items }: { title: string; color: string; items: string[] }) {
-  return (
-    <div>
-      <div className="flex items-center gap-2 text-sm font-semibold mb-1.5">
-        <span className="w-2 h-2 rounded-full" style={{ background: color }} aria-hidden />{title}
-      </div>
-      <ul className="flex flex-col gap-1.5">
-        {items.map((t, i) => <li key={i} className="text-sm" style={{ color: 'var(--ink-2)' }}>{t}</li>)}
-      </ul>
-    </div>
   )
 }

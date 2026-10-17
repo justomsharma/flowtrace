@@ -22,6 +22,19 @@ export function timeLeft(until: number, now: number): string {
   return `${d > 0 ? `${d}d ` : ''}${clock} left`
 }
 
+/** End (last millisecond, UTC) of the nth business day after the day of ts, as the server counts a hold's term
+ *  (Mon-Fri, bank holidays not counted). */
+export function businessEnd(ts: number, n: number): number {
+  const d = new Date(ts)
+  let day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+  for (let left = n; left > 0;) {
+    day += 86_400_000
+    const w = new Date(day).getUTCDay()
+    if (w !== 0 && w !== 6) left -= 1
+  }
+  return day + 86_400_000 - 1
+}
+
 /** "Fri 23 Oct, 05:29 GMT+5:30": a real-world time (hold ends, decisions) in the viewer's time zone. */
 export const untilLabel = (ms: number) =>
   new Date(ms).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })

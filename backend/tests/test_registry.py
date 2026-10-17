@@ -150,3 +150,55 @@ def test_act_plans_once(runs, proposals, monkeypatch):
     monkeypatch.setattr(P, "plan_holds", lambda *a, **k: calls.append(1) or real(*a, **k))
     registry.act(CASE["case_id"])
     assert len(calls) == 1
+
+
+# --- auto-hold ---------------------------------------------------------------------------------------
+
+@pytest.fixture
+def auto(runs, proposals, monkeypatch):
+    """Auto-hold switched on, approvals configured, a confident ESCALATE, and provisional holds recorded."""
+    rules = {**registry.cfg(), "actions": {**registry.cfg()["actions"],
+                                           "auto_hold": {"enabled": True, "min_confidence": 0.9, "confirm_business_days": 1}}}
+    monkeypatch.setattr(registry, "cfg", lambda: rules)
+    res = runs / "results" / f"{CASE['case_id']}.json"
+    res.write_text(json.dumps({**result("ESCALATE"), "case_id": CASE["case_id"], "report": {},
+                               "disposition": {"action": "ESCALATE", "confidence": 0.93}}))
+    held, history = [], {"verdict": None, "decided_holds": 0}
+    monkeypatch.setattr(service, "provisional_hold", lambda aid, reason, now=None: held.append((aid, reason)) or {})
+    monkeypatch.setattr(service, "hold_history", lambda case_id: history)
+    return rules, held, history, res
+
+
+def test_auto_hold_makes_the_proposed_holds_provisional(auto):
+    rules, held, _, _ = auto
+    out = registry.act(CASE["case_id"], auto=True, approvals_on=True)
+    assert [h[0] for h in held] == out["auto_held"] == ["A0", "A1"]          # the two holds, never FILE_STR
+    assert "not a probability" in held[0][1] and "1 business day" in held[0][1]
+
+
+@pytest.mark.parametrize("why", ["switched off", "no approver token", "manual re-plan", "below the bar",
+                                 "a person decided a hold", "analyst verdict"])
+def test_auto_hold_never_fires_without_every_condition(auto, why):
+    rules, held, history, res = auto
+    kw = {"auto": True, "approvals_on": True}
+    if why == "switched off":
+        rules["actions"]["auto_hold"]["enabled"] = False
+    elif why == "no approver token":
+        kw["approvals_on"] = False
+    elif why == "manual re-plan":
+        kw = {}
+    elif why == "below the bar":
+        res.write_text(json.dumps({**result("ESCALATE"), "case_id": CASE["case_id"], "report": {},
+                                   "disposition": {"action": "ESCALATE", "confidence": 0.89}}))
+    elif why == "a person decided a hold":
+        history["decided_holds"] = 1       # released, rejected or expired before: never held again automatically
+    else:
+        history["verdict"] = "CLOSE"
+    assert registry.act(CASE["case_id"], **kw)["auto_held"] == [] and held == []
+
+
+def test_release_of_a_provisional_hold_is_allowed(runs, proposals):
+    _, open_ = proposals
+    open_.append({"type": "HOLD", "status": "PROVISIONAL", "account": "M1"})
+    assert registry.call("propose_action", {"case_id": CASE["case_id"], "type": "RELEASE", "account": "M1",
+                                            "reason": "Customer explained it"})["created"]

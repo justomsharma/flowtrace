@@ -33,10 +33,13 @@ from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
 from flowtrace.graph import queries as Q
 from flowtrace.graph.client import rw
+from flowtrace.ml import signal_rates
 from flowtrace.settings import ROOT, cfg, settings
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if signal_rates.enabled(cfg()):
+        signal_rates.rates()  # measured weights on without their file: refuse to start, never score silently without
     if should_requeue():
         threading.Thread(target=requeue_unfinished, daemon=True).start()
     else:
@@ -143,7 +146,15 @@ def health() -> dict:
     except Exception:
         pass
     from flowtrace.agent.llm import available, model_name
-    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name()}
+    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name(), "auto_hold": auto_hold_policy()}
+
+
+def auto_hold_policy() -> dict:
+    """Whether the agent may hold money provisionally on this server (actions.auto_hold on AND an APPROVER_TOKEN,
+    so a person can confirm or release it), and when. The UI states it next to every "nothing is frozen" line."""
+    r = cfg()["actions"].get("auto_hold") or {}
+    return {"active": bool(r.get("enabled")) and approver_token() is not None,
+            "min_confidence": r.get("min_confidence"), "confirm_business_days": r.get("confirm_business_days")}
 
 
 @app.get("/api/overview")
@@ -240,12 +251,14 @@ def _investigation(case_id: str, policy: str):
     return run
 
 
-def _store_result(case_id: str, result: dict) -> None:
+def _store_result(case_id: str, result: dict, started_by_person: bool = False) -> None:
+    """Accept a finished investigation, then act. Only an investigation a person started (POST .../investigate)
+    may auto-hold; background runs (prefetch after an upload, re-queue after a restart) only propose."""
     save_case_memory(result, cfg())
     RESULTS[case_id] = result
     _persist("results", case_id, result)
     try:  # the agent acts: plan the holds and propose them for a person to decide
-        registry.act(case_id)
+        registry.act(case_id, auto=started_by_person, approvals_on=approver_token() is not None)
     except Exception as e:
         log.warning("could not plan holds for %s: %s", case_id, e)
 
@@ -328,7 +341,7 @@ def investigate_case(case_id: str, policy: Literal["llm", "heuristic", "fixed"] 
         if case_id not in CASES:
             raise HTTPException(404, "no such case")
         # Joins the case's queued or running investigation if there is one; otherwise starts now.
-        job = RUNNER.start(case_id, _investigation(case_id, policy), partial(_store_result, case_id))
+        job = RUNNER.start(case_id, _investigation(case_id, policy), partial(_store_result, case_id, started_by_person=True))
     return {"job_id": job.id}
 
 
@@ -357,9 +370,10 @@ def case_overview(case_id: str) -> dict:
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     c = CASES[case_id]
-    return case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
-                                    _job_brief(case_id), _failed(case_id), cfg(),
-                                    uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at"))
+    return {**case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
+                                       _job_brief(case_id), _failed(case_id), cfg(),
+                                       uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at")),
+            "auto_hold": auto_hold_policy()}
 
 
 @app.get("/api/cases/{case_id}/report.md")
@@ -414,11 +428,17 @@ def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
 
 @app.get("/api/cases/{case_id}/plan")
 def get_plan(case_id: str) -> dict:
-    """The saved plan, the case's current actions, and what the holds still open (proposed or approved) freeze,
-    plus the money on the case's routes they would also stop (an assumption). Recounted after every decision."""
+    """The saved plan, the case's current actions, and the effect of its holds: held_effect for the holds in
+    place (approved or provisional), open_effect for those plus the proposed ones (what approving them all would
+    freeze), each with the money on the case's routes they would also stop (an assumption). Recounted after
+    every decision."""
     plan, actions = store.load_plan(case_id), service.list_actions(case_id=case_id)
-    held = [a["account"] for a in actions if a["type"] == "HOLD" and a["status"] in ("PROPOSED", "APPROVED")]
-    return {"plan": plan, "actions": actions, "open_effect": planner.effect(plan, held) if plan else None}
+    holds = [a for a in actions if a["type"] == "HOLD"]
+    held = [a["account"] for a in holds if a["status"] in ("APPROVED", "PROVISIONAL")]
+    open_ = held + [a["account"] for a in holds if a["status"] == "PROPOSED"]
+    return {"plan": plan, "actions": actions, "auto_hold": auto_hold_policy(),
+            "held_effect": planner.effect(plan, held) if plan else None,
+            "open_effect": planner.effect(plan, open_) if plan else None}
 
 
 @app.get("/api/actions")

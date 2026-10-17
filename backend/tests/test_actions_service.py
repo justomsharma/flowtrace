@@ -295,3 +295,111 @@ def test_case_memory_says_when_an_analyst_confirmed_it(monkeypatch):
     case_memory(ctx, AccountArgs(account="X"))
     claim = next(e.claim for e in ctx.book.items if e.code == "PRIOR_ESCALATION")
     assert "analyst" in claim
+
+
+# --- auto-hold: provisional, confirmed by a person or released ----------------------------------------
+
+def test_an_auto_hold_is_provisional_audited_as_the_agent_and_counts_toward_the_cap(g):
+    a, _ = hold(now=LIVE)
+    p = S.provisional_hold(a["id"], "Escalated with a high confidence score", now=LIVE)
+    assert p["status"] == "PROVISIONAL" and p["held_by"] == S.AUTO_HOLD_ACTOR and "decided_by" not in p
+    assert p["provisional_until"] == S.add_business_days(LIVE, cfg()["actions"]["auto_hold"]["confirm_business_days"])
+    entry = next(e for e in S.audit() if e["event"] == "PROVISIONAL")
+    assert (entry["actor"], entry["from_status"], entry["to_status"]) == ("agent (auto-hold)", "PROPOSED", "PROVISIONAL")
+    with pytest.raises(ActionError) as err:  # only a PROPOSED hold can be auto-held, once
+        S.provisional_hold(a["id"], "again", now=LIVE + 1)
+    assert err.value.status == 409
+
+
+def test_a_person_confirms_a_provisional_hold_and_it_then_runs_its_normal_term(g):
+    a, _ = hold(now=LIVE)
+    S.provisional_hold(a["id"], "Escalated with a high confidence score", now=LIVE)
+    x = S.decide(a["id"], True, "Checked the trail: mule account", by="Priya", now=LIVE + 5)
+    assert x["status"] == "APPROVED" and x["decided_by"] == "Priya"
+    assert x["expires_ts"] == S.add_business_days(LIVE + 5, cfg()["actions"]["hold_expiry_business_days"])
+    assert S.expire_due(now=x["provisional_until"] + 1) == 0       # confirmed: no early release
+    entry = next(e for e in S.audit() if e["event"] == "APPROVED")
+    assert entry["from_status"] == "PROVISIONAL"
+
+
+def test_rejecting_a_provisional_hold_releases_it(g):
+    a, _ = hold(now=LIVE)
+    S.provisional_hold(a["id"], "Escalated with a high confidence score", now=LIVE)
+    x = S.decide(a["id"], False, "Known payroll agent", by="Priya", now=LIVE + 5)
+    assert (x["status"], x["released_at"]) == ("REJECTED", LIVE + 5)
+
+
+def test_an_unconfirmed_provisional_hold_is_released_after_one_business_day(g):
+    a, _ = hold(now=LIVE)
+    p = S.provisional_hold(a["id"], "Escalated with a high confidence score", now=LIVE)
+    assert S.expire_due(now=p["provisional_until"] - 1) == 0
+    assert S.expire_due(now=p["provisional_until"]) == 1
+    x = S.get(a["id"])
+    assert (x["status"], x["released_at"]) == ("EXPIRED", p["provisional_until"])
+    entry = next(e for e in S.audit() if e["event"] == "AUTO_RELEASED")
+    assert "not confirmed" in entry["reason"] and entry["from_status"] == "PROVISIONAL"
+
+
+def test_closing_a_case_releases_its_provisional_holds(g):
+    a, _ = hold(now=LIVE)
+    S.provisional_hold(a["id"], "Escalated with a high confidence score", now=LIVE)
+    c, _ = S.propose("ZZ-C001", "CLOSE", why="Legitimate explanations", now=LIVE + 1)
+    S.decide(c["id"], True, "Supplier invoices verified", now=LIVE + 2)
+    assert (S.get(a["id"])["status"], S.get(a["id"])["released_at"]) == ("EXPIRED", LIVE + 2)
+
+
+def test_a_release_ends_a_provisional_hold(g):
+    a, _ = hold(now=LIVE)
+    S.provisional_hold(a["id"], "Escalated with a high confidence score", now=LIVE)
+    r, _ = S.propose("ZZ-C001", "RELEASE", account="ACC1", why="Customer showed the invoice", now=LIVE + 1)
+    S.decide(r["id"], True, "Invoice checked with the supplier", now=LIVE + 2)
+    assert S.get(a["id"])["status"] == "EXPIRED"
+
+
+def test_the_case_history_says_whether_a_person_or_the_clock_already_acted(g):
+    assert S.hold_history("ZZ-C001") == {"verdict": None, "decided_holds": 0}
+    a, _ = hold(now=LIVE)
+    assert S.hold_history("ZZ-C001")["decided_holds"] == 0          # a proposal is not a decision
+    S.decide(a["id"], False, "Known payroll agent", now=LIVE)
+    assert S.hold_history("ZZ-C001")["decided_holds"] == 1
+    c, _ = S.propose("ZZ-C001", "CLOSE", why="Legitimate explanations", now=LIVE + 1)
+    S.decide(c["id"], True, "Supplier invoices verified", now=LIVE + 2)
+    assert S.hold_history("ZZ-C001")["verdict"] == "CLOSE"
+
+
+def test_a_person_deciding_a_hold_stops_any_later_auto_hold_inside_the_write(g):
+    """The race: the policy read the history, then a person rejected one hold before the next was auto-held."""
+    a, _ = hold(now=LIVE)
+    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", hold_amount=2000.0, now=LIVE)
+    S.decide(a["id"], False, "Known payroll agent", now=LIVE + 1)
+    with pytest.raises(ActionError, match="already decided"):
+        S.provisional_hold(b["id"], "Escalated with a high confidence score", now=LIVE + 2)
+    assert S.get(b["id"])["status"] == "PROPOSED"
+
+
+def test_one_auto_hold_run_places_all_its_holds_but_an_analyst_verdict_stops_it(g):
+    a, _ = hold(now=LIVE)
+    b, _ = S.propose("ZZ-C001", "HOLD", account="ACC2", hold_amount=2000.0, now=LIVE)
+    S.provisional_hold(a["id"], "r", now=LIVE + 5)
+    assert S.provisional_hold(b["id"], "r", now=LIVE + 5)["status"] == "PROVISIONAL"   # same run, same now
+    c, _ = S.propose("ZZ-C002", "HOLD", account="ACC3", hold_amount=2000.0, now=LIVE)
+    v, _ = S.propose("ZZ-C002", "FILE_STR", why="The evidence points to laundering", now=LIVE)
+    S.decide(v["id"], True, "Confirmed mule chain", now=LIVE + 1)
+    with pytest.raises(ActionError):
+        S.provisional_hold(c["id"], "r", now=LIVE + 6)
+
+
+def test_a_lapsed_auto_hold_cannot_be_confirmed_late(g):
+    a, _ = hold(now=LIVE)
+    p = S.provisional_hold(a["id"], "r", now=LIVE)
+    with pytest.raises(ActionError) as err:
+        S.decide(a["id"], True, "Confirming after the deadline", now=p["provisional_until"] + 1)
+    assert err.value.status == 409 and S.get(a["id"])["status"] == "EXPIRED"
+
+
+def test_a_reupload_releases_provisional_holds(g):
+    a, _ = hold(now=LIVE)
+    S.provisional_hold(a["id"], "r", now=LIVE)
+    assert S.retire_batch("ZZ-C", "The file was uploaded again", now=LIVE + 1)["withdrawn"] == 1
+    x = S.get(a["id"])
+    assert (x["status"], x["released_at"]) == ("EXPIRED", LIVE + 1)
