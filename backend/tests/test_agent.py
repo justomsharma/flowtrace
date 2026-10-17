@@ -152,3 +152,27 @@ def test_stats_report_llm_time_and_the_report_asks_for_low_effort(monkeypatch):
     assert out["stats"]["llm_seconds"] == round((steps * 1500 + 2500) / 1000, 2)
     assert out["stats"]["llm_errors"] == ["x"] * steps + ["y"]
     assert efforts == ["low"]   # medium cost ~7 s per case for no gain in validity (measured 2026-10-16)
+
+
+def test_one_busy_receiver_does_not_count_for_all():
+    """C005's shape: B got $11.8K and sent $1.27M on within hours; the other receivers sent nothing on."""
+    from flowtrace.agent.tools import fast_forward_share
+
+    hop1 = [{"tx_id": "B_IN", "src": "X", "dst": "B", "ts": T0 + 1 * H, "amount": 11_800.0}]
+    hop1 += [{"tx_id": f"R{i}_IN", "src": "X", "dst": f"R{i}", "ts": T0 + 1 * H, "amount": 6_040.0} for i in range(5)]
+    hop2 = [{"tx_id": f"B_OUT{i}", "src": "B", "dst": f"Y{i}", "ts": T0 + 3 * H, "amount": 127_000.0} for i in range(10)]
+    share, fast = fast_forward_share(hop1, hop2, window_ms=24 * H)
+    assert share == pytest.approx(11_800 / 42_000)          # about 28%, not 100%
+    assert len(fast) == 10
+
+
+def test_forwarded_share_counts_only_money_sent_after_it_arrived():
+    from flowtrace.agent.tools import fast_forward_share
+
+    hop1 = [{"tx_id": "IN", "src": "X", "dst": "M", "ts": T0 + 5 * H, "amount": 1_000.0}]
+    hop2 = [{"tx_id": "EARLY", "src": "M", "dst": "Y", "ts": T0 + 1 * H, "amount": 900.0},
+            {"tx_id": "LATE", "src": "M", "dst": "Y", "ts": T0 + 6 * H, "amount": 400.0}]
+    share, fast = fast_forward_share(hop1, hop2, window_ms=24 * H)
+    assert share == pytest.approx(0.4)
+    assert [e["tx_id"] for e in fast] == ["LATE"]
+
