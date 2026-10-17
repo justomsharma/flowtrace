@@ -29,12 +29,12 @@ from flowtrace import store
 from flowtrace.actions import planner, service
 from flowtrace.agent import registry
 from flowtrace.agent.investigate import save_case_memory
-from flowtrace.api import case_view, guard, jobs
+from flowtrace.api import case_view, guard, jobs, pdf_report
 from flowtrace.api.overview import build_overview
 from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
 from flowtrace.graph import queries as Q
-from flowtrace.graph.client import rw
+from flowtrace.graph.client import ro, rw
 from flowtrace.ml import signal_rates
 from flowtrace.settings import ROOT, cfg, settings
 
@@ -498,8 +498,41 @@ def case_overview(case_id: str) -> dict:
     plan, plus a read-only listing of the case's actions."""
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
+    return _overview(case_id, _case_actions(case_id))
+
+
+CURRENCY: dict[str, str | None] = {}  # tx_id -> the currency it was paid in (it never changes)
+
+
+def _currencies(edges: list[dict]) -> list[dict]:
+    """Payments stored without their currency (results from before the agent kept it, and hold-plan trails) get
+    it from the graph, read-only and cached. Unknown or unreachable: left empty, shown as "USD (assumed)"."""
+    missing = [e for e in edges if not e.get("cur") and e.get("tx_id") not in CURRENCY]
+    if missing:
+        try:
+            rows = ro(Q.TX_CURRENCY, {"rows": [{"tx_id": e["tx_id"], "src": e["src"], "dst": e["dst"]}
+                                               for e in missing[:500]]}).rows
+            CURRENCY.update({e["tx_id"]: None for e in missing[:500]} | {r["tx_id"]: r["cur"] for r in rows})
+        except Exception as ex:  # the graph may be restarting: the payments read "USD (assumed)" this time
+            log.warning("could not read payment currencies: %s", ex)
+    return [e if e.get("cur") else {**e, "cur": CURRENCY.get(e.get("tx_id"))} for e in edges]
+
+
+def _filled(case_id: str) -> tuple[dict | None, dict | None]:
+    """The case's result and hold plan with every payment's currency filled in where the graph knows it."""
+    result, plan = RESULTS.get(case_id), store.load_plan(case_id)
+    if result:
+        g = result.get("graph") or {}
+        result = {**result, "graph": {**g, "edges": _currencies(g.get("edges", []))}}
+    if plan and (plan.get("network") or {}).get("edges"):
+        plan = {**plan, "network": {**plan["network"], "edges": _currencies(plan["network"]["edges"])}}
+    return result, plan
+
+
+def _overview(case_id: str, actions: list[dict]) -> dict:
     c = CASES[case_id]
-    return {**case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
+    result, plan = _filled(case_id)
+    return {**case_view.build_overview(c, result, plan, actions,
                                        _job_brief(case_id), _failed(case_id), cfg(),
                                        uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at")),
             "auto_hold": auto_hold_policy()}
@@ -512,9 +545,28 @@ def case_report(case_id: str) -> Response:
         raise HTTPException(404, "no such case")
     if case_id not in RESULTS:
         raise HTTPException(409, "investigate the case first: the STR draft comes from the investigation")
-    md = case_view.str_markdown(CASES[case_id], RESULTS[case_id], store.load_plan(case_id), _case_actions(case_id))
+    result, plan = _filled(case_id)
+    md = case_view.str_markdown(CASES[case_id], result, plan, _case_actions(case_id))
     return Response(md, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{case_id}-STR-draft.md"'})
+
+
+@app.get("/api/cases/{case_id}/report.pdf")
+def case_report_pdf(case_id: str) -> Response:
+    """The case report as a PDF of at most two pages, built from the case page's own overview (read-only)."""
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    if case_id not in RESULTS:
+        raise HTTPException(409, "investigate the case first: the report comes from the investigation")
+    actions = _case_actions(case_id)
+    try:
+        audit = service.audit(case_id=case_id, limit=50, expire=False)
+    except Exception as e:  # the graph may be restarting: the report still has the case, without its audit trail
+        log.warning("could not read the audit trail for %s: %s", case_id, e)
+        audit = []
+    pdf = pdf_report.build_pdf(_overview(case_id, actions), RESULTS[case_id], actions, audit)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{case_id}-report.pdf"'})
 
 
 # --- actions: the agent proposes, a person decides ------------------------------------------------

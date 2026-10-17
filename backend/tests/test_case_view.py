@@ -139,7 +139,7 @@ def test_investigated_case_findings_summary_indicators():
     assert [e["id"] for e in o["explanations"]] == ["E3"]
     assert o["kpis"]["suspicious_patterns"] == 2
     assert {k: v for k, v in o["summary"].items() if k != "points"} == {
-        "headline": "Money passed through three accounts", "text": "Fast onward movement.", "by_ai": False}
+        "headline": "Money passed through three accounts", "text": "Fast onward movement.", "by_ai": False, "totals_note": None}
     # A result saved without bullet points gets the strongest reasons each way, then the decision.
     assert o["summary"]["points"] == ["Receiving accounts forwarded the funds within 24 hours.", "claim.", "Known counterparty.",
                                       "Recommend escalating to a senior analyst."]

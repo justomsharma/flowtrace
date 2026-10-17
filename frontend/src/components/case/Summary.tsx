@@ -17,6 +17,9 @@ export function AiSummary({ summary, live, className = '' }: { summary: CaseOver
               <span>{p}</span>
             </li>
           ))}
+          {summary.totals_note && (
+            <li className="text-xs leading-snug" style={{ color: 'var(--ink-2)' }}>{summary.totals_note}</li>
+          )}
         </ul>
       ) : (
         <p className="text-sm" style={{ color: 'var(--ink-2)' }}>

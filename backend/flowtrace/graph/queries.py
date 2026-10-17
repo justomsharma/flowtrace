@@ -466,6 +466,13 @@ RETURN count(a) AS n
 """
 
 # A case's panel lists only its current actions; the global list (Results) keeps retired ones.
+TX_CURRENCY = """
+UNWIND $rows AS r
+MATCH (:Account {id: r.src})-[t:TRANSFER]->(:Account {id: r.dst})
+WHERE t.tx_id = r.tx_id
+RETURN t.tx_id AS tx_id, t.cur AS cur
+"""
+
 LIST_ACTIONS = """
 MATCH (a:Action) WHERE ($case_id IS NULL OR (a.case_id = $case_id AND a.retired_at IS NULL))
   AND ($status IS NULL OR a.status = $status)

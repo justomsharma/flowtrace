@@ -54,7 +54,7 @@ class CaseContext:
         for r in rows:
             if not r.get("tx_id") or r["tx_id"] in self.edges:
                 continue
-            e = {k: r.get(k) for k in ("tx_id", "src", "dst", "ts", "amount", "fmt")}
+            e = {k: r.get(k) for k in ("tx_id", "src", "dst", "ts", "amount", "fmt", "cur")}
             e["role"] = role
             self.edges[r["tx_id"]] = e
             new_e.append(e)
