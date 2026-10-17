@@ -145,6 +145,16 @@ The reset deletes every upload, investigation, hold plan, case memory, action an
 approvals and provisional auto-holds. The history graph stays. Locally, with the API stopped, run
 `python -m flowtrace.demo.reset`.
 
+## FalkorDB versions
+
+FalkorDB Cloud runs **v4.22**; `docker-compose.yml` runs v6. Three query differences between them were found by
+comparing the cloud with the full graph, and fixed so both give the same answers (README, *Demo history graph*).
+After loading the demo graph into a new instance, check it:
+
+```bash
+python -m flowtrace.graph.smoke --demo        # every query, read-only
+```
+
 ## The demo history graph
 
 `data/demo/` holds everything the demo needs instead of the full IBM dataset:

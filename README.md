@@ -425,6 +425,18 @@ planned. Everything except timings is compared. The demo side also uses the demo
 | Rule-based and fixed-workflow investigations, and their hold plans | **identical** for the bundled samples (44 of 44). On the eval slice, 81 of 82 match. In the other one (C024), the *case memory* step finds a *nearest escalated account* 3 hops away through history on the full graph, and not on the demo graph. No evidence, decision or hold changes. It happens only when the slice is uploaded after the samples, and the public demo can't upload the slice. |
 | LLM investigations, replayed step by step on both graphs | **identical** for the bundled samples (22 of 22: evidence, decision, hold plan). On the eval slice, 37 of 41 match exactly. In the other 4, a backward trace or the case-memory lookup reaches history the demo graph doesn't keep. **No decision or hold plan differs.** |
 
+**On FalkorDB Cloud (v4.22).** The live graph runs FalkorDB v4.22; the full graph and Docker run v6. The demo graph
+takes 32 MB there. The same comparison found three differences, now fixed in the queries, with tests that run on
+both versions:
+- v4.22 has no undirected `shortestPath()`. The *nearest escalated account* lookup now uses `allShortestPaths` in a
+  `MATCH`, and gives the same answers on v6.
+- On a loop, v4.22 can return a path's transfers or accounts reversed. Loops are now put in path order first.
+- Results with ties, or under a `LIMIT` with no `ORDER BY`, came back in each version's storage order. Every
+  ordering now ends on a unique key.
+
+After the fixes, the cloud graph gives the same 63 cases and the same 126 investigations as the full graph. The one
+exception is the C024 case-memory step above. The read-only smoke (`graph.smoke --demo`) passes on the cloud.
+
 So the live demo gives the same cases and investigations as the full graph for everything it can upload. The
 evaluation numbers in this README come from the full graph.
 
