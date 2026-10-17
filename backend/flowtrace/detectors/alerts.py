@@ -50,16 +50,21 @@ WHERE t1.ts + 0 >= $t0 AND t1.ts + 0 < $t1 AND t2.ts + 0 >= t1.ts AND t2.ts + 0 
 WITH s, d, count(DISTINCT m) AS mids, collect(t1.tx_id) + collect(t2.tx_id) AS txs
 WHERE mids >= $min
 RETURN s.id AS account, d.id AS sink, mids, txs[0..60] AS tx_ids
+ORDER BY account, sink
 LIMIT 200
 """
 
+# A loop's transfers in path order (graph.queries.CYCLES says why they are put in order first).
 CYCLE = """
 MATCH (a:Account) WHERE a.id IN $ids
 MATCH p = (a)-[:TRANSFER*2..4]->(a)
-WITH a, relationships(p) AS r
+WITH a, relationships(p) AS raw
+WITH a, CASE WHEN startNode(raw[0]) = a THEN raw ELSE reverse(raw) END AS r
 WHERE ALL(x IN r WHERE x.ts >= $t0 AND x.ts < $t1)
   AND ALL(i IN range(0, size(r) - 2) WHERE r[i].ts <= r[i + 1].ts)
+WITH a, r, reduce(k = '', x IN r | k + x.tx_id + ' ') AS key
 RETURN a.id AS account, size(r) AS hops, [x IN r | x.tx_id] AS tx_ids
+ORDER BY account, hops, key
 LIMIT 100
 """
 

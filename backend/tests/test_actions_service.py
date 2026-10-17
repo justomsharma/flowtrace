@@ -403,3 +403,19 @@ def test_a_reupload_releases_provisional_holds(g):
     assert S.retire_batch("ZZ-C", "The file was uploaded again", now=LIVE + 1)["withdrawn"] == 1
     x = S.get(a["id"])
     assert (x["status"], x["released_at"]) == ("EXPIRED", LIVE + 1)
+
+
+def test_nearest_escalated_follows_payments_either_way_and_takes_the_shortest(g):
+    """Undirected and shortest, on every FalkorDB we run on (v4.22 has no undirected shortestPath())."""
+    rw("""CREATE (a:Account {id: 'A'}), (m:Account {id: 'M'}), (x:Account {id: 'X'}), (p:Account {id: 'P'}),
+              (q:Account {id: 'Q'}), (far:Account {id: 'F'}), (y:Account {id: 'Y'}), (z:Account {id: 'Z'}),
+              (a)-[:TRANSFER {tx_id: 'm1', ts: 1}]->(m), (x)-[:TRANSFER {tx_id: 'm2', ts: 2}]->(m),
+              (a)-[:TRANSFER {tx_id: 'p1', ts: 3}]->(p), (p)-[:TRANSFER {tx_id: 'p2', ts: 4}]->(q),
+              (q)-[:TRANSFER {tx_id: 'p3', ts: 5}]->(x),
+              (far)-[:TRANSFER {tx_id: 'f1', ts: 6}]->(y), (y)-[:TRANSFER {tx_id: 'f2', ts: 7}]->(z),
+              (z)-[:TRANSFER {tx_id: 'f3', ts: 8}]->(q)""")
+    for cid, acc in (("ZZ-C001", "X"), ("ZZ-C002", "F")):
+        rw("MATCH (x:Account {id: $a}) CREATE (:Case {id: $id, disposition: 'ESCALATE', created_ts: 100})-[:ABOUT]->(x)",
+           {"a": acc, "id": cid})
+    near = ro(Q.NEAREST_ESCALATED, {"id": "A", "batch_prefix": "YY-C", "t0": 200}).rows
+    assert [(r["account"], r["hops"]) for r in near] == [("X", 2)]   # A->M<-X beats A->P->Q->X; F is 5 hops away
