@@ -11,8 +11,8 @@ Run (from backend/):
   python -m flowtrace.demo.reset                         this machine's graph and data/runs (API stopped)
   python -m flowtrace.demo.reset --url https://<host>    a running server, through POST /api/admin/reset
                                                          (asks for the approver token, or reads APPROVER_TOKEN)
-  ... --url https://<host> --prerun 2                    then upload the curated sample and investigate case
-                                                         C002 as a person would: the demo's backup case
+  ... --url https://<host> --prerun 5                    then upload the curated sample and investigate case
+                                                         C005 as the signed-in approver: the demo's backup case
 """
 from __future__ import annotations
 
@@ -87,7 +87,8 @@ def remote(url: str, token: str, prerun: int | None = None) -> dict:
         out["upload"] = _wait(url, job)
         batch = _call(url, "/api/batches")[0]["batch_id"]
         case = f"{batch}-C{prerun:03d}"
-        job = _call(url, f"/api/cases/{case}/investigate", "POST")["job_id"]
+        # As the signed-in approver: the LLM agent, and the auto-hold, as in the demo.
+        job = _call(url, f"/api/cases/{case}/investigate", "POST", token)["job_id"]
         out["prerun"] = {"case": case, "status": _wait(url, job)}
     return out
 

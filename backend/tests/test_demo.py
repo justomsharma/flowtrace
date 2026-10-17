@@ -162,3 +162,19 @@ def test_the_public_demo_runs_no_background_investigations(demo, monkeypatch):
     monkeypatch.setattr(M, "BATCHES", {"BX": {"cases": [{"case_id": "BX-C001"}], "window": [0, 1]}})
     assert M.prefetch("BX") == []
     assert client.get("/api/batches/BX").json()["prefetch"]["total"] == 0
+
+
+def test_prerun_investigates_as_the_approver(monkeypatch):
+    calls = []
+
+    def fake(url, path, method="GET", token=None, form=None):
+        calls.append((method, path, token))
+        if path == "/api/batches" and method == "GET":
+            return [{"batch_id": "BX"}]
+        return {"job_id": "J"} if method == "POST" and path != "/api/admin/reset" else {}
+    monkeypatch.setattr(reset, "_call", fake)
+    monkeypatch.setattr(reset, "_wait", lambda url, job: "done")
+    out = reset.remote("http://x", "s3cret", prerun=5)
+    assert out["prerun"] == {"case": "BX-C005", "status": "done"}
+    assert ("POST", "/api/cases/BX-C005/investigate", "s3cret") in calls
+    assert ("POST", "/api/admin/reset", "s3cret") in calls
