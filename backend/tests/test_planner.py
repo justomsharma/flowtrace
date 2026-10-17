@@ -184,3 +184,13 @@ def test_effect_of_the_open_holds_is_recomputed_from_the_plan(world):
     assert P.effect(plan, ["M1", "M2"]) == {"frozen": pytest.approx(25000), "on_routes": 0}
     assert P.effect(plan, ["M1"]) == {"frozen": pytest.approx(20000), "on_routes": 0}
     assert P.effect(plan, []) == {"frozen": 0, "on_routes": 0}
+
+
+def test_hold_reason_says_when_the_money_was_still_there(world):
+    """The balance is read at the last flagged payment, so the reason says so, with its time."""
+    world(mule_world())
+    case = {**CASE, "t1": T0 + 9 * H + 30 * 60_000 + 1}       # t1 = last flagged payment + 1 ms
+    plan = P.plan_holds(case, cfg(), result("ESCALATE"))
+    why = plan["holds"][0]["why"]
+    assert "had not left by the last flagged payment (21 Jan 09:30 UTC)" in why
+    assert "has not left yet" not in why
