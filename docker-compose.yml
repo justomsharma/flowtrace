@@ -17,5 +17,27 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
+  # The whole app on the demo history, in one container (docker compose --profile app up -d --build):
+  # http://localhost:8000. It uses its own graph (flowtrace_demo) and loads the demo history into it on first start.
+  app:
+    profiles: ["app"]
+    build: .
+    ports:
+      - "${APP_PORT:-8000}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      GRAPH_NAME: flowtrace_demo
+      DEMO_MODE: "1"
+    volumes:
+      - app_runs:/app/data/runs
+    depends_on:
+      - falkordb
+    restart: unless-stopped
+
 volumes:
   falkordb_data:
+  app_runs:

@@ -1,0 +1,37 @@
+# Fly.io: the public demo (fly deploy). Secrets (fly secrets set): FALKORDB_HOST, FALKORDB_PORT, FALKORDB_PASSWORD,
+# OPENAI_API_KEY, APPROVER_TOKEN. See docs/deploy.md.
+app = "flowtrace-demo"
+primary_region = "iad"          # next to FalkorDB Cloud in AWS us-east-1: every query crosses this link
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DEMO_MODE = "1"
+  GRAPH_NAME = "flowtrace"
+  LLM_PROVIDER = "openai"
+  AGENT_MODEL = "gpt-6-luna"
+  PUBLIC_HOSTS = "flowtrace-demo.fly.dev"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"    # always on: FalkorDB Cloud's free tier stops an instance unused for a day
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[mounts]
+  source = "flowtrace_runs"     # uploads, investigations and hold plans survive a restart
+  destination = "/app/data/runs"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
