@@ -26,5 +26,6 @@ COPY backend/flowtrace/ backend/flowtrace/
 COPY --from=web /web/dist frontend/dist
 WORKDIR /app/backend
 EXPOSE 8080
-# One process: uploads, cases and investigation jobs live in its memory (and data/runs).
-CMD ["uvicorn", "flowtrace.api.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# One process: uploads, cases and investigation jobs live in its memory (and data/runs). Forwarded headers are not
+# trusted (no --proxy-headers): on Fly the visitor's address comes from Fly-Client-IP, which the proxy sets itself.
+CMD ["uvicorn", "flowtrace.api.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers"]

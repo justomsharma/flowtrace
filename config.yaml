@@ -173,10 +173,14 @@ llm:
 
 # --- Public demo (DEMO_MODE=1 on the server) --------------------------------------------------
 # Only the bundled sample files can be uploaded, and a sample already uploaded opens as it is (nobody's demo
-# is renumbered under them). Investigations and uploads are rate-limited per visitor (IP) and in total.
+# is renumbered under them). Anonymous investigations use the rule-based agent and never auto-hold; the signed-in
+# approver gets the LLM agent. Limits count per visitor (Fly-Client-IP; an IPv6 address by its /64) and in total.
 demo:
-  prefetch: false            # no background investigations after an upload: a person starts each one (so the agent
-                             # may auto-hold, actions.auto_hold), and LLM spend follows real clicks only
-  investigations_per_ip: {count: 6, minutes: 10}
+  prefetch: false            # no background investigations after an upload: a person starts each one, so LLM spend
+                             # follows real clicks only (and only the approver's runs may auto-hold)
+  investigations_per_ip: {count: 6, minutes: 60}
   investigations_total: {count: 60, minutes: 60}
   uploads_per_ip: {count: 4, minutes: 10}
+  plans_per_ip: {count: 20, minutes: 10}
+  mcp_per_ip: {count: 120, minutes: 10}       # every MCP request, read tools too
+  approver_failures_per_ip: {count: 5, minutes: 15}   # wrong approver tokens before a visitor is locked out

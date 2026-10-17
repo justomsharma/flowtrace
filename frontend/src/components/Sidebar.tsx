@@ -124,8 +124,10 @@ function SystemStatus() {
         </p>
       ) : signingIn ? <ApproverSignIn compact /> : (
         <p style={{ color: 'var(--ink-2)' }}>
-          Viewing only{' '}
-          <button onClick={() => setSigningIn(true)} className="underline underline-offset-2">sign in as approver</button>
+          {h.demo ? 'Viewing only: investigations use the rule-based agent and you cannot decide. ' : 'Viewing only. '}
+          <button onClick={() => setSigningIn(true)} className="underline underline-offset-2">
+            {h.demo ? 'Sign in as approver for the AI agent and decisions' : 'Sign in as approver'}
+          </button>
         </p>
       )}
       {at && <p style={{ color: 'var(--muted)' }}>Checked {new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</p>}

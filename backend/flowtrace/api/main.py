@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import dotenv_values
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
+from starlette.routing import Route
 
 from flowtrace import store
 from flowtrace.actions import planner, service
@@ -39,18 +40,21 @@ from flowtrace.settings import ROOT, cfg, settings
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    stop = threading.Event()
     if signal_rates.enabled(cfg()):
         signal_rates.rates()  # measured weights on without their file: refuse to start, never score silently without
-    if guard.demo_mode():
-        ensure_demo_history()  # before any re-queue: a lost graph means nothing stored still applies
+    if guard.demo_mode():  # in the background: an unreachable graph must never stop (or crash-loop) the server
+        threading.Thread(target=watch_demo_history, args=(stop,), daemon=True).start()
     if should_requeue():
         threading.Thread(target=requeue_unfinished, daemon=True).start()
     else:
         log.info("not re-queuing unfinished cases in this process (set FLOWTRACE_REQUEUE=1 to force)")
-    stop = threading.Event()
     threading.Thread(target=release_due_holds, args=(stop,), daemon=True).start()
-    async with MCP_APP.router.lifespan_context(MCP_APP):  # the MCP endpoint's session manager
+    mcp_app = _mcp_app()  # its session manager runs once per app instance: a new one for each start
+    MCP_GUARD.app = mcp_app.routes[0].endpoint
+    async with mcp_app.router.lifespan_context(mcp_app):
         yield
+    MCP_GUARD.app = None
     stop.set()
     RUNNER.shutdown()  # cancel queued work instead of finishing it (and paying for it) on the way out
 
@@ -70,6 +74,7 @@ def should_requeue(parent=_UNSET) -> bool:
     if parent is _UNSET:
         parent = multiprocessing.parent_process()
     return parent is None
+app.add_middleware(guard.BodyLimit)  # before anything reads a body
 app.add_middleware(
     CORSMiddleware,
     # The deployed app serves its own frontend (same origin); CORS_ORIGINS adds others, comma-separated.
@@ -116,12 +121,9 @@ def is_curated_sample(name: str) -> bool:
 
 
 def release_due_holds(stop: threading.Event) -> None:
-    """Approved holds end on their own when their time is up, even if nobody opens the app. In demo mode it also
-    checks the graph is still there (FalkorDB Cloud's free tier keeps no data across a restart)."""
+    """Approved holds end on their own when their time is up, even if nobody opens the app."""
     while not stop.wait(cfg()["actions"]["expiry_check_seconds"]):
         try:
-            if guard.demo_mode():
-                ensure_demo_history()
             if n := service.expire_due():
                 log.info("released %d hold(s) whose time was up", n)
         except Exception as e:  # the graph may be restarting; try again next time
@@ -130,33 +132,65 @@ def release_due_holds(stop: threading.Event) -> None:
 
 # --- public demo: a clean state, and the demo history graph ------------------------------------------
 
-def reset_demo() -> dict:
-    """Back to a clean demo: no uploads, no investigations, nothing decided (flowtrace.demo.reset). Running
-    investigations are cancelled; a result that still arrives is dropped because its upload run moved on."""
-    from flowtrace.demo.reset import reset
+def clear_demo_state() -> int:
+    """Forget every upload, case and investigation (memory and data/runs). Running investigations are cancelled;
+    a result that still arrives is dropped because its upload run moved on."""
+    from flowtrace.demo.reset import reset_runs
     for bid in list(BATCHES):
         with RUNNER.batch_lock(bid):
             RUNNER.new_run(bid)
     BATCHES.clear()
     CASES.clear()
     RESULTS.clear()
-    guard.LIMITS.clear()
-    return reset()
+    return reset_runs()
 
 
+def reset_demo() -> dict:
+    """Back to a clean demo: no uploads, no investigations, nothing decided (flowtrace.demo.reset)."""
+    from flowtrace.demo.reset import reset_graph
+    return {"graph": reset_graph(), "files_removed": clear_demo_state()}
+
+
+HISTORY_WATCH = None   # flowtrace.demo.history.HistoryWatch, made on first use
 _history_lock = threading.Lock()
 
 
-def ensure_demo_history() -> None:
-    """Load the demo history graph if it is missing (a new or restarted FalkorDB), and start clean: anything
-    stored about earlier uploads no longer matches the graph."""
+def ensure_demo_history() -> str:
+    """One check of the demo history graph. It is loaded (and the stored state cleared, since it no longer matches
+    the graph) only when FalkorDB answers that it is missing, three checks in a row. An error is only logged: it
+    never clears anything. A failed load backs off. Returns the watch's verdict."""
+    global HISTORY_WATCH
     from flowtrace.demo import history
     with _history_lock:
-        if history.is_loaded():
-            return
-        log.warning("demo history graph missing: loading data/demo/history and starting clean")
-        reset_demo()
-        log.info("demo history loaded: %s", history.load())
+        if HISTORY_WATCH is None:
+            HISTORY_WATCH = history.HistoryWatch()
+        verdict = HISTORY_WATCH.check()
+        if verdict == "unreachable":
+            log.error("graph database unreachable: demo history not checked (nothing is cleared)")
+        if verdict != "reload":
+            return verdict
+        log.warning("demo history graph missing (3 checks in a row): loading data/demo/history and starting clean")
+        try:
+            clear_demo_state()
+            log.info("demo history loaded: %s", history.load())
+            HISTORY_WATCH.loaded()
+            return "loaded"
+        except Exception as e:  # the graph went away mid-load: try again later, never in a tight loop
+            HISTORY_WATCH.failed()
+            log.error("loading the demo history failed (next try in %.0f s): %s", HISTORY_WATCH.wait_s, e)
+            return "failed"
+
+
+def watch_demo_history(stop: threading.Event, fast_s: float = 5, slow_s: float = 60) -> None:
+    """Check every few seconds while the history looks missing (a new graph loads within ~15 s of the first
+    start), otherwise every minute. Never raises."""
+    every = fast_s
+    while not stop.is_set():
+        try:
+            every = fast_s if ensure_demo_history() == "missing" else slow_s
+        except Exception as e:
+            log.error("demo history check failed: %s", e)
+        stop.wait(every)
 
 
 def forget_batch(batch_id: str) -> None:
@@ -417,7 +451,16 @@ def _result_brief(case_id: str) -> dict | None:
 # --- cases -----------------------------------------------------------------------------------
 
 @app.post("/api/cases/{case_id}/investigate")
-def investigate_case(case_id: str, request: Request, policy: Literal["llm", "heuristic", "fixed"] = "llm") -> dict:
+def investigate_case(case_id: str, request: Request, policy: Literal["llm", "heuristic", "fixed"] = "llm",
+                     x_approver_token: str | None = Header(None)) -> dict:
+    """Start (or join) a case's investigation. On the public demo an anonymous visitor gets the rule-based agent
+    and its run never auto-holds; the signed-in approver (X-Approver-Token) gets the LLM agent and the auto-hold."""
+    person = True
+    if guard.demo_mode():
+        if x_approver_token:
+            _check_approver(x_approver_token, request)
+        else:
+            policy, person = "heuristic", False
     if case_id in CASES and not RUNNER.active(case_id):  # joining a running investigation costs nothing
         guard.limit(request, "investigations")
     # Under the batch lock: a re-upload cannot renumber the case between reading it and starting its job.
@@ -425,7 +468,8 @@ def investigate_case(case_id: str, request: Request, policy: Literal["llm", "heu
         if case_id not in CASES:
             raise HTTPException(404, "no such case")
         # Joins the case's queued or running investigation if there is one; otherwise starts now.
-        job = RUNNER.start(case_id, _investigation(case_id, policy), partial(_store_result, case_id, started_by_person=True))
+        job = RUNNER.start(case_id, _investigation(case_id, policy),
+                           partial(_store_result, case_id, started_by_person=person))
     return {"job_id": job.id}
 
 
@@ -491,18 +535,26 @@ def approver_token() -> str | None:
     return os.environ.get("APPROVER_TOKEN") or dotenv_values(ROOT / ".env").get("APPROVER_TOKEN") or None
 
 
-def _check_approver(token: str | None) -> None:
+def token_ok(token: str | None) -> bool:
     expected = approver_token()
-    if not expected:
+    return bool(expected and token) and hmac.compare_digest(token.encode(), expected.encode())
+
+
+def _check_approver(token: str | None, request: Request) -> None:
+    """The approver token, or 401/403. Too many wrong tokens from one visitor lock it out for a while (429)."""
+    if not approver_token():
         raise HTTPException(403, "approvals are switched off on this server: set APPROVER_TOKEN in .env")
-    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
+    ok = token_ok(token)
+    guard.token_attempt(request, ok or not token)  # a missing token is not a guess
+    if not ok:
         raise HTTPException(401, "approver token missing or wrong")
 
 
 @app.post("/api/cases/{case_id}/plan")
-def plan_case(case_id: str, idempotency_key: str | None = Header(None)) -> dict:
+def plan_case(case_id: str, request: Request, idempotency_key: str | None = Header(None)) -> dict:
     """Plan holds for an investigated case and propose them. Safe to repeat: proposals are merged on case,
     type and account, so a double click adds nothing (the Idempotency-Key header is accepted but not needed)."""
+    guard.limit(request, "plans")
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
     if case_id not in RESULTS:
@@ -530,8 +582,9 @@ def list_actions(status: str | None = None, case_id: str | None = None) -> list[
     return service.list_actions(case_id=case_id, status=status)
 
 
-def _decide(action_id: str, approve: bool, d: Decision, key: str | None, token: str | None) -> dict:
-    _check_approver(token)
+def _decide(action_id: str, approve: bool, d: Decision, key: str | None, token: str | None,
+            request: Request) -> dict:
+    _check_approver(token, request)
     try:
         return service.decide(action_id, approve, d.reason, by=d.by, key=key, auth="approver-token")
     except service.ActionError as e:
@@ -539,29 +592,29 @@ def _decide(action_id: str, approve: bool, d: Decision, key: str | None, token: 
 
 
 @app.post("/api/auth/approver")
-def check_approver(x_approver_token: str | None = Header(None)) -> dict:
+def check_approver(request: Request, x_approver_token: str | None = Header(None)) -> dict:
     """The demo approver's sign-in: is this the server's approver token? Nothing is stored on the server."""
-    _check_approver(x_approver_token)
+    _check_approver(x_approver_token, request)
     return {"ok": True}
 
 
 @app.post("/api/admin/reset")
-def admin_reset(x_approver_token: str | None = Header(None)) -> dict:
+def admin_reset(request: Request, x_approver_token: str | None = Header(None)) -> dict:
     """Reset the running server to a clean demo state (flowtrace.demo.reset). Needs the approver token."""
-    _check_approver(x_approver_token)
+    _check_approver(x_approver_token, request)
     return reset_demo()
 
 
 @app.post("/api/actions/{action_id}/approve")
-def approve_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
+def approve_action(action_id: str, d: Decision, request: Request, idempotency_key: str | None = Header(None),
                    x_approver_token: str | None = Header(None)) -> dict:
-    return _decide(action_id, True, d, idempotency_key, x_approver_token)
+    return _decide(action_id, True, d, idempotency_key, x_approver_token, request)
 
 
 @app.post("/api/actions/{action_id}/reject")
-def reject_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
+def reject_action(action_id: str, d: Decision, request: Request, idempotency_key: str | None = Header(None),
                   x_approver_token: str | None = Header(None)) -> dict:
-    return _decide(action_id, False, d, idempotency_key, x_approver_token)
+    return _decide(action_id, False, d, idempotency_key, x_approver_token, request)
 
 
 @app.get("/api/audit")
@@ -618,8 +671,10 @@ def _mcp_app():
         streamable_http_path="/mcp", transport_security=security, max_sessions=100, session_idle_timeout=900)
 
 
-MCP_APP = _mcp_app()
-app.router.routes.extend(MCP_APP.routes)
+# The MCP route sits behind guard.McpGuard: a per-visitor limit, a message size cap, and on the public demo the
+# approver token for propose_action. The lifespan gives it the MCP app while the server runs.
+MCP_GUARD = guard.McpGuard(None, token_ok)
+app.router.routes.append(Route("/mcp", endpoint=MCP_GUARD, methods=None))
 
 
 # --- the built frontend (frontend/dist), when it is there: one URL for the app and its API -------------

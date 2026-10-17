@@ -3,7 +3,8 @@ import { useSyncExternalStore } from 'react'
 /**
  * The demo approver's sign-in. Approve and reject need the server's approver token; a visitor who has not signed
  * in can view everything but decide nothing. The token is checked by the server (POST /api/auth/approver) and kept
- * for this browser tab only (sessionStorage). In local development VITE_APPROVER_TOKEN signs in automatically.
+ * for this browser tab only (sessionStorage). In local development (vite dev only, never a build)
+ * VITE_APPROVER_TOKEN signs in automatically.
  */
 const KEY = 'flowtrace.approverToken'
 const listeners = new Set<() => void>()
@@ -12,7 +13,7 @@ function read(): string | null {
   try { return sessionStorage.getItem(KEY) } catch { return null }
 }
 
-let token: string | null = read() ?? (import.meta.env.VITE_APPROVER_TOKEN || null)
+let token: string | null = read() ?? (import.meta.env.DEV ? import.meta.env.VITE_APPROVER_TOKEN || null : null)
 
 function set(v: string | null) {
   token = v

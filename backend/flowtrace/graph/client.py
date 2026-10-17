@@ -21,7 +21,7 @@ DEFAULT_TIMEOUT_MS = 10_000
 def db() -> FalkorDB:
     s = settings()
     return FalkorDB(host=s.falkordb_host, port=s.falkordb_port, username=s.falkordb_username,
-                    password=s.falkordb_password)
+                    password=s.falkordb_password, ssl=s.falkordb_tls)
 
 
 def graph(name: str | None = None):

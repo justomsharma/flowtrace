@@ -20,7 +20,8 @@ export default function ApproverSignIn({ compact = false }: { compact?: boolean 
     <form onSubmit={submit} className="flex flex-col gap-1.5">
       {!compact && (
         <p className="text-xs" style={{ color: 'var(--ink-2)' }}>
-          You are viewing only. Approving or rejecting needs the <b style={{ color: 'var(--ink)' }}>demo approver</b> token.
+          You are viewing only. Approving or rejecting needs the <b style={{ color: 'var(--ink)' }}>demo approver</b> token
+          (on the public demo it also runs the AI agent; visitors get the rule-based one).
         </p>
       )}
       <div className="flex items-center gap-2">

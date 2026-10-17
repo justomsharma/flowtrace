@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from flowtrace.agent import llm
 from flowtrace.api import guard, jobs
 from flowtrace.api import main as M
-from flowtrace.demo import history, reset
+from flowtrace.demo import reset
 from flowtrace.pipeline.batch import batch_id_for
 
 client = TestClient(M.app)  # not a context manager: no startup work, no expiry timer
@@ -85,15 +85,6 @@ def test_rate_limit_window_slides():
     assert rl.take("k", 2, 1, now=61) == 0
 
 
-def test_the_visitor_is_read_from_the_proxy_headers():
-    class R:
-        client = None
-        headers = {"fly-client-ip": "1.2.3.4", "x-forwarded-for": "9.9.9.9"}
-    assert guard.client_ip(R()) == "1.2.3.4"
-    R.headers = {"x-forwarded-for": "5.6.7.8, 10.0.0.1"}
-    assert guard.client_ip(R()) == "5.6.7.8"
-
-
 def test_investigations_are_rate_limited_but_joining_one_is_free(monkeypatch):
     monkeypatch.setattr(guard, "cfg", lambda: {"demo": {"investigations_per_ip": {"count": 1, "minutes": 10}}})
     monkeypatch.setattr(M, "CASES", {"BX-C001": {"case_id": "BX-C001"}})
@@ -136,7 +127,8 @@ def test_admin_reset_needs_the_token_and_clears_everything(monkeypatch):
     monkeypatch.setattr(M, "CASES", {"BX-C001": {}})
     monkeypatch.setattr(M, "RESULTS", {"BX-C001": {}})
     monkeypatch.setattr(M, "BATCHES", {"BX": {"cases": []}})
-    monkeypatch.setattr(reset, "reset", lambda: {"graph": {}, "files_removed": 3})
+    monkeypatch.setattr(reset, "reset_graph", lambda: {})
+    monkeypatch.setattr(reset, "reset_runs", lambda: 3)
     assert client.post("/api/admin/reset").status_code == 401
     r = client.post("/api/admin/reset", headers={"X-Approver-Token": "s3cret"})
     assert r.status_code == 200 and r.json()["files_removed"] == 3
@@ -147,18 +139,6 @@ def test_reset_clears_uploads_cases_actions_and_audit():
     q = " ".join(cypher for _, cypher in reset.CLEAN_GRAPH)
     assert "t.batch IS NOT NULL" in q and "n:Case OR n:Action OR n:Audit" in q
     assert set(reset.RUN_KINDS) == {"batches", "cases", "results", "plans", "graphs"}
-
-
-def test_a_missing_demo_graph_is_loaded_and_the_state_cleared(monkeypatch):
-    calls = []
-    monkeypatch.setattr(history, "is_loaded", lambda: False)
-    monkeypatch.setattr(history, "load", lambda: calls.append("load") or {})
-    monkeypatch.setattr(M, "reset_demo", lambda: calls.append("reset"))
-    M.ensure_demo_history()
-    assert calls == ["reset", "load"]
-    monkeypatch.setattr(history, "is_loaded", lambda: True)
-    M.ensure_demo_history()
-    assert calls == ["reset", "load"]
 
 
 def test_the_mcp_endpoint_keeps_the_apis_approver_token(monkeypatch):

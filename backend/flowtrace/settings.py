@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     falkordb_host: str = "127.0.0.1"
     falkordb_port: int = 6379
     falkordb_username: str | None = None   # FalkorDB Cloud: "falkordb"; the local container needs none
-    falkordb_password: str | None = None
+    falkordb_password: str | None = None   # from the environment (or .env) only: never in config files or the image
+    falkordb_tls: bool = False             # TLS with certificate checks (FalkorDB Cloud's paid tiers; not the free tier)
     graph_name: str = "flowtrace"
 
     # LLM for the investigation agent and reports. agent_model empty = the provider's default model.

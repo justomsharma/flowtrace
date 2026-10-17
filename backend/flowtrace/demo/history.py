@@ -382,13 +382,62 @@ def load(replace: bool = True, chunk: int = 2000) -> dict:
             "seconds": round(time.time() - t, 1)}
 
 
-def is_loaded() -> bool:
-    """The history cutoff marker is written last, so it means a complete load."""
+class GraphUnreachable(Exception):
+    """FalkorDB did not answer the history check: a connection error, a timeout, a refused login, any error."""
+
+
+def history_state() -> str:
+    """"loaded" or "missing", from FalkorDB's own answer. The history cutoff marker is written last, so it means a
+    complete load; "missing" is a graph that does not exist or has no marker. Anything else raises GraphUnreachable:
+    an error is never read as an empty graph (that would wipe the demo whenever the network blips)."""
+    import redis
     try:
-        rows = client.ro(Q.HISTORY_UNTIL, {}).rows
-        return bool(rows) and rows[0]["until"] is not None
-    except Exception:  # no graph yet
-        return False
+        rows = client.ro(Q.HISTORY_UNTIL, {}, timeout=5000).rows
+    except redis.exceptions.ResponseError as e:
+        if "empty key" in str(e):  # FalkorDB: no graph under this name
+            return "missing"
+        raise GraphUnreachable(str(e)) from e
+    except Exception as e:
+        raise GraphUnreachable(str(e)) from e
+    return "loaded" if rows and rows[0]["until"] is not None else "missing"
+
+
+class HistoryWatch:
+    """Decides when to load the demo history: only when FalkorDB answers that it is missing on `confirm` checks in
+    a row. An error, or the history being there, starts the count again. A failed load waits backoff_s before the
+    next try, doubling up to max_backoff_s.
+
+    check() -> "loaded" | "missing" (not yet confirmed) | "unreachable" | "waiting" (backing off) | "reload"."""
+
+    def __init__(self, state=history_state, confirm: int = 3, backoff_s: float = 60, max_backoff_s: float = 1800,
+                 clock=time.monotonic) -> None:
+        self.state, self.confirm, self.clock = state, confirm, clock
+        self.backoff_s, self.max_backoff_s = backoff_s, max_backoff_s
+        self.streak = 0
+        self.wait_s = backoff_s
+        self.next_try = 0.0
+
+    def check(self) -> str:
+        if self.clock() < self.next_try:
+            return "waiting"
+        try:
+            s = self.state()
+        except GraphUnreachable:
+            self.streak = 0
+            return "unreachable"
+        if s != "missing":
+            self.streak = 0
+            return s
+        self.streak += 1
+        return "reload" if self.streak >= self.confirm else "missing"
+
+    def loaded(self) -> None:
+        self.streak, self.wait_s, self.next_try = 0, self.backoff_s, 0.0
+
+    def failed(self) -> None:
+        self.streak = 0
+        self.next_try = self.clock() + self.wait_s
+        self.wait_s = min(self.wait_s * 2, self.max_backoff_s)
 
 
 def main() -> None:
