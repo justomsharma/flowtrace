@@ -61,9 +61,10 @@ export default function Reports() {
             <article className="card p-6 flex flex-col gap-3 min-w-0">
               <div className="flex flex-wrap items-center gap-3 justify-end">
                 <Link to={{ pathname: '/case', search: query(open.case_id) }} className="text-sm font-medium" style={{ color: 'var(--brand)' }}>Open the case</Link>
-                <a href={`/api/cases/${open.case_id}/report.md`} download
+                <a href={`/api/cases/${open.case_id}/report.md`} download className="text-sm underline" style={{ color: 'var(--ink-2)' }}>Markdown</a>
+                <a href={`/api/cases/${open.case_id}/report.pdf`} download
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold" style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>
-                  <Download size={16} aria-hidden /> Download (.md)
+                  <Download size={16} aria-hidden /> Generate report (PDF)
                 </a>
               </div>
               {error && <p className="text-sm" style={{ color: 'var(--critical)' }}>{error}</p>}

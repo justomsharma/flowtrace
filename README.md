@@ -61,7 +61,7 @@ All screenshots are from the real app on the curated sample day (`demo_mixed_202
 ![Today's work: ranked cases](docs/screenshots/todays-work.png)
 
 **3. Case overview.** One page per case:
-- **Header:** the case, its laundering shape and a priority from the case score. *Generate report* downloads the STR draft.
+- **Header:** the case, its laundering shape and a priority from the case score. *Generate report* downloads the two-page PDF case report (the STR draft is a small *Markdown* link under it).
 - **Four figures:** the amount involved, accounts connected, red flags found, and the investigation status (Queued, Investigating, Escalate, Review or Close).
 - **Transaction flow**, left to right. Each account's role comes from the flow itself: no money in = sender, no money out = destination, otherwise intermediary. Red arrows are suspicious payments, amber arrows carried case money into a proposed hold, and the amber ring marks the hold (dashed = proposed, solid = approved).
 - **Key findings:** one row per red flag, with a confidence badge from the evidence weight (thresholds in `config.yaml`, `ui.evidence_confidence`). Under them, the legitimate explanations the agent found.
@@ -90,6 +90,23 @@ Every amount is the **USD equivalent** (the dataset's payments in other currenci
 **8. Reports.** The STR draft of every investigated case, built from the report, the evidence, the proposed actions and what people decided. It downloads as Markdown.
 
 ![STR draft](docs/screenshots/reports.png)
+
+**The PDF case report.** *Generate report* (case page or Reports page) downloads a PDF of at most two A4 pages, for an
+analyst or a compliance officer:
+- **Page 1, the case at a glance:** the decision (Escalate / Review / Close) with risk, priority and confidence; who
+  investigated it (the AI model or the rules) and who reviewed it; a short summary; amount, accounts, payments and
+  time span; the money flow (Sender to Intermediary to Destination, amounts on the arrows, holds dashed); the key
+  findings with High / Medium / Low confidence, and the possible legitimate explanation.
+- **Page 2, actions and evidence:** the holds (amount frozen, status, until when, who decided, why), the largest
+  payments with their own currency, the STR narrative (who / what / when / where / why / how) with evidence IDs, and
+  the latest audit entries.
+
+It is built from the case page's own overview, so the numbers match. Long lists end with "+N more", and each page is
+shrunk to fit, so it never runs to a third page. It prints well in black and white. It is made in Python with
+reportlab (no browser, no system packages). Sample: [docs/sample-report.pdf](docs/sample-report.pdf) (case 5 of the
+curated demo day, with one hold approved, one rejected and one still proposed).
+
+![PDF case report, pages 1 and 2](docs/screenshots/report-pdf.png)
 
 **9. Live Network.** The 3D map of every payment in the file, with the open case highlighted and the agent's money trace drawn as it runs. *View full graph* on a case opens it here.
 
@@ -278,6 +295,8 @@ How FlowTrace holds money, and what it is based on:
 - `GET /api/audit?case_id=&limit=` returns the audit trail.
 - `GET /api/cases/{id}/overview` returns everything the case page shows, built from the stored case, result and hold plan plus a read-only listing of the case's actions (it never writes, so polling it is safe): figures, the flow with account roles, timeline, amount distribution, payments, findings, summary and investigation status.
 - `GET /api/cases/{id}/report.md` downloads the STR draft as Markdown (409 until the case is investigated).
+- `GET /api/cases/{id}/report.pdf` downloads the case report as a PDF of at most two pages, built from the same
+  overview (read-only, 409 until the case is investigated).
 
 **One tool registry** ([`agent/registry.py`](backend/flowtrace/agent/registry.py)):
 - **Read-only tools** (GRAPH.RO_QUERY): the investigation tools, `get_case`, `list_cases` and `plan_holds`.
@@ -641,6 +660,10 @@ Action-layer tests:
   - plan, approve/reject, error codes and audit;
   - a decision without the right approver token, or with no approver name, is refused.
 - **Case page** (`tests/test_case_view.py`): account roles from the flow (a pure loop is all intermediaries), history payments left out, flagged vs followed payments, a hold account downstream of the case drawn amber, the account cap, confidence and priority thresholds from config, risk and confidence as High/Medium/Low from config (never a percentage), crime types only on escalated cases, each payment's own currency next to the USD equivalent, hourly vs daily timeline, an uninvestigated case, the STR draft (evidence IDs on every point, provisional holds) and its endpoints.
+- **PDF report** (`tests/test_pdf_report.py`): it builds for an escalated case with a hold, a case closed by the rules
+  and a case with no holds; a 30-account case with 15 holds still fits two pages with "+N more"; the case page's
+  numbers, short account IDs, the footer and data credit appear in the text; the endpoint is read-only and works with
+  the graph down.
 - **Auto-hold** (`test_actions_service.py`, `test_registry.py`, `test_api_actions.py`): a provisional hold is audited as the agent and counts toward the cap; a person confirms it (normal term) or rejects it (released); unconfirmed, it is released after 1 business day; CLOSE and RELEASE end it; it never fires when switched off, without an approver token, on a manual re-plan, below the confidence bar, after a decided hold or after an analyst verdict; the UI is told exactly when it can act.
 - **Signal measurement and scoring variants** (`test_signal_rates.py`, `test_variants.py`): each evidence code measured by its own definition (pass-through pairs, fast onward, loops with their own time rules, equal splits, convergence, cash exit), the 30-example rule and shrinkage, an escalator never switched off, a missing rates file failing loudly, variant B reproduced as first pushed, and the pre-written decision rule.
 - **Frontend** (`frontend/src/lib/*.test.ts`, vitest): the layered flow layout (chains, loops, fan-out, crossings), the case stepper from real states, the STR Markdown reader, the hold promise text, business-day hold ends and payments in their own currency.

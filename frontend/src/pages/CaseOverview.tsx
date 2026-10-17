@@ -183,16 +183,21 @@ function CasePage({ caseId }: { caseId: string }) {
           </div>
         </div>
         {investigated ? (
-          <a href={`/api/cases/${o.case_id}/report.md`} download
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold shadow-sm"
-            style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>
-            <Download size={16} aria-hidden /> Download report
-          </a>
+          <span className="flex flex-col items-end gap-1">
+            <a href={`/api/cases/${o.case_id}/report.pdf`} download
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold shadow-sm"
+              style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>
+              <Download size={16} aria-hidden /> Generate report
+            </a>
+            <span className="text-xs" style={{ color: 'var(--muted)' }}>
+              PDF, 2 pages · <a href={`/api/cases/${o.case_id}/report.md`} download className="underline">Markdown</a>
+            </span>
+          </span>
         ) : (
           <span className="flex flex-col items-end gap-1">
             <button disabled aria-describedby="report-why" className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold opacity-50 cursor-not-allowed"
               style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>
-              <Download size={16} aria-hidden /> Download report
+              <Download size={16} aria-hidden /> Generate report
             </button>
             <span id="report-why" className="text-xs" style={{ color: 'var(--muted)' }}>After the investigation</span>
           </span>

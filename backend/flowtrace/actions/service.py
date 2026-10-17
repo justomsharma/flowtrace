@@ -177,7 +177,8 @@ def list_actions(case_id: str | None = None, status: str | None = None, expire: 
     return [dict(r["action"]) for r in ro(Q.LIST_ACTIONS, {"case_id": case_id, "status": status}).rows]
 
 
-def audit(case_id: str | None = None, limit: int = 200) -> list[dict]:
-    """The audit trail, newest first."""
-    expire_due()
+def audit(case_id: str | None = None, limit: int = 200, expire: bool = True) -> list[dict]:
+    """The audit trail, newest first. expire=False keeps it read-only (the PDF report)."""
+    if expire:
+        expire_due()
     return [dict(r["entry"]) for r in ro(Q.AUDIT_LOG, {"case_id": case_id}).rows[:limit]]

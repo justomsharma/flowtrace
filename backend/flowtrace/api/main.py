@@ -29,7 +29,7 @@ from flowtrace import store
 from flowtrace.actions import planner, service
 from flowtrace.agent import registry
 from flowtrace.agent.investigate import save_case_memory
-from flowtrace.api import case_view, guard, jobs
+from flowtrace.api import case_view, guard, jobs, pdf_report
 from flowtrace.api.overview import build_overview
 from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
@@ -498,8 +498,12 @@ def case_overview(case_id: str) -> dict:
     plan, plus a read-only listing of the case's actions."""
     if case_id not in CASES:
         raise HTTPException(404, "no such case")
+    return _overview(case_id, _case_actions(case_id))
+
+
+def _overview(case_id: str, actions: list[dict]) -> dict:
     c = CASES[case_id]
-    return {**case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), _case_actions(case_id),
+    return {**case_view.build_overview(c, RESULTS.get(case_id), store.load_plan(case_id), actions,
                                        _job_brief(case_id), _failed(case_id), cfg(),
                                        uploaded_at=BATCHES.get(c.get("batch_id") or "", {}).get("uploaded_at")),
             "auto_hold": auto_hold_policy()}
@@ -515,6 +519,24 @@ def case_report(case_id: str) -> Response:
     md = case_view.str_markdown(CASES[case_id], RESULTS[case_id], store.load_plan(case_id), _case_actions(case_id))
     return Response(md, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{case_id}-STR-draft.md"'})
+
+
+@app.get("/api/cases/{case_id}/report.pdf")
+def case_report_pdf(case_id: str) -> Response:
+    """The case report as a PDF of at most two pages, built from the case page's own overview (read-only)."""
+    if case_id not in CASES:
+        raise HTTPException(404, "no such case")
+    if case_id not in RESULTS:
+        raise HTTPException(409, "investigate the case first: the report comes from the investigation")
+    actions = _case_actions(case_id)
+    try:
+        audit = service.audit(case_id=case_id, limit=50, expire=False)
+    except Exception as e:  # the graph may be restarting: the report still has the case, without its audit trail
+        log.warning("could not read the audit trail for %s: %s", case_id, e)
+        audit = []
+    pdf = pdf_report.build_pdf(_overview(case_id, actions), RESULTS[case_id], actions, audit)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{case_id}-report.pdf"'})
 
 
 # --- actions: the agent proposes, a person decides ------------------------------------------------
