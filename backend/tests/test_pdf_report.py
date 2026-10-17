@@ -56,7 +56,7 @@ def test_escalated_case_with_a_hold():
                  "decisions are made by a person", "IBM AMLworld HI-Small (CDLA-Sharing-1.0)", "Page 2 of 2"):
         assert part in text, part
     assert o["kpis"]["amount"] == 33_855.25  # the same number the case page shows, from the same overview
-    assert o["crime_guess"] and not any(c in text for c in o["crime_guess"])  # the crime guess stays off the report
+    assert o["crime_guess"] and not any(c in text for c in o["crime_guess"])  # the typology guess stays off the report
 
 
 def test_closed_case_by_the_rules():
@@ -170,6 +170,9 @@ def test_window_totals_quoted_by_the_ai_are_labelled_everywhere():
     assert note in o["summary"]["totals_note"] and FLAGGED in o["summary"]["totals_note"]
     md = V.str_markdown(case(FAN), r, None, [], RULES)
     assert note in md and FLAGGED in md
+    # In the draft (and so on the Reports page) it sits under the summary, where the figure first appears, once.
+    summary = md.split("## Summary", 1)[1].split("Recommendation:", 1)[0]
+    assert md.count(note) == 1 and f"- {o['summary']['totals_note']}" in summary
 
 
 def test_no_label_when_the_ai_uses_the_flagged_totals():

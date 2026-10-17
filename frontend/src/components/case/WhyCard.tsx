@@ -66,7 +66,7 @@ export default function WhyCard({ o, onInvestigate }: { o: CaseOverview; onInves
         <span className="text-xs" style={{ color: 'var(--muted)' }}>How far the case is from a decision line (a score, not a probability)</span>
       </Cell>
 
-      <Cell label="Possible crime type (indicative, not a finding)">
+      <Cell label="Possible typology (indicative, not a finding)">
         {o.crime_guess.length ? (
           <span className="flex flex-wrap gap-1.5">
             {o.crime_guess.slice(0, 3).map((c) => (
@@ -80,7 +80,7 @@ export default function WhyCard({ o, onInvestigate }: { o: CaseOverview; onInves
             <span className="text-base font-semibold">Not determined</span>
             <span className="text-xs" style={{ color: 'var(--muted)' }}>
               {!o.summary ? 'Shown after the investigation.' : s.state === 'escalate'
-                ? 'The pattern does not point to one crime.' : 'Shown for escalated cases only.'}
+                ? 'The pattern does not point to one typology.' : 'Shown for escalated cases only.'}
             </span>
           </>
         )}

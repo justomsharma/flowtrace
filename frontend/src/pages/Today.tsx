@@ -99,7 +99,7 @@ export default function Today() {
             ))}
           </ol>
           <p className="text-xs mt-3" style={{ color: 'var(--muted)' }}>
-            To watch the payments being drawn as they load, upload from the <Link to="/" className="underline">Live Network</Link> instead.
+            To watch the payments being drawn as they load, upload from the <Link to="/?fresh=1" className="underline">Live Network</Link> instead.
           </p>
         </section>
       )}

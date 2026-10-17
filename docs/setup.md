@@ -102,7 +102,7 @@ Action-layer tests:
 - **API**:
   - plan, approve/reject, error codes and audit;
   - a decision without the right approver token, or with no approver name, is refused.
-- **Case page** (`tests/test_case_view.py`): account roles from the flow (a pure loop is all intermediaries), history payments left out, flagged vs followed payments, a hold account downstream of the case drawn amber, the account cap, confidence and priority thresholds from config, risk and confidence as High/Medium/Low from config (never a percentage), crime types only on escalated cases, each payment's own currency next to the USD equivalent, hourly vs daily timeline, an uninvestigated case, the STR draft (evidence IDs on every point, provisional holds) and its endpoints.
+- **Case page** (`tests/test_case_view.py`): account roles from the flow (a pure loop is all intermediaries), history payments left out, flagged vs followed payments, a hold account downstream of the case drawn amber, the account cap, confidence and priority thresholds from config, risk and confidence as High/Medium/Low from config (never a percentage), possible typologies only on escalated cases, each payment's own currency next to the USD equivalent, hourly vs daily timeline, an uninvestigated case, the STR draft (evidence IDs on every point, provisional holds) and its endpoints.
 - **PDF report** (`tests/test_pdf_report.py`): it builds for an escalated case with a hold, a case closed by the rules
   and a case with no holds; a 30-account case with 15 holds still fits two pages with "+N more"; the case page's
   numbers, short account IDs, the footer and data credit appear in the text; the endpoint is read-only and works with

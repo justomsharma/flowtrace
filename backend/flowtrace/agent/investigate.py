@@ -23,7 +23,7 @@ POLICIES = {"llm": LLMPolicy, "heuristic": HeuristicPolicy, "fixed": FixedPolicy
 
 
 def crime_hypotheses(ctx: CaseContext, rules: dict) -> list[dict]:
-    """Map the observed shape to predicate crimes the data generator models. Hypotheses, not findings."""
+    """Map the observed shape to the money-laundering typologies it resembles. Hypotheses, not findings."""
     out = []
     shape = (ctx.shape or {}).get("typology")
     for crime in rules["crime_hypotheses"].get(shape, []):

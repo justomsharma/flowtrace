@@ -61,7 +61,7 @@ The same tools are served over **MCP** (`python -m flowtrace.mcp.server`), so Cl
 
 All thresholds and weights live in [`config.yaml`](../config.yaml).
 
-**Crime type.** The dataset labels laundering yes/no only. The "possible predicate crime" maps the observed shape to the crimes the data generator models (extortion, loan sharking, gambling, prostitution, kidnapping, robbery, embezzlement, drugs, smuggling), plus the few indicators with a well-supported link (`crime_by_indicator`: money returning to its sender -> embezzlement, money forwarded straight on -> money mule). Splits, cash or crypto, many sources and convergence are left out: they are common in normal accounts. It is a **hypothesis**, labelled *indicative*, shown for escalated cases only, and is not a measured prediction.
+**Possible typology.** The dataset labels laundering yes/no only. The "possible typology" maps the observed shape to the money-laundering typology it resembles (money mule distribution, funnel account, layering, round-tripping, money mule pass-through), plus the few indicators with a well-supported link (`crime_by_indicator`: money returning to its sender -> round-tripping, money forwarded straight on -> money mule pass-through). It never guesses the underlying crime, which the payments alone cannot show. Splits, cash or crypto, many sources and convergence are left out: they are common in normal accounts. It is a **hypothesis**, labelled *indicative*, shown for escalated cases only, and is not a measured prediction.
 
 ## Acting on a case: holds a person approves
 
@@ -181,7 +181,7 @@ All screenshots are from the real app on the curated sample day (`demo_mixed_202
 - **Four figures:** the amount involved, accounts connected, red flags found, and the investigation status (Queued, Investigating, Escalate, Review or Close).
 - **Transaction flow**, left to right. Each account's role comes from the flow itself: no money in = sender, no money out = destination, otherwise intermediary. Red arrows are suspicious payments, amber arrows carried case money into a proposed hold, and the amber ring marks the hold (dashed = proposed, solid = approved).
 - **Key findings:** one row per red flag, with a confidence badge from the evidence weight (thresholds in `config.yaml`, `ui.evidence_confidence`). Under them, the legitimate explanations the agent found.
-- **Verdict card:** risk and confidence as High / Medium / Low, at the thresholds in `config.yaml` (`disposition.escalate_at`, `close_below`, `confidence_labels`). The confidence score measures distance from a decision line; it is not a probability, so no percentage is shown. Escalated cases also show a *possible crime type (indicative, not a finding)*.
+- **Verdict card:** risk and confidence as High / Medium / Low, at the thresholds in `config.yaml` (`disposition.escalate_at`, `close_below`, `confidence_labels`). The confidence score measures distance from a decision line; it is not a probability, so no percentage is shown. Escalated cases also show a *possible typology (indicative, not a finding)*.
 
 Every amount is the **USD equivalent** (the dataset's payments in other currencies are converted at its fixed rates), and each payment row also shows the payment in its own currency (EUR, SAR, BRL…).
 

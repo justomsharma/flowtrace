@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getJSON, type BatchSummary } from './api'
+import { newestBatch } from './home'
 
 interface BatchCtx {
   /** The batch in the URL, else the newest upload. */
@@ -31,7 +32,7 @@ export function BatchProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (urlBatch || fresh) return
     getJSON<{ batch_id: string; uploaded_at?: number }[]>('/api/batches')
-      .then((bs) => setNewest([...bs].sort((a, b) => (b.uploaded_at ?? 0) - (a.uploaded_at ?? 0))[0]?.batch_id ?? null))
+      .then((bs) => setNewest(newestBatch(bs)))
       .catch(() => setNewest(null))
       .finally(() => setListed(true))
   }, [urlBatch, fresh])
