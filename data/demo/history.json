@@ -1,0 +1,38 @@
+{
+  "exact_accounts": 545,
+  "hubs_capped": [
+    "70:100428660",
+    "70:1004286A8",
+    "70:1004286F0",
+    "70:100428738",
+    "70:100428780",
+    "70:1004287C8",
+    "70:100428810",
+    "70:100428858",
+    "70:1004288A0",
+    "70:1004288E8",
+    "70:100428930",
+    "70:100428978",
+    "70:1004289C0",
+    "70:100428A08",
+    "70:100428A51"
+  ],
+  "detector_accounts": 385,
+  "threshold_accounts": 3899,
+  "padding_transfers": 30153,
+  "transfers": 57010,
+  "siblings_of": 76,
+  "accounts": 25916,
+  "scoring_payments": 502017,
+  "samples": [
+    "demo_mixed_2022-09-09.csv",
+    "legit_lookalikes_2022-09-09.csv",
+    "small_test_2022-09-09.csv",
+    "eval/day_slice_2022-09-09.csv"
+  ],
+  "history_until": "2022-09-09",
+  "full_graph": {
+    "accounts": 515088,
+    "transfers": 3641261
+  }
+}

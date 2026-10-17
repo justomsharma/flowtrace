@@ -1,0 +1,43 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:6.0.2
+    ports:
+      - "6379:6379"   # Redis protocol (Python client)
+      - "3000:3000"   # FalkorDB Browser
+    environment:
+      # Per-query timeouts in ms; agent tools also pass their own, capped by TIMEOUT_MAX.
+      FALKORDB_ARGS: "THREAD_COUNT 4 TIMEOUT_MAX 60000 TIMEOUT_DEFAULT 15000"
+      # Durability: with RDB snapshots alone, writes since the last snapshot were lost whenever the
+      # container stopped before the final save finished. The append-only file logs every write
+      # (fsync once a second), so a restart replays it.
+      REDIS_ARGS: "--appendonly yes --appendfsync everysec"
+    volumes:
+      - falkordb_data:/var/lib/falkordb/data   # the image's data dir (/data is only a symlink to it)
+    # Time to finish the shutdown save of a ~170 MB graph before Docker kills the process (default 10 s).
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # The whole app on the demo history, in one container (docker compose --profile app up -d --build):
+  # http://localhost:8000. It uses its own graph (flowtrace_demo) and loads the demo history into it on first start.
+  app:
+    profiles: ["app"]
+    build: .
+    ports:
+      - "${APP_PORT:-8000}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      GRAPH_NAME: flowtrace_demo
+      DEMO_MODE: "1"
+    volumes:
+      - app_runs:/app/data/runs
+    depends_on:
+      - falkordb
+    restart: unless-stopped
+
+volumes:
+  falkordb_data:
+  app_runs:

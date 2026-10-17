@@ -24,6 +24,8 @@ npm-debug.log*
 
 # Data and models (too large for git)
 data/raw/
+data/runs/
+data/processed/bulk/
 *.parquet
 *.pkl
 *.joblib
@@ -33,3 +35,5 @@ data/raw/
 Thumbs.db
 .vscode/
 .idea/
+venv/
+tools/

@@ -1,0 +1,16 @@
+# Only what the image needs (see Dockerfile).
+*
+!requirements.txt
+!config.yaml
+!backend/flowtrace
+!frontend
+frontend/node_modules
+frontend/dist
+frontend/.env*
+!data/samples/*.csv
+!data/demo
+!data/processed/fx_rates.json
+!data/processed/overview.json
+!data/processed/signal_rates.json
+!data/models/*.json
+**/__pycache__

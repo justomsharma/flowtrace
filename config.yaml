@@ -1,0 +1,189 @@
+# Every threshold and weight FlowTrace uses for flagging. Each one is documented in the README.
+# Amounts are in USD (the dataset is converted at fixed rates); INR equivalents use inr_per_usd.
+
+inr_per_usd: 83.0
+
+# --- Investigation budget --------------------------------------------------------------------
+agent:
+  max_steps: 6
+  max_queries: 40           # hard cap on Cypher queries per case (a trace uses 2 per hop)
+  query_timeout_ms: 10000
+  case_timeout_s: 120
+  history_days: 8           # baseline window before the alert
+  prefetch_top: 15          # after an upload, the top cases are investigated in the background...
+  prefetch_parallel: 3      # ...this many at a time (about 1 LLM request a second: far below rate limits)
+
+# --- Money trace ---------------------------------------------------------------------------
+trace:
+  max_hops: 4
+  max_gap_hours: 72          # money must move on within this long to count as the same flow
+  hub_degree: 500            # stop tracing at accounts busier than this (merchants, processors)
+  frontier_cap: 40           # largest frontier expanded per hop
+
+# --- Typology detectors (Stage A) ----------------------------------------------------------
+detectors:
+  window_hours: 24
+  fan_out_min: 5             # distinct receivers in window
+  fan_in_min: 5              # distinct senders in window
+  passthrough:               # money in, similar amount out within the gap (FATF 2023, FinCEN FIN-2014-A005)
+    max_gap_hours: 24
+    ratio_low: 0.80          # outgoing amount / incoming amount
+    ratio_high: 1.05
+    min_amount_usd: 1000
+  # Share of each detector's hits that were real laundering on the validation days (eval.tune),
+  # shrunk toward the pooled rate of all detectors as if it had precision_prior_hits more hits.
+  precision_prior_hits: 20
+  precision: {FAN-OUT: 0.0108, FAN-IN: 0.054, GATHER-SCATTER: 0.0087, PASS-THROUGH: 0.0112, SCATTER-GATHER: 0.1098, CYCLE: 0.2959}
+  scatter_gather_min_mid: 3  # intermediaries between one source and one sink
+  cycle_max_hops: 4
+  structuring:
+    threshold_inr: 1000000   # PMLA cash reporting threshold (Rs 10 lakh)
+    band_low: 0.80           # amounts between 80% and 100% of the threshold
+    min_count: 3
+
+# --- Cases (Stage B) -------------------------------------------------------------------------
+# A signal opens a case when its probability reaches flag_probability; cases are ranked by the chance
+# at least one of their signals is right, and the top daily_capacity become "Today's work".
+cases:
+  flag_probability: 0.50    # tuned on Sep 7-8: 10-20 cases a day, most attempts in the top 15 (data/runs/tune.json)
+  hub_degree: 70            # degree over the lookback window at which an account is a hub (p99, eval.tune)
+  hub_lookback_days: 6      # history window for that degree; eval.tune fits hub_degree on a window of this length
+  max_accounts: 30          # largest case one analyst reviews; bigger groups split around their riskiest accounts
+  daily_capacity: 15        # cases the team works per day -> "Today's work"
+
+# Raw model score -> probability of laundering (isotonic on Sep 7-8, written by eval.tune).
+calibration:
+  x: [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.92, 0.94, 0.96, 0.98, 1.0]
+  y: [0.0, 0.00202, 0.00777, 0.01113, 0.01429, 0.01759, 0.01797, 0.01797, 0.02098, 0.02098, 0.02098, 0.05004, 0.05004, 0.05004, 0.07212, 0.07778, 0.07778, 0.07778, 0.08654, 0.13423, 0.15116, 0.18072, 0.20455, 0.22222, 0.35897, 0.59184, 0.63158, 0.63636, 0.75, 0.925, 0.98765, 1.0]
+
+# --- Legitimacy checks (counter-evidence) --------------------------------------------------
+legitimacy:
+  recurring:
+    min_occurrences: 3
+    max_gap_cv: 0.20         # std/mean of gaps between payments
+    max_amount_cv: 0.05      # fixed amounts (EMI, rent, subscription)
+    max_amount_cv_bill: 0.25 # variable amounts on a fixed schedule (card bills, utilities)
+    cadences_days: {daily: [0.75, 1.25], weekly: [6, 8], biweekly: [12, 16], monthly: [26, 35]}
+  established_relationship:
+    min_prior_tx: 3
+    min_age_days: 3          # HI-Small spans 10 days; raise to 30-90 on longer data
+  hub_receiver_in_degree: 200  # receivers this busy look like merchants, lenders, utilities
+  baseline_z_max: 3.0        # robust z-score vs the account's own history (median/MAD)
+
+# --- Risk escalators (override legitimacy) ---------------------------------------------------
+escalators:
+  new_counterparty_share: 0.5
+  equal_split_amount_cv: 0.05
+  fast_forward_hours: 24
+  fast_forward_share: 0.5
+  high_risk_formats: [Cash, Bitcoin]
+
+# --- Disposition (Stage C) -----------------------------------------------------------------
+# Case-level decision. Computed in code from the evidence ledger, never by the LLM.
+disposition:
+  # Weight each indicator by its measured strength (data/processed/signal_rates.json, built by
+  # python -m flowtrace.ml.signal_rates on Sep 1-6). Off = every indicator counts at its tool weight.
+  # A lift is used only with min_laundering labelled laundering payments behind it, and is shrunk toward 1
+  # by prior_laundering pseudo laundering payments at the base rate. It never switches off an escalator.
+  # Off by measurement (flowtrace.eval.variants on Sep 7-8, rule written before measuring): on, it escalated
+  # 3 more legitimate cases for the same recall bar. The case page still uses the measurement for its tags.
+  measured_weights:
+    enabled: false
+    min_laundering: 30
+    prior_laundering: 10
+  # risk = w_ml * model score + w_red * red-flag strength + w_shape * shape confidence
+  #        - w_legit * legitimacy strength (halved when any escalator fired), clipped to [0, 1]
+  w_ml: 0.45
+  w_red: 0.35
+  w_shape: 0.20
+  w_legit: 0.40
+  escalate_at: 0.55         # risk at or above -> ESCALATE (human review + draft STR)
+  close_below: 0.25         # risk below, with legitimacy >= close_min_legit and no escalator -> CLOSE
+  close_min_legit: 0.5
+  # The confidence score (distance from the nearest threshold, plus how much evidence was gathered) is not a
+  # calibrated probability, so it is only shown as High / Medium / Low, at these cut-offs.
+  confidence_labels: {high: 0.8, medium: 0.6}
+  close_expiry_days: 90
+
+# --- Actions (hold planner + human approval) ------------------------------------------------
+# The agent only proposes; a person approves or rejects with a reason. Set before measuring, not tuned on Sep 9.
+actions:
+  hold_expiry_business_days: 4   # policy setting, not a legal limit. A hold is a lien on the case money in the
+                                 # account, not a freeze of the account (RBI draft KYC Amendment Directions, Sep
+                                 # 2026: "temporary debit holds on amounts or accounts linked to money-mule
+                                 # activity"). For comparison, UK FCA FG24/6 lets the payer's bank delay ONE
+                                 # outbound payment up to 4 business days.
+  str_fiu: FIU-IND               # where an STR is filed (India: FIU-IND); set your country's FIU here
+  max_holds_per_case: 3          # beyond this the planner keeps the holds that freeze the most money
+  min_hold_usd: 1000             # never propose a hold on less (same floor as the pass-through rule)
+  propose_for: [ESCALATE]        # holds only after ESCALATE (reasonable grounds to suspect); REVIEW is mixed
+                                 # evidence. Decided after seeing the Sep 9 results (it was [ESCALATE, REVIEW])
+  auto_hold:                     # a provisional hold, placed by the agent, that a person confirms or it is released
+    # It acts only when ALL hold: enabled here, APPROVER_TOKEN set on the API server, an investigation a person
+    # started (never a background prefetch or re-queue) recommends ESCALATE with a confidence score >=
+    # min_confidence (a score, not a probability),
+    # the planner found a hold, and no hold of the case was ever decided (approved, rejected, released) and no
+    # analyst gave the case a verdict. The hold is PROVISIONAL: released at the end of confirm_business_days
+    # unless a person confirms it. Filing an STR is never automatic. On by measurement (Sep 7-8, rule written
+    # before measuring): 11 of 11 cases it would hold were laundering, $0 frozen on legitimate cases.
+    enabled: true
+    min_confidence: 0.9
+    confirm_business_days: 1
+  min_reason_chars: 5            # an approval or rejection needs a written reason
+  expiry_check_seconds: 60       # how often the API releases holds whose time is up
+
+# --- Case page (display only; never used for flagging or the disposition) --------------------
+ui:
+  evidence_confidence: {high: 0.5, medium: 0.35}  # evidence weight at or above -> High / Medium badge; below -> Low
+  priority: {high: 0.95, medium: 0.8}              # case score at or above -> High / Medium priority; below -> Low
+  flow_max_accounts: 16                            # accounts drawn in the case's flow graph (case + hold accounts always kept)
+
+# --- Possible typology (interpretation, not a measured label) -------------------------------
+# The dataset labels laundering yes/no only. These map an observed shape to the money-laundering typology it
+# resembles, as an analyst hint shown for escalated cases only. Laundering typologies only: no guess at the
+# underlying (predicate) crime, which the payments alone cannot show.
+crime_hypotheses:
+  FAN-OUT: [money mule distribution, layering]      # one account splits the money across many receivers
+  FAN-IN: [funnel account]                          # many senders pay into one account
+  GATHER-SCATTER: [funnel account, money mule distribution]
+  SCATTER-GATHER: [layering]                        # split across intermediaries, then brought back together
+  CYCLE: [round-tripping]
+  STACK: [layering]
+  BIPARTITE: [layering]
+  PASS-THROUGH: [money mule pass-through]
+  RANDOM: []              # a chain with no regular shape points to no single typology on its own
+
+# Indicators with a well-supported link to a typology, used with the shape above (escalated cases only).
+# Money returning to its sender is round-tripping (as CYCLE above); money forwarded straight on is the
+# money-mule pattern (FATF 2022, "Money laundering from cyber-enabled fraud"). Splits, cash or crypto, many
+# sources and convergence are left out: they are common in normal accounts and point to no single typology.
+crime_by_indicator:
+  CYCLE: [round-tripping]
+  ROUND_TRIP: [round-tripping]
+  PASS_THROUGH: [money mule pass-through]
+  FAST_ONWARD_TRANSFER: [money mule pass-through]
+
+# --- LLM spend --------------------------------------------------------------------------------
+# A daily cap on what the LLM may cost (UTC day, counted from the tokens each call reports). Over it, the agent
+# and the reports fall back to the rule-based policy until midnight UTC. 0 = no cap. Prices are USD per million
+# tokens (gpt-6-luna list price, Oct 2026); a model not listed is counted at the expensive default, so the cap
+# errs on the safe side.
+llm:
+  daily_budget_usd: 2.0
+  price_per_mtok:
+    gpt-6-luna: {input: 0.10, output: 0.50}
+    default: {input: 5.0, output: 25.0}
+
+# --- Public demo (DEMO_MODE=1 on the server) --------------------------------------------------
+# Only the bundled sample files can be uploaded, and a sample already uploaded opens as it is (nobody's demo
+# is renumbered under them). Anonymous investigations use the rule-based agent and never auto-hold; the signed-in
+# approver gets the LLM agent. Limits count per visitor (Fly-Client-IP; an IPv6 address by its /64) and in total.
+demo:
+  prefetch: false            # no background investigations after an upload: a person starts each one, so LLM spend
+                             # follows real clicks only (and only the approver's runs may auto-hold)
+  investigations_per_ip: {count: 6, minutes: 60}
+  investigations_total: {count: 60, minutes: 60}
+  uploads_per_ip: {count: 4, minutes: 10}
+  plans_per_ip: {count: 20, minutes: 10}
+  mcp_per_ip: {count: 120, minutes: 10}       # every MCP request, read tools too
+  approver_failures_per_ip: {count: 5, minutes: 15}   # wrong approver tokens before a visitor is locked out
