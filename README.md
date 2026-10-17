@@ -64,14 +64,14 @@ the decision (Escalate / Review / Close) and the holds are computed in code. Det
 
 ## See it work
 
-All screenshots are from the real app on the curated sample day (2,271 payments).
+All screenshots are from the live app on the curated sample day (2,271 payments).
 
 | | |
 |---|---|
-| ![Today's work: ranked cases](docs/screenshots/todays-work.png) **Today's work.** 40 flagged payments become 17 cases; the top 15 are today's work. | ![Case overview](docs/screenshots/case-overview.png) **Case overview.** Key findings with confidence, and the money flow from sender to destination. |
-| ![Investigation streaming live](docs/screenshots/investigation.png) **Live investigation.** Each step streams in: what the agent checked, why, and what it found. | ![Proposed holds on a case](docs/screenshots/holds.png) **The agent acts.** It proposes holds. The bar shows money frozen now, still in the trail, and already gone. |
-| ![Approved hold and STR filing](docs/screenshots/approve.png) **A person decides.** Approve or reject needs a name and a written reason. | ![Holds and audit log](docs/screenshots/results.png) **Holds & audit.** Holds with live countdowns, and the append-only audit log. |
-| ![PDF case report, pages 1 and 2](docs/screenshots/report-pdf.png) **PDF case report.** Two pages for an analyst or compliance officer. [Sample PDF](docs/sample-report.pdf). | ![Live Network](docs/screenshots/live-network.png) **Live Network.** Every payment in 3D, with the agent's money trace drawn as it runs. |
+| ![Today's work: ranked cases](docs/screenshots/todays-work.png) **Today's work.** 2,271 payments, 40 flagged, 17 cases, ranked by the chance of laundering. | ![Case overview](docs/screenshots/case-overview.png) **Case overview.** The money flow from sender to receivers, and the key findings with their confidence. |
+| ![Investigation streaming live](docs/screenshots/investigation.png) **Live investigation.** Each check streams in with what it found; then the agent writes the report. | ![Confirm or release holds](docs/screenshots/holds.png) **A person decides.** The agent's provisional holds wait for a person to confirm or release them, with a name and a reason. |
+| ![Holds and audit](docs/screenshots/results.png) **Holds & audit.** Money frozen today, holds with live countdowns, and the cases waiting for a person. | ![STR draft](docs/screenshots/reports.png) **Reports.** The STR draft for each investigated case, with evidence IDs on every point. |
+| ![PDF case report, pages 1 and 2](docs/screenshots/report-pdf.png) **PDF case report.** Two pages for an analyst or compliance officer. [Sample PDF](docs/sample-report.pdf). | ![Live Network](docs/screenshots/live-network.png) **Live Network.** Every payment in 3D, with the open case and its money trail highlighted. |
 
 ## Why a graph
 

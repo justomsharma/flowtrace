@@ -166,13 +166,13 @@ The server needs FalkorDB and the cases the app saved (`data/runs`), but not the
 
 ## The screens, one by one
 
-All screenshots are from the real app on the curated sample day (`demo_mixed_2022-09-09.csv`), at laptop width.
+All screenshots are from the real app on the curated sample day (`demo_mixed_2022-09-09.csv`), at laptop width. Screens 2–4 and 6–9 were taken on the live demo; screens 1 and 5 come from an earlier local run.
 
 **1. Upload a day of payments**, or try the sample day. The steps show while the file is processed.
 
 ![Upload in progress](screenshots/upload.png)
 
-**2. Today's work.** 2,271 payments become 40 flagged payments and 17 cases. The 15 with the highest chance of laundering are today's work; the other 2 are folded under *Lower priority*. The agent investigates the top 15 in the background. The sidebar lists the top cases with a dot for their disposition, and "System online" comes from `/api/health` (graph database and AI investigator). This is the curated demo sample; full-day numbers are in [Results](evaluation.md#results-measured-reproduce-with-the-commands-below).
+**2. Today's work.** 2,271 payments become 40 flagged payments and 17 cases. The 15 with the highest chance of laundering are today's work; the other 2 are folded under *Lower priority*. On a local run the agent investigates the top 15 in the background; on the public demo nothing runs in the background, and here cases 1–8 were investigated by the AI agent. The sidebar lists the top cases with a dot for their disposition, and "System online" comes from `/api/health` (graph database and AI investigator). This is the curated demo sample; full-day numbers are in [Results](evaluation.md#results-measured-reproduce-with-the-commands-below).
 
 ![Today's work: ranked cases](screenshots/todays-work.png)
 
@@ -185,17 +185,19 @@ All screenshots are from the real app on the curated sample day (`demo_mixed_202
 
 Every amount is the **USD equivalent** (the dataset's payments in other currencies are converted at its fixed rates), and each payment row also shows the payment in its own currency (EUR, SAR, BRL…).
 
+The screenshot shows case 5's money flow, key findings and summary.
+
 ![Case overview](screenshots/case-overview.png)
 
-**4. The agent acts: recommended next step.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Every hold, and the case decision (here: file an STR), waits for a person. Nothing starts ticked, and holds and the case decision are approved or rejected separately. A proposed hold shows when it would end before anyone approves it.
+**4. The agent acts: recommended next step.** After an escalation, the agent proposes which accounts to hold. A hold freezes only the case money traced into an account, never its whole balance. The headline is the money frozen now. The bar splits the case money into frozen now, still in the trail, and already gone (cash, crypto, another currency or a merchant). Every hold, and the case decision (here: file an STR), waits for a person. Nothing starts ticked, and holds and the case decision are approved or rejected separately. A proposed hold shows when it would end before anyone approves it. Here, case 5's three holds were placed provisionally by the agent (auto-hold) and wait for a person to confirm or release them.
 
-![Proposed holds on a case](screenshots/holds.png)
+![Provisional holds waiting for a person](screenshots/holds.png)
 
 **5. A person decides.** Approve or Reject needs the person's name (asked once) and a written reason, and the server checks its approver token. An approved hold shows who approved it, why, and a live countdown to its automatic release.
 
 ![Approved hold and STR filing](screenshots/approve.png)
 
-**6. Live investigation.** The agent's steps stream onto the case page as it works: what it checked, why, and what it found. The stepper maps the case to its real states: alert received, scored, graph investigation, report, analyst review.
+**6. Live investigation.** The agent's checks stream onto the case page as it works: what it checked and what each check found, then the report is written (here case 9, four checks in). The stepper at the top of the page maps the case to its real states: alert received, scored, graph investigation, report, analyst review.
 
 ![Investigation streaming live](screenshots/investigation.png)
 
@@ -203,7 +205,7 @@ Every amount is the **USD equivalent** (the dataset's payments in other currenci
 
 ![Holds and audit log](screenshots/results.png)
 
-**8. Reports.** The STR draft of every investigated case, built from the report, the evidence, the proposed actions and what people decided. It downloads as Markdown.
+**8. Reports.** The STR draft of every investigated case, built from the report, the evidence, the proposed actions and what people decided. It downloads as Markdown. When the AI quotes an account's totals for the whole window, a note under the summary says which figure is which, as on the case page.
 
 ![STR draft](screenshots/reports.png)
 
@@ -220,10 +222,10 @@ analyst or a compliance officer:
 It is built from the case page's own overview, so the numbers match. Long lists end with "+N more", and each page is
 shrunk to fit, so it never runs to a third page. It prints well in black and white. It is made in Python with
 reportlab (no browser, no system packages). Sample: [docs/sample-report.pdf](sample-report.pdf) (case 5 of the
-curated demo day, with one hold approved, one rejected and one still proposed).
+curated demo day, with three holds placed provisionally by the agent and waiting for a person).
 
 ![PDF case report, pages 1 and 2](screenshots/report-pdf.png)
 
-**9. Live Network.** The 3D map of every payment in the file, with the open case highlighted and the agent's money trace drawn as it runs. *View full graph* on a case opens it here.
+**9. Live Network.** The 3D map of every payment in the file, with the open case highlighted (here case 5 and its trail) and the agent's money trace drawn as it runs. *View full graph* on a case opens it here.
 
 ![Live Network](screenshots/live-network.png)
