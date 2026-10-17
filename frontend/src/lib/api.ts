@@ -64,6 +64,10 @@ export interface Health {
   graph: boolean
   llm: boolean
   model?: string
+  /** The public demo: only the bundled samples can be uploaded. */
+  demo?: boolean
+  /** Today's LLM spend (UTC) and its cap; over the cap the rule-based investigator takes over. */
+  llm_budget?: { usd: number; budget_usd: number; over: boolean }
 }
 
 export async function getJSON<T>(path: string): Promise<T> {
@@ -378,9 +382,6 @@ export interface AuditEntry {
 
 /** What the holds still open freeze now, and the money on the case's routes they would also stop (assumption). */
 export interface OpenEffect { frozen: number; on_routes: number }
-
-/** The approver token for approve/reject, from the dev config (frontend/.env.development.local). */
-export const approverToken: string | undefined = import.meta.env.VITE_APPROVER_TOKEN || undefined
 
 /** POST a JSON body. The idempotency key makes a repeated click return the first answer instead of acting twice. */
 export async function sendJSON<T>(path: string, body?: unknown, opts: { key?: string; approverToken?: string } = {}): Promise<T> {

@@ -16,9 +16,10 @@ from contextlib import asynccontextmanager
 from functools import partial
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from dotenv import dotenv_values
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
@@ -27,7 +28,7 @@ from flowtrace import store
 from flowtrace.actions import planner, service
 from flowtrace.agent import registry
 from flowtrace.agent.investigate import save_case_memory
-from flowtrace.api import case_view, jobs
+from flowtrace.api import case_view, guard, jobs
 from flowtrace.api.overview import build_overview
 from flowtrace.api.runner import CaseRunner
 from flowtrace.pipeline.cases import batch_of
@@ -40,13 +41,16 @@ from flowtrace.settings import ROOT, cfg, settings
 async def lifespan(_app: FastAPI):
     if signal_rates.enabled(cfg()):
         signal_rates.rates()  # measured weights on without their file: refuse to start, never score silently without
+    if guard.demo_mode():
+        ensure_demo_history()  # before any re-queue: a lost graph means nothing stored still applies
     if should_requeue():
         threading.Thread(target=requeue_unfinished, daemon=True).start()
     else:
         log.info("not re-queuing unfinished cases in this process (set FLOWTRACE_REQUEUE=1 to force)")
     stop = threading.Event()
     threading.Thread(target=release_due_holds, args=(stop,), daemon=True).start()
-    yield
+    async with MCP_APP.router.lifespan_context(MCP_APP):  # the MCP endpoint's session manager
+        yield
     stop.set()
     RUNNER.shutdown()  # cancel queued work instead of finishing it (and paying for it) on the way out
 
@@ -68,7 +72,9 @@ def should_requeue(parent=_UNSET) -> bool:
     return parent is None
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # The deployed app serves its own frontend (same origin); CORS_ORIGINS adds others, comma-separated.
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"]
+                  + [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -110,13 +116,47 @@ def is_curated_sample(name: str) -> bool:
 
 
 def release_due_holds(stop: threading.Event) -> None:
-    """Approved holds end on their own when their time is up, even if nobody opens the app."""
+    """Approved holds end on their own when their time is up, even if nobody opens the app. In demo mode it also
+    checks the graph is still there (FalkorDB Cloud's free tier keeps no data across a restart)."""
     while not stop.wait(cfg()["actions"]["expiry_check_seconds"]):
         try:
+            if guard.demo_mode():
+                ensure_demo_history()
             if n := service.expire_due():
                 log.info("released %d hold(s) whose time was up", n)
         except Exception as e:  # the graph may be restarting; try again next time
             log.warning("hold expiry check failed: %s", e)
+
+
+# --- public demo: a clean state, and the demo history graph ------------------------------------------
+
+def reset_demo() -> dict:
+    """Back to a clean demo: no uploads, no investigations, nothing decided (flowtrace.demo.reset). Running
+    investigations are cancelled; a result that still arrives is dropped because its upload run moved on."""
+    from flowtrace.demo.reset import reset
+    for bid in list(BATCHES):
+        with RUNNER.batch_lock(bid):
+            RUNNER.new_run(bid)
+    BATCHES.clear()
+    CASES.clear()
+    RESULTS.clear()
+    guard.LIMITS.clear()
+    return reset()
+
+
+_history_lock = threading.Lock()
+
+
+def ensure_demo_history() -> None:
+    """Load the demo history graph if it is missing (a new or restarted FalkorDB), and start clean: anything
+    stored about earlier uploads no longer matches the graph."""
+    from flowtrace.demo import history
+    with _history_lock:
+        if history.is_loaded():
+            return
+        log.warning("demo history graph missing: loading data/demo/history and starting clean")
+        reset_demo()
+        log.info("demo history loaded: %s", history.load())
 
 
 def forget_batch(batch_id: str) -> None:
@@ -145,8 +185,15 @@ def health() -> dict:
         graph_ok = True
     except Exception:
         pass
-    from flowtrace.agent.llm import available, model_name
-    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name(), "auto_hold": auto_hold_policy()}
+    from flowtrace.agent.llm import available, model_name, spend
+    return {"api": True, "graph": graph_ok, "llm": available(), "model": model_name(), "auto_hold": auto_hold_policy(),
+            "demo": guard.demo_mode(), "llm_budget": {k: spend()[k] for k in ("usd", "budget_usd", "over")}}
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    """Liveness for the host's health check: the process answers. /api/health also checks the graph and LLM."""
+    return {"ok": True}
 
 
 def auto_hold_policy() -> dict:
@@ -192,10 +239,20 @@ def sample_file(name: str):
 
 # --- batches ---------------------------------------------------------------------------------
 
+DEMO_ONLY = ("This public demo only accepts the bundled sample files (try the sample day). "
+             "Run FlowTrace locally to upload your own payments.")
+
+
+def bundled_sample(data: bytes) -> str | None:
+    """The name of the bundled sample with exactly these bytes, if any."""
+    return next((p.name for p in sorted(SAMPLES.glob("*.csv"))
+                 if p.stat().st_size == len(data) and p.read_bytes() == data), None)
+
+
 @app.post("/api/batches")
-async def create_batch(file: UploadFile | None = File(None), sample: str | None = Form(None)) -> dict:
+async def create_batch(request: Request, file: UploadFile | None = File(None), sample: str | None = Form(None)) -> dict:
     if file is not None:
-        data, name = await file.read(), file.filename or "upload.csv"
+        data, name = await file.read(MAX_UPLOAD_MB * 1024 * 1024 + 1), file.filename or "upload.csv"
     elif sample:
         p = (SAMPLES / sample).resolve()
         if p.parent != SAMPLES.resolve() or not p.exists():
@@ -206,10 +263,28 @@ async def create_batch(file: UploadFile | None = File(None), sample: str | None 
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(413, TOO_LARGE)
 
-    from flowtrace.pipeline.batch import process_batch
+    from flowtrace.pipeline.batch import batch_id_for, process_batch
 
+    if guard.demo_mode():
+        name = bundled_sample(data)
+        if name is None:
+            raise HTTPException(403, DEMO_ONLY)
+        if batch_id_for(data) in BATCHES:  # already uploaded: open it as it is, never renumber someone's demo
+            return {"job_id": jobs.start("batch", partial(reopen_batch, batch_id_for(data))).id}
+    guard.limit(request, "uploads")
     job = jobs.start("batch", lambda emit: process_batch(data, name, emit), lambda result: accept_batch(result, name))
     return {"job_id": job.id}
+
+
+def reopen_batch(batch_id: str, emit) -> None:
+    """The events of an upload for a batch that is already stored, so the upload screen and the Live Network
+    finish the same way without processing the file again."""
+    emit({"type": "batch", "batch_id": batch_id})
+    f = RUNS / "graphs" / f"{batch_id}.json"
+    if f.exists():
+        emit({"type": "graph_rows", "links": json.loads(f.read_text())["links"]})
+    for stage in ("parse", "score", "graph", "detect", "cases"):
+        emit({"type": "stage", "stage": stage, "status": "done", "reused": True})
 
 
 def accept_batch(result: dict, name: str) -> None:
@@ -263,8 +338,15 @@ def _store_result(case_id: str, result: dict, started_by_person: bool = False) -
         log.warning("could not plan holds for %s: %s", case_id, e)
 
 
+def prefetch_on() -> bool:
+    """Background investigations after an upload; off on the public demo (config.yaml demo.prefetch)."""
+    return not guard.demo_mode() or bool((cfg().get("demo") or {}).get("prefetch", True))
+
+
 def prefetch(batch_id: str) -> list[str]:
     """Queue the top cases that have no result and no job yet."""
+    if not prefetch_on():
+        return []
     started = []
     with RUNNER.batch_lock(batch_id):  # same lock as accept_batch: never reads a case being renumbered
         for cid in top_cases(batch_id):
@@ -303,7 +385,7 @@ def get_batch(batch_id: str) -> dict:
     b = dict(BATCHES[batch_id])
     b["cases"] = [c | {"result": _result_brief(c["case_id"]), "job": _job_brief(c["case_id"]),
                        "failed": _failed(c["case_id"])} | _currency(c["case_id"]) for c in b["cases"]]
-    top = top_cases(batch_id)
+    top = top_cases(batch_id) if prefetch_on() else []
     b["prefetch"] = {"total": len(top), "done": sum(cid in RESULTS for cid in top), "failed": sum(map(_failed, top))}
     return b
 
@@ -335,7 +417,9 @@ def _result_brief(case_id: str) -> dict | None:
 # --- cases -----------------------------------------------------------------------------------
 
 @app.post("/api/cases/{case_id}/investigate")
-def investigate_case(case_id: str, policy: Literal["llm", "heuristic", "fixed"] = "llm") -> dict:
+def investigate_case(case_id: str, request: Request, policy: Literal["llm", "heuristic", "fixed"] = "llm") -> dict:
+    if case_id in CASES and not RUNNER.active(case_id):  # joining a running investigation costs nothing
+        guard.limit(request, "investigations")
     # Under the batch lock: a re-upload cannot renumber the case between reading it and starting its job.
     with RUNNER.batch_lock(batch_of(case_id) or case_id):
         if case_id not in CASES:
@@ -454,6 +538,20 @@ def _decide(action_id: str, approve: bool, d: Decision, key: str | None, token: 
         raise HTTPException(e.status, str(e)) from e
 
 
+@app.post("/api/auth/approver")
+def check_approver(x_approver_token: str | None = Header(None)) -> dict:
+    """The demo approver's sign-in: is this the server's approver token? Nothing is stored on the server."""
+    _check_approver(x_approver_token)
+    return {"ok": True}
+
+
+@app.post("/api/admin/reset")
+def admin_reset(x_approver_token: str | None = Header(None)) -> dict:
+    """Reset the running server to a clean demo state (flowtrace.demo.reset). Needs the approver token."""
+    _check_approver(x_approver_token)
+    return reset_demo()
+
+
 @app.post("/api/actions/{action_id}/approve")
 def approve_action(action_id: str, d: Decision, idempotency_key: str | None = Header(None),
                    x_approver_token: str | None = Header(None)) -> dict:
@@ -503,3 +601,39 @@ async def job_events(job_id: str, since: int = 0):
 @app.get("/api/config")
 def config() -> dict:
     return cfg()
+
+
+# --- MCP: the agent's tools for any MCP client, at /mcp (flowtrace.mcp.server) ---------------------
+
+def _mcp_app():
+    from mcp.server.transport_security import TransportSecuritySettings
+    from flowtrace.mcp.server import build_server
+    hosts = [h.strip() for h in os.environ.get("PUBLIC_HOSTS", "").split(",") if h.strip()]
+    security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["127.0.0.1:*", "localhost:*"] + hosts,
+        allowed_origins=["http://127.0.0.1:*", "http://localhost:*"] + [f"https://{h}" for h in hosts])
+    # The tools never approve; this process keeps APPROVER_TOKEN for its own approve endpoints.
+    return build_server(drop_approver_token=False).streamable_http_app(
+        streamable_http_path="/mcp", transport_security=security, max_sessions=100, session_idle_timeout=900)
+
+
+MCP_APP = _mcp_app()
+app.router.routes.extend(MCP_APP.routes)
+
+
+# --- the built frontend (frontend/dist), when it is there: one URL for the app and its API -------------
+
+DIST = ROOT / "frontend" / "dist"
+if (DIST / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):
+        """A file in dist (favicon ...), else the app's index.html: the app's router handles /today, /cases ..."""
+        if path.startswith(("api/", "mcp")):
+            raise HTTPException(404, "not found")
+        f = (DIST / path).resolve()
+        if path and f.is_file() and f.parent == DIST.resolve():
+            return FileResponse(f)
+        return FileResponse(DIST / "index.html")

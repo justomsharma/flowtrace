@@ -20,7 +20,8 @@ DEFAULT_TIMEOUT_MS = 10_000
 @lru_cache
 def db() -> FalkorDB:
     s = settings()
-    return FalkorDB(host=s.falkordb_host, port=s.falkordb_port, password=s.falkordb_password)
+    return FalkorDB(host=s.falkordb_host, port=s.falkordb_port, username=s.falkordb_username,
+                    password=s.falkordb_password)
 
 
 def graph(name: str | None = None):

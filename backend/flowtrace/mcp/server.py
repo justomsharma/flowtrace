@@ -11,6 +11,7 @@ profiled in the next call (the same rule as in the app: only accounts already se
 
 Run (from backend/):  python -m flowtrace.mcp.server              stdio, for Claude Desktop and most clients
                       python -m flowtrace.mcp.server --http       streamable HTTP on 127.0.0.1:8765/mcp
+The API also serves it at /mcp (streamable HTTP), so a client can use the deployed app's tools directly.
 """
 # No `from __future__ import annotations`: the MCP SDK reads these signatures to build the tool schemas.
 import argparse
@@ -44,10 +45,11 @@ def _run(name: str, args: dict, ctx: CaseContext | None = None):
         raise MCPToolError(str(e)) from e
 
 
-def build_server() -> MCPServer:
-    # Only the API approves, with APPROVER_TOKEN. This process must never hold it, even if a client config
-    # passes it in the environment.
-    os.environ.pop("APPROVER_TOKEN", None)
+def build_server(drop_approver_token: bool = True) -> MCPServer:
+    # Only the API approves, with APPROVER_TOKEN. A standalone MCP process must never hold it, even if a client
+    # config passes it in the environment. Mounted inside the API (/mcp), the API keeps it: no tool approves.
+    if drop_approver_token:
+        os.environ.pop("APPROVER_TOKEN", None)
     server = MCPServer("flowtrace", instructions=INSTRUCTIONS)
     sessions: dict[str, tuple[dict, CaseContext]] = {}
 

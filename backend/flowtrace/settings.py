@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # waits ~21 s for that to fail before falling back (35 ms with 127.0.0.1).
     falkordb_host: str = "127.0.0.1"
     falkordb_port: int = 6379
+    falkordb_username: str | None = None   # FalkorDB Cloud: "falkordb"; the local container needs none
     falkordb_password: str | None = None
     graph_name: str = "flowtrace"
 

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 import { FileText, LayoutDashboard, ListChecks, Lock, Orbit, Waypoints } from 'lucide-react'
 import { getJSON, type CaseBrief, type Health } from '../lib/api'
+import { signOut, useApprover } from '../lib/approver'
+import ApproverSignIn from './ApproverSignIn'
 import { useBatch } from '../lib/batch'
 import { inToday, caseNo } from '../lib/plain'
 
@@ -84,6 +86,8 @@ export default function Sidebar() {
 }
 
 function SystemStatus() {
+  const approver = useApprover()
+  const [signingIn, setSigningIn] = useState(false)
   const [h, setH] = useState<Health | null>(null)
   const [at, setAt] = useState<number | null>(null)
   useEffect(() => {
@@ -109,8 +113,21 @@ function SystemStatus() {
       </div>
       <ul className="flex flex-col gap-1" style={{ color: 'var(--ink-2)' }}>
         {row(h.graph, h.graph ? 'Graph database (FalkorDB)' : 'Graph database not reachable')}
-        {row(h.llm, h.llm ? `AI investigator${h.model ? ` (${h.model})` : ''}` : 'AI off: rule-based investigator')}
+        {row(h.llm, h.llm ? `AI investigator${h.model ? ` (${h.model})` : ''}`
+          : h.llm_budget?.over ? "Today's AI budget is used: rule-based investigator" : 'AI off: rule-based investigator')}
       </ul>
+      {h.demo && <p style={{ color: 'var(--ink-2)' }}>Public demo: the bundled sample files only.</p>}
+      {approver ? (
+        <p style={{ color: 'var(--ink-2)' }}>
+          Signed in as <b style={{ color: 'var(--ink)' }}>demo approver</b>{' '}
+          <button onClick={signOut} className="underline underline-offset-2">sign out</button>
+        </p>
+      ) : signingIn ? <ApproverSignIn compact /> : (
+        <p style={{ color: 'var(--ink-2)' }}>
+          Viewing only{' '}
+          <button onClick={() => setSigningIn(true)} className="underline underline-offset-2">sign in as approver</button>
+        </p>
+      )}
       {at && <p style={{ color: 'var(--muted)' }}>Checked {new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</p>}
     </section>
   )
