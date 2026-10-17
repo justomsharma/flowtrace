@@ -3,7 +3,7 @@
 **One mule chain from the curated sample:** payments come in, leave again within hours, and the agent freezes what
 is still there.
 
-**Live app:** https://flowtrace-demo.fly.dev
+**Live app:** https://flowtrace.omsharma.dev
 
 **The case:** `C001`, the top case of `demo_mixed_2022-09-09.csv`. Three accounts and $33,855 of payments.
 - The money comes in from `…2DF30`, passes through `…6A6A0` within 24 hours, and lands in `…BCFF0`.
@@ -16,18 +16,18 @@ is still there.
 1. **Reset to a clean demo, and prepare the backup case `C005`:**
    ```bash
    cd backend
-   python -m flowtrace.demo.reset --url https://flowtrace-demo.fly.dev --prerun 5
+   python -m flowtrace.demo.reset --url https://flowtrace.omsharma.dev --prerun 5
    ```
    It asks for the approver token. `--prerun 5` uploads the sample and has the agent investigate C005 (a 6-account
    fan-out ring, 3 provisional holds, $31,401). No person decides anything. Leave out `--prerun` for a fully empty
    start; then the first click on *Try the sample day* uploads it.
-2. **Check health.** https://flowtrace-demo.fly.dev/api/health should show `graph`, `llm` and `demo` all true. In the
+2. **Check health.** https://flowtrace.omsharma.dev/api/health should show `graph`, `llm` and `demo` all true. In the
    sidebar, *System online* should show the AI investigator (gpt-6-luna).
 3. **Browser tab 1:** the app at *Today's work*.
-4. **Browser tab 2 (backup):** `https://flowtrace-demo.fly.dev/case?batch=BC0C047&case=BC0C047-C005`, already
+4. **Browser tab 2 (backup):** `https://flowtrace.omsharma.dev/case?batch=BC0C047&case=BC0C047-C005`, already
    investigated.
 5. **Terminal or tab 3:** the MCP Inspector, connected (see step 7). Run `npx @modelcontextprotocol/inspector`, set
-   *Transport Type* to **Streamable HTTP**, *URL* to `https://flowtrace-demo.fly.dev/mcp`, then **Connect**.
+   *Transport Type* to **Streamable HTTP**, *URL* to `https://flowtrace.omsharma.dev/mcp`, then **Connect**.
 6. **Sign in as the demo approver in tab 1 now** (sidebar: *Sign in as approver for the AI agent and decisions*,
    then paste the token from a password manager, off screen). Signed out, *Investigate* runs the rule-based agent
    and never auto-holds; signed in, it runs the LLM agent and the auto-hold can fire.
@@ -66,4 +66,4 @@ The STR draft is on **Reports** if there is time (*Generate report* on the case 
 
 ## After the demo
 
-Reset again so the next visitor starts clean: `python -m flowtrace.demo.reset --url https://flowtrace-demo.fly.dev`.
+Reset again so the next visitor starts clean: `python -m flowtrace.demo.reset --url https://flowtrace.omsharma.dev`.

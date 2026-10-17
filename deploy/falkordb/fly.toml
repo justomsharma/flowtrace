@@ -1,13 +1,14 @@
-# FalkorDB for the public demo, on Fly's private network only: no public service, so it is reachable only from
-# the app (flowtrace-db.internal:6379) over Fly's WireGuard-encrypted 6PN network. FalkorDB Cloud's free tier has
-# no TLS, so it would carry the graph and its password in plain text over the internet.
+# Alternative to FalkorDB Cloud's free tier (which has no TLS): FalkorDB on Fly's private network only. With no
+# public service it is reachable only from the app (flowtrace-db.internal:6379) over Fly's WireGuard-encrypted 6PN
+# network, and it keeps the graph on a volume. Then set the app's FALKORDB_HOST=flowtrace-db.internal,
+# FALKORDB_PORT=6379 and FALKORDB_PASSWORD, and no FALKORDB_USERNAME.
 #
 #   fly apps create flowtrace-db
-#   fly volumes create falkordb_data --size 1 --region iad -a flowtrace-db
+#   fly volumes create falkordb_data --size 1 --region bom -a flowtrace-db
 #   fly secrets set -a flowtrace-db REDIS_ARGS="--appendonly yes --appendfsync everysec --requirepass <password>"
 #   fly deploy -c deploy/falkordb/fly.toml
 app = "flowtrace-db"
-primary_region = "iad"
+primary_region = "bom"
 
 [build]
   image = "falkordb/falkordb:6.0.2"

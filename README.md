@@ -1,8 +1,9 @@
 # FlowTrace
 
-**Live demo: https://flowtrace-demo.fly.dev**. Anyone can look around and investigate with the rule-based agent.
-The LLM agent and approvals need the demo approver token (ask the team). [3-minute demo script](docs/demo.md) · MCP endpoint: `https://flowtrace-demo.fly.dev/mcp`
-(streamable HTTP) · [How it is deployed](docs/deploy.md)
+**Live demo: https://flowtrace.omsharma.dev**. Anyone can look around and investigate with the rule-based agent.
+The LLM agent and approvals need the demo approver token (ask the team). [3-minute demo script](docs/demo.md) · MCP endpoint: `https://flowtrace.omsharma.dev/mcp`
+(streamable HTTP) · [How it is deployed](docs/deploy.md). The graph runs on FalkorDB Cloud's free tier, which has
+**no TLS** (`FALKORDB_TLS=false`): the connection needs a password but is not encrypted.
 
 FlowTrace is an AML (anti-money-laundering) agent that acts on a FalkorDB transaction graph. Upload a day of
 payments, and it does five things:
@@ -292,7 +293,7 @@ How FlowTrace holds money, and what it is based on:
 - **Read-only tools:** `account_profile`, `counterparty_history`, `recurring_flows`, `trace_funds`, `shared_counterparties`, `find_cycles`, `owner_network`, `case_memory`, `get_case`, `list_cases`, `plan_holds`. They are annotated `read_only_hint`, and their Cypher runs through GRAPH.RO_QUERY, so FalkorDB itself rejects a write.
 - **One write tool:** `propose_action`. Its proposals are recorded as `proposed_by: "mcp"`, and the confirm panel shows "Proposed by an outside AI client (MCP)".
 - **It can't approve.** There is no approve tool, and the standalone process drops `APPROVER_TOKEN` from its environment at startup, so it never holds the approver token.
-- **Hosted.** The API also serves the same server at `/mcp` (streamable HTTP), so a client can use the live demo's tools: `https://flowtrace-demo.fly.dev/mcp` (for example in the MCP Inspector: `npx @modelcontextprotocol/inspector`, transport *Streamable HTTP*). Mounted there, no tool approves either; only the API's approve endpoints, behind the approver token, do. On the public demo every MCP request counts toward a per-visitor limit, and `propose_action` also needs the approver token in an `X-Approver-Token` header.
+- **Hosted.** The API also serves the same server at `/mcp` (streamable HTTP), so a client can use the live demo's tools: `https://flowtrace.omsharma.dev/mcp` (for example in the MCP Inspector: `npx @modelcontextprotocol/inspector`, transport *Streamable HTTP*). Mounted there, no tool approves either; only the API's approve endpoints, behind the approver token, do. On the public demo every MCP request counts toward a per-visitor limit, and `propose_action` also needs the approver token in an `X-Approver-Token` header.
 - **Sessions.** Investigation tools keep one context per case for the session, so an account found by `trace_funds` can be profiled next.
 
 ```bash

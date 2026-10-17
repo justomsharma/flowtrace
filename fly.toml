@@ -1,8 +1,10 @@
-# Fly.io: the public demo (fly deploy, from a clean git checkout). Secrets (fly secrets set): FALKORDB_PASSWORD,
-# OPENAI_API_KEY, APPROVER_TOKEN. The graph is the flowtrace-db app on Fly's private network (deploy/falkordb).
-# See docs/deploy.md.
+# Fly.io: the public demo, https://flowtrace.omsharma.dev (also https://flowtrace-demo.fly.dev).
+# Deploy from a clean git checkout (docs/deploy.md). Secrets, set only with `fly secrets set`: FALKORDB_HOST,
+# FALKORDB_PORT, FALKORDB_USERNAME, FALKORDB_PASSWORD, OPENAI_API_KEY, APPROVER_TOKEN.
+# The graph is on FalkorDB Cloud's free tier, which has no TLS (FALKORDB_TLS = false below): the connection is
+# password-protected but not encrypted. deploy/falkordb is the private-network alternative.
 app = "flowtrace-demo"
-primary_region = "iad"          # next to flowtrace-db: every query crosses this link
+primary_region = "bom"          # Mumbai
 
 [build]
   dockerfile = "Dockerfile"
@@ -10,17 +12,16 @@ primary_region = "iad"          # next to flowtrace-db: every query crosses this
 [env]
   DEMO_MODE = "1"
   GRAPH_NAME = "flowtrace"
+  FALKORDB_TLS = "false"        # FalkorDB Cloud's free tier has no TLS
   LLM_PROVIDER = "openai"
   AGENT_MODEL = "gpt-6-luna"
-  PUBLIC_HOSTS = "flowtrace-demo.fly.dev"
-  FALKORDB_HOST = "flowtrace-db.internal"   # private network (WireGuard), never the internet
-  FALKORDB_PORT = "6379"
+  PUBLIC_HOSTS = "flowtrace.omsharma.dev,flowtrace-demo.fly.dev"   # hosts the MCP endpoint answers for
 
 [http_service]
   internal_port = 8080
-  force_https = true
-  auto_stop_machines = "off"    # always on: a judge's first click should not wait for a cold start
-  auto_start_machines = true
+  force_https = true            # http is redirected to https
+  auto_stop_machines = "off"    # always on: a judge's first click should not wait for a cold start, and the
+  auto_start_machines = true    # graph is queried every minute, so the free tier never sees it idle
   min_machines_running = 1
 
   [[http_service.checks]]
@@ -34,6 +35,8 @@ primary_region = "iad"          # next to flowtrace-db: every query crosses this
   source = "flowtrace_runs"     # uploads, investigations and hold plans survive a restart
   destination = "/app/data/runs"
 
+# The smallest machine that runs it reliably: the API peaks at about 450 MB while it scores an upload
+# (LightGBM, polars), too close to 512 MB.
 [[vm]]
   memory = "1gb"
   cpu_kind = "shared"
