@@ -53,6 +53,9 @@ The STR draft is on **Reports** if there is time (*Generate report* on the case 
   - Keep talking over the steps as they arrive.
   - If nothing has moved for 45 s, switch to **tab 2 (C005)**: the finished investigation, 3 provisional auto-holds,
     $31,401 frozen now. Do the confirm step there.
+- **C001 comes back Medium, with no auto-hold.** In about 1 run in 7 the LLM skips the money trace, so the
+  "forwarded within 24 hours" finding is missing. Say it plainly: "it escalated, but not confidently enough to
+  freeze money on its own; a person decides." Then switch to **tab 2 (C005)**, which reached 0.97 in 8 of 8 runs.
 - **The LLM is down or over budget.** The agent falls back to its rule-based policy step by step (the sidebar says
   so). C001 still escalates with High confidence (0.97), and the auto-hold still happens.
 - **Rate limited (429).** Each visitor gets 6 investigations an hour. Use tab 2, or wait.
