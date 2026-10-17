@@ -2,7 +2,8 @@
 
 **Live:** https://flowtrace.omsharma.dev (also https://flowtrace-demo.fly.dev)
 
-- **App:** one container on **Fly.io** in Mumbai (`bom`). The API also serves the built frontend, so there is one URL.
+- **App:** one container on **Fly.io** in Singapore (`sin`), the nearest Fly region to the graph in Mumbai (Fly has
+  no Mumbai region). The API also serves the built frontend, so there is one URL.
 - **Graph:** **FalkorDB Cloud's free tier.**
 - **Secrets:** only in Fly's secret store.
 - **Image:** built from a clean git checkout.
@@ -48,7 +49,7 @@ Do this from a **clean checkout of the branch**, never the working copy. Then un
 git worktree add --detach ../flowtrace-deploy feat/deploy     # a fresh copy of the committed branch
 cd ../flowtrace-deploy
 fly apps create flowtrace-demo                 # another name: change app and PUBLIC_HOSTS in fly.toml
-fly volumes create flowtrace_runs --size 1 --region bom -a flowtrace-demo --yes
+fly volumes create flowtrace_runs --size 1 --region sin -a flowtrace-demo --yes
 ```
 
 ### 3. Set the secrets, read from `.env`, never printed

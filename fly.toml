@@ -4,7 +4,7 @@
 # The graph is on FalkorDB Cloud's free tier, which has no TLS (FALKORDB_TLS = false below): the connection is
 # password-protected but not encrypted. deploy/falkordb is the private-network alternative.
 app = "flowtrace-demo"
-primary_region = "bom"          # Mumbai
+primary_region = "sin"          # Singapore: the nearest Fly region to FalkorDB Cloud in Mumbai (Fly has no bom)
 
 [build]
   dockerfile = "Dockerfile"

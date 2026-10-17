@@ -4,11 +4,11 @@
 # FALKORDB_PORT=6379 and FALKORDB_PASSWORD, and no FALKORDB_USERNAME.
 #
 #   fly apps create flowtrace-db
-#   fly volumes create falkordb_data --size 1 --region bom -a flowtrace-db
+#   fly volumes create falkordb_data --size 1 --region sin -a flowtrace-db
 #   fly secrets set -a flowtrace-db REDIS_ARGS="--appendonly yes --appendfsync everysec --requirepass <password>"
 #   fly deploy -c deploy/falkordb/fly.toml
 app = "flowtrace-db"
-primary_region = "bom"
+primary_region = "sin"
 
 [build]
   image = "falkordb/falkordb:6.0.2"
