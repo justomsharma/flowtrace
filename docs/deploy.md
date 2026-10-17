@@ -30,7 +30,7 @@ Deploy from a **clean checkout of the branch**, never the working copy. Then unt
 (`data/models/*.json`, a local `fx_rates.json`, `.env`) are never baked into the image.
 
 ```bash
-git worktree add ../flowtrace-deploy feat/deploy
+git worktree add --detach ../flowtrace-deploy feat/deploy   # a fresh copy of the committed branch
 cd ../flowtrace-deploy
 
 fly auth login
@@ -62,7 +62,8 @@ never clears anything. A failed load backs off, from 1 minute up to 30.
   - `X-Forwarded-For` is never read, and uvicorn trusts no forwarded headers.
   - An IPv6 visitor counts by its /64.
 - **Rate limits** (`config.yaml`, `demo`):
-  - investigations: 6 per visitor per hour, 60 in total per hour;
+  - investigations: 6 per visitor per hour, 60 in total per hour. The signed-in approver counts only toward
+    the total, so a visitor cannot lock the presenter out;
   - uploads: 4 per 10 minutes;
   - hold plans: 20 per 10 minutes;
   - MCP requests: 120 per 10 minutes, read tools too.

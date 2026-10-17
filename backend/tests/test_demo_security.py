@@ -237,3 +237,13 @@ def test_sessions_expire_and_restart():
     assert s.get("A", {"id": "A"}) is not b    # too many steps
     c = s.get("A", {"id": "A"})
     assert s.get("A", {"id": "A2"}) is not c   # renumbered by a re-upload
+
+
+def test_the_signed_in_approver_counts_only_toward_the_total(demo, started, monkeypatch):
+    monkeypatch.setattr(guard, "cfg", lambda: {"demo": {"investigations_per_ip": {"count": 1, "minutes": 60},
+                                                        "investigations_total": {"count": 3, "minutes": 60}}})
+    assert client.post("/api/cases/BX-C001/investigate").status_code == 200
+    assert client.post("/api/cases/BX-C001/investigate").status_code == 429            # the visitor is out
+    assert client.post("/api/cases/BX-C001/investigate", headers=TOKEN).status_code == 200
+    assert client.post("/api/cases/BX-C001/investigate", headers=TOKEN).status_code == 200
+    assert client.post("/api/cases/BX-C001/investigate", headers=TOKEN).status_code == 429  # the total holds

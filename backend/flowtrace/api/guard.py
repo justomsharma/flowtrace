@@ -97,11 +97,12 @@ def _too_many(what: str, who: str, wait: float) -> HTTPException:
                               f"{max(1, round(wait / 60))} min.", headers={"Retry-After": str(int(wait) + 1)})
 
 
-def limit(request: Request, what: str) -> None:
-    """Raise 429 when this visitor (or everyone together) used `what` too often. Limits: config.yaml demo."""
+def limit(request: Request, what: str, per_ip: bool = True) -> None:
+    """Raise 429 when this visitor (or everyone together) used `what` too often. Limits: config.yaml demo.
+    per_ip=False counts only toward the total (the signed-in approver, already checked by token)."""
     rules = cfg().get("demo") or {}
-    for key, rule, who in ((f"{what}:ip:{client_ip(request)}", rules.get(f"{what}_per_ip"), "you"),
-                           (f"{what}:total", rules.get(f"{what}_total"), "everyone")):
+    checks = [(f"{what}:ip:{client_ip(request)}", rules.get(f"{what}_per_ip"), "you")] if per_ip else []
+    for key, rule, who in checks + [(f"{what}:total", rules.get(f"{what}_total"), "everyone")]:
         if rule and (wait := LIMITS.take(key, rule["count"], rule["minutes"])):
             raise _too_many(what, who, wait)
 

@@ -455,14 +455,15 @@ def investigate_case(case_id: str, request: Request, policy: Literal["llm", "heu
                      x_approver_token: str | None = Header(None)) -> dict:
     """Start (or join) a case's investigation. On the public demo an anonymous visitor gets the rule-based agent
     and its run never auto-holds; the signed-in approver (X-Approver-Token) gets the LLM agent and the auto-hold."""
-    person = True
+    person, approver = True, False
     if guard.demo_mode():
         if x_approver_token:
             _check_approver(x_approver_token, request)
+            approver = True
         else:
             policy, person = "heuristic", False
     if case_id in CASES and not RUNNER.active(case_id):  # joining a running investigation costs nothing
-        guard.limit(request, "investigations")
+        guard.limit(request, "investigations", per_ip=not approver)  # the presenter is never locked out by a visitor
     # Under the batch lock: a re-upload cannot renumber the case between reading it and starting its job.
     with RUNNER.batch_lock(batch_of(case_id) or case_id):
         if case_id not in CASES:
