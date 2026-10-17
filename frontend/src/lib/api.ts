@@ -488,7 +488,8 @@ export interface CaseOverview {
   story: string[]
   /** One sentence naming what decided the verdict. */
   verdict_basis: string | null
-  summary: { headline: string; text: string; points: string[]; by_ai: boolean } | null
+  /** totals_note: set when a point quotes the account's whole-window totals, which differ from the flagged ones. */
+  summary: { headline: string; text: string; points: string[]; by_ai: boolean; totals_note?: string | null } | null
   next_steps: string[]
   steps: StepInfo[]
 }

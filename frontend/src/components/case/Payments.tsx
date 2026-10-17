@@ -14,7 +14,8 @@ const gap = (ms: number) => {
 }
 
 /** The payment in its own currency ("EUR 1,050"), or the currency's name when the amount is unknown. */
-const paidIn = (p: Payment) => fmtOriginal(p.amount_orig, p.cur) || p.cur || ''
+/** Never blank: a payment stored without its currency reads "USD (assumed)", as in the PDF and the STR draft. */
+const paidIn = (p: Payment) => fmtOriginal(p.amount_orig, p.cur) || p.cur || 'USD (assumed)'
 
 /** The flow as a sequence: every payment in time order, with the wait before it. */
 export function PaymentSequence({ payments, currency, rate }: { payments: Payment[]; currency: string; rate: number }) {

@@ -27,7 +27,7 @@ from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, KeepInFrame, P
                                 Spacer, TableStyle)
 from reportlab.platypus import Table as _Table
 
-from flowtrace.api.case_view import PATTERN
+from flowtrace.api.case_view import ASSUMED, PATTERN
 
 INK = colors.HexColor("#0f1d33")
 INK2 = colors.HexColor("#46566e")
@@ -114,8 +114,10 @@ def money(usd: float | None) -> str:
 
 
 def original(amount: float | None, cur: str | None) -> str:
-    if amount is None or not cur:
-        return ""
+    if not cur:
+        return ASSUMED
+    if amount is None:
+        return cur
     code = CODES.get(cur, cur)
     return f"{code} {amount:,.4f}" if code == "BTC" else f"{code} {amount:,.0f}"
 
@@ -805,6 +807,8 @@ def _narrative(o: dict, result: dict, nm, acct) -> list:
     if rep.get("str_narrative"):
         out += [Spacer(1, 4), P("<b>Narrative drafted by AI, for a person to check before filing:</b> "
                                 + x(cut(rep["str_narrative"], CAP_NARRATIVE)), "cell")]
+    notes = list(dict.fromkeys(n for n in (o.get("narrative_note"), (o.get("summary") or {}).get("totals_note")) if n))
+    out += [P(f"<b>{x(n)}</b>", "cell") for n in notes]
     out += [P("Evidence IDs in brackets (E1, E2…) are the findings on page 1. The Markdown draft has the full evidence list.", "small")]
     return out
 

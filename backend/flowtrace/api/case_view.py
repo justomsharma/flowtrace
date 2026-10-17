@@ -278,15 +278,21 @@ def build_overview(case: dict, result: dict | None, plan: dict | None, actions: 
         "alert_reasons": alert_reasons(case),
         # A guess at the underlying crime from the laundering shape (the data has no crime label); escalated cases only.
         "crime_guess": crime_guess(case, evidence, rules) if (result or {}).get("disposition", {}).get("action") == "ESCALATE" else [],
-        "summary": {"headline": clean(rep["headline"]), "text": clean(rep["executive_summary"]["text"]),
-                    "points": summary_points(rep, evidence, result, names), "by_ai": rep.get("author") not in (None, "template")}
-                   if rep else None,
+        "summary": _summary(case, rep, evidence, result, names) if rep else None,
+        "narrative_note": totals_note(case, evidence, names, rep.get("str_narrative") or "") if rep else None,
         "next_steps": [clean(x) for x in (rep or {}).get("next_steps", [])][:3],
         "names": names,
         "story": story(case, evidence, result, names, rules),
         "verdict_basis": verdict_basis(result, evidence, names),
         "steps": (result or {}).get("steps", []),
     }
+
+
+def _summary(case: dict, rep: dict, evidence: list[dict], result: dict | None, names: dict[str, str]) -> dict:
+    out = {"headline": clean(rep["headline"]), "text": clean(rep["executive_summary"]["text"]),
+           "points": summary_points(rep, evidence, result, names), "by_ai": rep.get("author") not in (None, "template")}
+    out["totals_note"] = totals_note(case, evidence, names, " ".join([out["headline"], out["text"], *out["points"]]))
+    return out
 
 
 PATTERN = {
@@ -366,6 +372,29 @@ def crime_guess(case: dict, evidence: list[dict], rules: dict) -> list[str]:
     return list(dict.fromkeys(out))[:3]
 
 
+def totals_note(case: dict, evidence: list[dict], names: dict[str, str], text: str) -> str | None:
+    """The case's totals are its flagged payments. The account profile (PROFILE evidence) counts every payment the
+    account made in the case window, flagged or not, and the AI may quote it. When `text` quotes the profile's
+    totals and they differ from the case's, this says which is which, so no two figures disagree unlabelled."""
+    flagged = f"{money(case.get('amount', 0.0))} in {len(case.get('edges', []))} payment{'s' if len(case.get('edges', [])) != 1 else ''}"
+    notes = []
+    for e in evidence:
+        m, acct = e.get("metrics") or {}, (e.get("accounts") or [None])[0]
+        if e.get("code") != "PROFILE" or not m.get("out_cnt") or not acct:
+            continue
+        n, total = int(m["out_cnt"]), float(m.get("out_sum") or 0.0)
+        quoted = money(total) in text or re.search(rf"{n} payments", text)
+        if not quoted or (n, round(total)) == (len(case.get("edges", [])), round(case.get("amount", 0.0))):
+            continue
+        extra = n - sum(x["src"] == acct for x in case.get("edges", []))
+        notes.append(f"About the totals: “{money(total)} in {n} payment{'s' if n != 1 else ''}” counts every payment "
+                     f"{names.get(acct, 'the account')} sent between {_when(case.get('t0'))} and "
+                     f"{_when((case.get('t1') or 1) - 1)} UTC"
+                     + (f", including {extra} payment{'s' if extra != 1 else ''} that {'were' if extra != 1 else 'was'} not flagged" if extra > 0 else "")
+                     + f". The case's flagged payments total {flagged}.")
+    return " ".join(notes[:2]) or None
+
+
 DECISION_POINT = {"ESCALATE": "Recommend escalating to a senior analyst.",
                   "REVIEW": "Mixed signals: a person should review it.",
                   "CLOSE": "Looks like normal activity: recommend closing."}
@@ -407,9 +436,12 @@ def money(usd: float, currency: str | None = "US Dollar", rate: float | None = 1
     return f"${usd:,.0f}"
 
 
+ASSUMED = "USD (assumed)"  # a payment stored without its currency: never shown blank
+
+
 def _paid_in(e: dict) -> str:
     r = orig_rate(e.get("cur"))
-    return original(e["amount"] * r, e["cur"]) if r is not None else (e.get("cur") or "")
+    return original(e["amount"] * r, e["cur"]) if r is not None else (e.get("cur") or ASSUMED)
 
 
 def original(amount: float | None, cur: str | None) -> str:
@@ -493,7 +525,9 @@ def str_markdown(case: dict, result: dict, plan: dict | None, actions: list[dict
     out += [""]
     if rep.get("next_steps"):
         out += ["## Next steps", ""] + [f"- {s}" for s in rep["next_steps"]] + [""]
+    note = totals_note(case, evidence, names, " ".join([rep.get("str_narrative") or "", *summary_points(rep, evidence, result, names)]))
     out += ["## STR narrative", "", rep.get("str_narrative") or "Not written: the rule-based report has no narrative.", ""]
+    out += [f"_{note}_", ""] if note else []
     out += ["## Payments in the case", "", "| Time | From | To | Amount (USD equivalent) | Paid in | Format |",
             "|---|---|---|---|---|---|"]
     out += [f"| {_utc(e['ts'])} | {e['src']} | {e['dst']} | {m(e['amount'])} | "

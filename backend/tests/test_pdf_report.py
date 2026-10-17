@@ -136,3 +136,75 @@ def test_pdf_endpoint_survives_the_graph_being_down(api, monkeypatch):
     monkeypatch.setattr(M.service, "list_actions", down)
     monkeypatch.setattr(M.service, "audit", down)
     assert client.get("/api/cases/BX-C005/report.pdf").status_code == 200
+
+
+# --- one definition of the totals ------------------------------------------------------------------
+# The case's figures are its flagged payments. The account profile (PROFILE evidence) counts every payment the
+# account made in the case window, flagged or not. When AI text quotes the profile's totals, they are labelled.
+
+FAN = [pay(f"f{i}", A, x, amt, ts=T0 + i * H, cur="US Dollar")
+       for i, (x, amt) in enumerate([(B, 11_794.0), (C, 10_352.0), (B, 9_254.0), (C, 8_881.0), (B, 2_522.0)])]
+FLAGGED = "$42,803 in 5 payments"  # sum(FAN), as page 1 and the case page show it
+
+
+def with_profile(narrative: str, points: tuple[str, ...] = ()) -> dict:
+    r = escalated()
+    r["evidence"].append({**ev("E9", "context", 0.0, accounts=[A], code="PROFILE",
+                               claim="The account sent $42,809 in 7 payments to 3 accounts in the period checked."),
+                          "metrics": {"out_cnt": 7, "out_sum": 42_809.34, "in_cnt": 1, "in_sum": 568.59}})
+    r["report"]["str_narrative"] = narrative
+    r["report"]["summary_points"] = [{"text": p, "evidence_ids": ["E9"]} for p in points]
+    return r
+
+
+def test_window_totals_quoted_by_the_ai_are_labelled_everywhere():
+    quoted = "The subject sent $42,809 in 7 payments to 3 accounts. [E9]"
+    r = with_profile(quoted, points=("The account sent $42,809 in 7 payments.",))
+    o, pages, text = build(case(FAN), r)
+    flat = " ".join(text.split())
+    assert pages == 2 and FLAGGED in flat
+    note = "including 2 payments that were not flagged"
+    assert "$42,809 in 7 payments" in flat and note in flat and f"flagged payments total {FLAGGED}" in flat
+    # The case page's summary carries the same label, and so does the Markdown STR draft.
+    assert note in o["summary"]["totals_note"] and FLAGGED in o["summary"]["totals_note"]
+    md = V.str_markdown(case(FAN), r, None, [], RULES)
+    assert note in md and FLAGGED in md
+
+
+def test_no_label_when_the_ai_uses_the_flagged_totals():
+    r = with_profile(f"The subject sent {FLAGGED}. [E9]", points=(f"The account sent {FLAGGED}.",))
+    o, _, text = build(case(FAN), r)
+    assert "not flagged" not in text and o["summary"].get("totals_note") is None
+
+
+# --- every payment shows the currency it was paid in --------------------------------------------------
+
+def test_a_payment_with_no_known_currency_reads_usd_assumed():
+    trail = pay("t9", C, "0999:80000AAA0", 500.0, ts=T0 + 3 * H, role="trace")  # stored without a currency
+    r = escalated()
+    r["graph"]["edges"] = [trail]
+    _, _, text = build(case(CHAIN), r)
+    assert "USD (assumed)" in text
+    assert "USD (assumed)" in V.str_markdown(case([*CHAIN, {**trail, "cur": None}]), r, None, [], RULES)
+
+
+def test_the_agent_keeps_each_payments_currency():
+    from flowtrace.agent.context import CaseContext
+    ctx = CaseContext.__new__(CaseContext)
+    ctx.edges, ctx.nodes, ctx.accounts, ctx.emit = {}, {}, [A], lambda ev: None
+    ctx.add_edges([{**pay("t1", A, B, 5.0), "cur": "Euro"}], role="trace")
+    assert ctx.edges["t1"]["cur"] == "Euro"
+
+
+def test_stored_payments_without_a_currency_are_filled_from_the_graph(api, monkeypatch):
+    client, M, _ = api
+    r = escalated()
+    r["graph"]["edges"] = [pay("t9", C, "0999:80000AAA0", 500.0, ts=T0 + 3 * H, role="trace")]
+    M.RESULTS["BX-C005"] = r
+    M.CURRENCY.clear()
+    asked = []
+    monkeypatch.setattr(M, "ro", lambda q, p=None, **kw: asked.append(p) or type("R", (), {"rows": [{"tx_id": "t9", "cur": "Yen"}]})())
+    rows = client.get("/api/cases/BX-C005/overview").json()["transactions"]
+    assert next(p for p in rows if p["tx_id"] == "t9")["cur"] == "Yen"
+    client.get("/api/cases/BX-C005/overview")
+    assert len(asked) == 1  # cached: a page poll does not ask the graph again
