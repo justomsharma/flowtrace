@@ -1,0 +1,25 @@
+# FalkorDB for the public demo, on Fly's private network only: no public service, so it is reachable only from
+# the app (flowtrace-db.internal:6379) over Fly's WireGuard-encrypted 6PN network. FalkorDB Cloud's free tier has
+# no TLS, so it would carry the graph and its password in plain text over the internet.
+#
+#   fly apps create flowtrace-db
+#   fly volumes create falkordb_data --size 1 --region iad -a flowtrace-db
+#   fly secrets set -a flowtrace-db REDIS_ARGS="--appendonly yes --appendfsync everysec --requirepass <password>"
+#   fly deploy -c deploy/falkordb/fly.toml
+app = "flowtrace-db"
+primary_region = "iad"
+
+[build]
+  image = "falkordb/falkordb:6.0.2"
+
+[env]
+  FALKORDB_ARGS = "THREAD_COUNT 2 TIMEOUT_MAX 60000 TIMEOUT_DEFAULT 15000"
+
+[mounts]
+  source = "falkordb_data"      # the demo graph survives restarts (append-only file)
+  destination = "/var/lib/falkordb/data"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

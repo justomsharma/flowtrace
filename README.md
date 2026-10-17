@@ -1,7 +1,7 @@
 # FlowTrace
 
-**Live demo: https://flowtrace-demo.fly.dev**. Anyone can look around. Approvals need the demo approver token (ask
-the team). [3-minute demo script](docs/demo.md) · MCP endpoint: `https://flowtrace-demo.fly.dev/mcp`
+**Live demo: https://flowtrace-demo.fly.dev**. Anyone can look around and investigate with the rule-based agent.
+The LLM agent and approvals need the demo approver token (ask the team). [3-minute demo script](docs/demo.md) · MCP endpoint: `https://flowtrace-demo.fly.dev/mcp`
 (streamable HTTP) · [How it is deployed](docs/deploy.md)
 
 FlowTrace is an AML (anti-money-laundering) agent that acts on a FalkorDB transaction graph. Upload a day of
@@ -292,7 +292,7 @@ How FlowTrace holds money, and what it is based on:
 - **Read-only tools:** `account_profile`, `counterparty_history`, `recurring_flows`, `trace_funds`, `shared_counterparties`, `find_cycles`, `owner_network`, `case_memory`, `get_case`, `list_cases`, `plan_holds`. They are annotated `read_only_hint`, and their Cypher runs through GRAPH.RO_QUERY, so FalkorDB itself rejects a write.
 - **One write tool:** `propose_action`. Its proposals are recorded as `proposed_by: "mcp"`, and the confirm panel shows "Proposed by an outside AI client (MCP)".
 - **It can't approve.** There is no approve tool, and the standalone process drops `APPROVER_TOKEN` from its environment at startup, so it never holds the approver token.
-- **Hosted.** The API also serves the same server at `/mcp` (streamable HTTP), so a client can use the live demo's tools: `https://flowtrace-demo.fly.dev/mcp` (for example in the MCP Inspector: `npx @modelcontextprotocol/inspector`, transport *Streamable HTTP*). Mounted there, no tool approves either; only the API's approve endpoints, behind the approver token, do.
+- **Hosted.** The API also serves the same server at `/mcp` (streamable HTTP), so a client can use the live demo's tools: `https://flowtrace-demo.fly.dev/mcp` (for example in the MCP Inspector: `npx @modelcontextprotocol/inspector`, transport *Streamable HTTP*). Mounted there, no tool approves either; only the API's approve endpoints, behind the approver token, do. On the public demo every MCP request counts toward a per-visitor limit, and `propose_action` also needs the approver token in an `X-Approver-Token` header.
 - **Sessions.** Investigation tools keep one context per case for the session, so an account found by `trace_funds` can be profiled next.
 
 ```bash
@@ -430,7 +430,7 @@ evaluation numbers in this README come from the full graph.
 ```bash
 cd backend
 python -m flowtrace.demo.history build     # needs the full graph and data/processed (see Setup); ~3 minutes
-python -m flowtrace.demo.history load      # into GRAPH_NAME (plain Cypher, works on FalkorDB Cloud)
+python -m flowtrace.demo.history load      # into GRAPH_NAME (plain Cypher, works on any FalkorDB, Cloud included)
 GRAPH_NAME=flowtrace python -m flowtrace.demo.verify run full.json
 GRAPH_NAME=flowtrace_demo PROCESSED_DIR=<data/demo/processed + fx_rates, overview, signal_rates json> \
   MODELS_DIR=../data/demo/model python -m flowtrace.demo.verify run demo.json
@@ -440,7 +440,7 @@ python -m flowtrace.demo.reset             # clean demo state on this machine (A
 
 ## Data
 
-- **Source:** IBM *Transactions for Anti Money Laundering* (HI-Small), licence CDLA-Sharing-1.0. It is **synthetic**: no real customer data is used, as the hackathon rules require.
+- **Source:** IBM *Transactions for Anti Money Laundering* (HI-Small) by Altman et al. (NeurIPS 2023), [Kaggle](https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml), licence CDLA-Sharing-1.0. The data in this repository (`data/samples`, `data/demo`) is derived from it and shared under the same licence: [`data/LICENSE`](data/LICENSE), [`data/NOTICE`](data/NOTICE). It is **synthetic**: no real customer data is used, as the hackathon rules require.
 - **Size:** 5,078,345 transfers; 515,088 accounts (key = bank + account); 5,177 laundering transfers (0.10%). The patterns file links 3,209 transfers to 370 known schemes.
 - **Split** (by day, the way a bank's nightly monitoring run works):
   - train: Sep 1–6
@@ -638,4 +638,4 @@ This project was built with help from an AI coding assistant (Claude Code). At r
 
 ## License
 
-MIT
+Code: MIT ([LICENSE](LICENSE)). Data in `data/`: CDLA-Sharing-1.0, derived from IBM's synthetic AML dataset ([data/LICENSE](data/LICENSE), [data/NOTICE](data/NOTICE)).

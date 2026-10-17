@@ -1,0 +1,16 @@
+FlowTrace data notice
+
+The payment data in this directory (data/samples, data/demo and anything derived from them) comes from, or is
+derived from, IBM's synthetic "Transactions for Anti Money Laundering (AML)" dataset (HI-Small):
+
+  Erik Altman, Jovan Blanuša, Luc von Niederhäusern, Béni Egressy, Andreea Anghel, Kubilay Atasu.
+  "Realistic Synthetic Financial Transactions for Anti-Money Laundering Models."
+  NeurIPS 2023, Datasets and Benchmarks Track. https://arxiv.org/abs/2306.16424
+
+  Source: https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml
+  (IBM AMLworld)
+
+The dataset is published under the Community Data License Agreement – Sharing, Version 1.0 (CDLA-Sharing-1.0).
+The data here is provided under the same agreement: see data/LICENSE. The data is synthetic; no real customer is
+in it. FlowTrace's code is under the MIT License (LICENSE at the repository root); that licence does not cover
+this data.
