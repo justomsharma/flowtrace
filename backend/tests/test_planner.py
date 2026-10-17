@@ -158,6 +158,13 @@ def test_escalated_case_proposes_filing_an_str(world):
     assert P.plan_holds(CASE, cfg(), result("ESCALATE"))["case_action"]["type"] == "FILE_STR"
 
 
+def test_the_str_goes_to_the_fiu_named_in_config(world):
+    world(mule_world())
+    rules = {**cfg(), "actions": {**cfg()["actions"], "str_fiu": "FIU-TEST"}}
+    assert "with FIU-TEST" in P.plan_holds(CASE, rules, result("ESCALATE"))["case_action"]["why"]
+    assert "with FIU-IND" in P.plan_holds(CASE, cfg(), result("ESCALATE"))["case_action"]["why"]   # the default
+
+
 def test_busy_only_after_the_decision_is_not_a_hub(world):
     """Hub degrees count only payments before the decision time."""
     later = [(f"L{i}", f"late{i}", "M1", T0 + 3 * DAY + i, 10.0) for i in range(600)]

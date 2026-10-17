@@ -15,7 +15,7 @@ from flowtrace.agent.disposition import Disposition
 from flowtrace.agent.llm import structured
 
 SYSTEM = """You are a senior AML investigator with 10+ years of experience writing case reports for
-a bank's financial intelligence unit (FIU-IND / RBI context). Write precise, neutral, evidence-based
+a bank's financial intelligence unit ({fiu}). Write precise, neutral, evidence-based
 prose. Rules:
 - Use ONLY facts in the evidence list. Every statement cites evidence IDs (e.g. E3).
 - Copy amounts, counts and percentages exactly as they appear in the evidence; do not compute new numbers.
@@ -194,7 +194,8 @@ def write_report(ctx: CaseContext, disp: Disposition, use_llm: bool = True) -> d
             "decision_reasons": disp.reasons, "typology": ctx.shape,
             "model_score": round(ctx.ml_score, 3), "evidence": evidence,
         }, default=str)
-        out, meta = structured(SYSTEM, user, SCHEMA, effort="low", max_tokens=16000)
+        system = SYSTEM.replace("{fiu}", ctx.rules["actions"].get("str_fiu", "FIU-IND"))
+        out, meta = structured(system, user, SCHEMA, effort="low", max_tokens=16000)
         if out is not None:
             out["author"] = meta.get("served_by", "llm")
             out["llm"] = meta

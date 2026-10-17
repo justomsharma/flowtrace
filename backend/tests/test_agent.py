@@ -176,3 +176,18 @@ def test_forwarded_share_counts_only_money_sent_after_it_arrived():
     assert share == pytest.approx(0.4)
     assert [e["tx_id"] for e in fast] == ["LATE"]
 
+
+def test_the_report_prompt_names_the_fiu_from_config(monkeypatch):
+    from flowtrace.agent import policy as policy_mod, report as report_mod
+    monkeypatch.setattr(policy_mod, "structured", lambda *a, **k: (None, {"error": "x"}))
+    systems = []
+    monkeypatch.setattr(report_mod, "structured", lambda system, *a, **k: systems.append(system) or (None, {"error": "y"}))
+    w = mule_world()
+    monkeypatch.setattr(ctx_mod, "ro", w.ro)
+    monkeypatch.setattr(trace_mod, "ro", w.ro)
+    alert = [e for e in w.edges if e["src"] == "X" and e["ts"] >= T0]
+    case = {"case_id": "MULE", "primary": "X", "accounts": ["X"], "tx_ids": [e["tx_id"] for e in alert], "edges": alert,
+            "t0": T0, "t1": T0 + DAY, "ml_score": 0.81, "shape": {"typology": "FAN-OUT", "confidence": 0.9}}
+    rules = {**cfg(), "actions": {**cfg()["actions"], "str_fiu": "FIU-TEST"}}
+    investigate(new_context(case, rules, emit=lambda e: None), policy_name="llm", save_memory=False)
+    assert "FIU-TEST" in systems[0] and "FIU-IND" not in systems[0]

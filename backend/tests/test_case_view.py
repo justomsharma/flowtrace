@@ -196,9 +196,10 @@ def test_report_md_has_sections():
                  "Passed on within 2 hours.", "## Legitimate explanations", "Known counterparty for 6 days.",
                  "## Proposed actions", "Hold account B: $90 (waiting for a decision)",
                  "File an STR: approved by Asha (Clear layering)", "## STR narrative", "STR text.",
-                 "smuggling", "KYC not available.", "| From | To |"):
+                 "KYC not available.", "| From | To |"):
         assert part in md, part
     assert "₹" not in md
+    assert "smuggling" not in md and "crime" not in md.lower()   # a crime guess stays on the case page, out of the STR
 
 
 def test_report_md_marks_rules_reports():
@@ -333,14 +334,12 @@ def test_each_payment_keeps_its_own_currency_next_to_the_usd_equivalent(monkeypa
     assert "| $100 | EUR 90 |" in md and "Amount (USD equivalent) | Paid in" in md
 
 
-def test_str_points_and_trail_cite_their_evidence_and_crimes_wait_for_escalation():
+def test_str_points_and_trail_cite_their_evidence():
     r = full_result()
     r["report"]["money_trail"] = [{"text": "A paid B, B paid C.", "evidence_ids": ["E1"]}]
     md = V.str_markdown(case(CHAIN), r, None, [], RULES)
     assert "- A paid B, B paid C. (E1)" in md
     assert any(line.startswith("- ") and line.endswith("(E1)") for line in md.splitlines()[:20])  # summary points
-    r["disposition"]["action"] = "REVIEW"
-    assert "smuggling" not in V.str_markdown(case(CHAIN), r, None, [], RULES)
 
 
 def test_a_provisional_auto_hold_reads_plainly_in_the_str_and_marks_the_account():

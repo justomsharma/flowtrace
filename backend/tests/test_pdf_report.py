@@ -56,6 +56,7 @@ def test_escalated_case_with_a_hold():
                  "decisions are made by a person", "IBM AMLworld HI-Small (CDLA-Sharing-1.0)", "Page 2 of 2"):
         assert part in text, part
     assert o["kpis"]["amount"] == 33_855.25  # the same number the case page shows, from the same overview
+    assert o["crime_guess"] and not any(c in text for c in o["crime_guess"])  # the crime guess stays off the report
 
 
 def test_closed_case_by_the_rules():
