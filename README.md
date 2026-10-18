@@ -5,13 +5,13 @@
 **Catches mule money in a payment graph and freezes it before it's cashed out.**
 
 [![Live demo](https://img.shields.io/badge/Live_demo-flowtrace.omsharma.dev-2563eb)](https://flowtrace.omsharma.dev)
-[![Demo video](https://img.shields.io/badge/Demo_video-watch-dc2626)](<VIDEO_LINK>)
+[![Demo video](https://img.shields.io/badge/Demo_video-watch-dc2626)](https://youtu.be/mMmmLtVBMHk)
 [![FalkorDB](https://img.shields.io/badge/Graph-FalkorDB-7c3aed)](https://www.falkordb.com)
 [![Track 1](https://img.shields.io/badge/GraphHacks-Track_1:_Agents_That_Act-f59e0b)](https://www.wemakedevs.org/hackathons/falkordb)
 [![MCP](https://img.shields.io/badge/MCP-server-111827)](#mcp-any-agent-can-investigate-only-a-person-approves)
 [![License: MIT](https://img.shields.io/badge/License-MIT-16a34a)](LICENSE)
 
-### [▶ Demo video](<VIDEO_LINK>) · [🌐 Live demo](https://flowtrace.omsharma.dev)
+### [▶ Demo video](https://youtu.be/mMmmLtVBMHk) · [🌐 Live demo](https://flowtrace.omsharma.dev)
 
 </div>
 
@@ -92,6 +92,7 @@ Measured on Sep 9, a held-out test day.
 |---|---|
 | Finding the right cases (full day, 654,467 payments) | **15 of 15**: the top 15 cases are all laundering |
 | Freezing the money (eval slice, 21 laundering cases) | **98.6%**: the holds freeze $5.59M of the $5.67M of laundering money still in the trail |
+| Not freezing innocent money (eval slice, 19 legitimate cases; holds as proposed, if a person approved all) | **$47,796** wrongly frozen with the LLM agent vs $98.3M with the rules alone |
 | The LLM agent vs the rules (agent evaluation, eval slice: 21 laundering, 19 legitimate cases) | Legitimate cases escalated: **5 of 19** (LLM) vs 16 of 19 (rules). The trade-off: the LLM escalates 14 of 21 laundering cases and sends the other 7 to review; none is closed |
 
 **Limitation:** choosing *where* to hold is no better than chance. 61% of holds land on real laundering accounts,
